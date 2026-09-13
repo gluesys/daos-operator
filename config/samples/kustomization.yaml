@@ -1,0 +1,6 @@
+## Append samples of your project ##
+resources:
+- daos_v1alpha1_daossystem.yaml
+- daos_v1alpha1_daospool.yaml
+- daos_v1alpha1_daoscontainer.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

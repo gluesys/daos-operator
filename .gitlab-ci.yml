@@ -37,3 +37,17 @@ license-headers:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+
+# Go: build + vet + unit tests without envtest binaries (controller tests that
+# need envtest run in Phase 2 on a runner with setup-envtest).
+go-build:
+  stage: check
+  image: golang:1.24
+  script:
+    - go build ./...
+    - go vet ./...
+    - gofmt -l api/ internal/ cmd/ | tee /tmp/gofmt.txt; test ! -s /tmp/gofmt.txt
+    - make manifests generate && git diff --exit-code -- config/crd api/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"

@@ -1,0 +1,38 @@
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-role
+rules:
+- apiGroups:
+  - daos.gluesys.com
+  resources:
+  - daoscontainers
+  - daospools
+  - daossystems
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - daos.gluesys.com
+  resources:
+  - daoscontainers/finalizers
+  - daospools/finalizers
+  - daossystems/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - daos.gluesys.com
+  resources:
+  - daoscontainers/status
+  - daospools/status
+  - daossystems/status
+  verbs:
+  - get
+  - patch
+  - update
