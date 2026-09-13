@@ -1,0 +1,56 @@
+lmcache-daos
+Copyright 2026 Gluesys Co., Ltd.
+
+This product includes software developed at Gluesys Co., Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not
+use this software except in compliance with the License. You may obtain a
+copy of the License in the LICENSE file distributed with this work, or at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+
+-------------------------------------------------------------------------------
+Third-party material
+-------------------------------------------------------------------------------
+
+This repository contains no vendored third-party source. It links to the DAOS
+client libraries (libdaos, libdfs) through ctypes at run time and plugs into
+LMCache through its documented extension points; neither is redistributed here.
+
+The directory `gpudirect/patches/` holds patches -- unified diffs -- against
+four upstream projects. A diff necessarily quotes context lines from the file
+it patches, so those fragments remain under the license of the project they
+come from, not under this repository's license:
+
+    DAOS        BSD-2-Clause-Patent      https://github.com/daos-stack/daos
+    UCX         BSD-3-Clause             https://github.com/openucx/ucx
+    Mercury     BSD-3-Clause             https://github.com/mercury-hpc/mercury
+    libfabric   BSD-2-Clause OR GPL-2.0  https://github.com/ofiwg/libfabric
+
+The changes introduced by those patches (the added lines) are contributed by
+Gluesys under the license of the project they target, so that they can be
+submitted upstream without further permission. Submission drafts are kept in
+`doc/upstream/`.
+
+`doc/upstream/lmcache-async-serializer-option.md` quotes short excerpts of
+LMCache (Apache-2.0, https://github.com/LMCache/LMCache) for the purpose of
+describing a proposed change to it.
+
+`CODE_OF_CONDUCT.md` is the Contributor Covenant v2.1, reproduced verbatim apart
+from the reporting contact. It is licensed CC BY 4.0 by its authors
+(https://www.contributor-covenant.org), not under this repository's license.
+
+
+-------------------------------------------------------------------------------
+Interoperating projects
+-------------------------------------------------------------------------------
+
+This software is designed to run with, but does not include or modify:
+
+    LMCache     Apache-2.0
+    vLLM        Apache-2.0
+    DAOS        BSD-2-Clause-Patent
+
+Names of those projects are used only to identify the software this backend
+interoperates with.

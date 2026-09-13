@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Phase 0 pipeline: only what runs without a DAOS cluster or a Kubernetes
+# cluster. Do not add a job that silently skips when those are missing.
+stages: [check]
+
+default:
+  image: python:3.12-slim
+  tags: [Flexa]
+  interruptible: true
+
+variables:
+  GIT_DEPTH: "20"
+
+syntax:
+  stage: check
+  script:
+    - find . -path ./.git -prune -o -name '*.sh' -print | xargs -r -n1 bash -n
+    - find . -path ./.git -prune -o -name '*.py' -print | xargs -r -n50 python3 -m py_compile
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+license-headers:
+  stage: check
+  script:
+    - test -f LICENSE && test -f NOTICE
+    - |
+      sources=$(find . -path ./.git -prune -o -path ./third_party -prune -o \
+        \( -name '*.py' -o -name '*.sh' -o -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.go' -o -name 'Dockerfile*' \) -print)
+      missing=$(for f in $sources; do
+          head -5 "$f" | grep -q 'SPDX-License-Identifier: Apache-2.0' || echo "$f";
+        done)
+      if [ -n "$missing" ]; then echo "SPDX header missing in:"; echo "$missing"; exit 1; fi
+      echo "SPDX headers present in all $(echo "$sources" | wc -w) sources"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
