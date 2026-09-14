@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Bound by the operator to the daos-hostprep ServiceAccount in each DaosSystem
+# namespace. hostprep only needs to read and annotate its own Node.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: daos-hostprep
+  labels:
+    app.kubernetes.io/name: daos-operator
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch, patch, update]

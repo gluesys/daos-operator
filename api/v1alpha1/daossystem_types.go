@@ -62,6 +62,26 @@ type ImagesSpec struct {
 	Server string `json:"server"`
 	Agent  string `json:"agent"`
 	Admin  string `json:"admin"`
+	// HostPrep is the host-preparation DaemonSet image (daos-server + hostprep binary).
+	// Empty uses the operator's built-in default.
+	HostPrep string `json:"hostPrep,omitempty"`
+}
+
+// HostPrepSpec controls the per-node preparation DaemonSet (#8). It discovers
+// NVMe/DSN/RDMA facts into Node annotations, raises hugepages, and only when
+// BindNvme is true hands unused NVMe to SPDK. It never touches devices that
+// have partitions, mounts or holders, and never formats anything.
+type HostPrepSpec struct {
+	// Enabled deploys the DaemonSet. Default true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// BindNvme lets hostprep unbind unused NVMe from the kernel (daos_server nvme prepare).
+	// Default false: discover and annotate only.
+	BindNvme bool `json:"bindNvme,omitempty"`
+	// FabricCIDR picks the RDMA NIC whose IPv4 address is in this network, e.g. 172.28.136.0/24.
+	// Empty = first RDMA NIC with an address.
+	FabricCIDR string `json:"fabricCIDR,omitempty"`
+	// IntervalSeconds between discovery runs. Default 300.
+	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
 }
 
 // UpgradeSpec implements ADR-003: before DAOS 3.0 only a full-stop upgrade
@@ -99,8 +119,9 @@ type DaosSystemSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	Engines []EngineSpec `json:"engines"`
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
-	AllowInsecure bool        `json:"allowInsecure,omitempty"`
-	Upgrade       UpgradeSpec `json:"upgrade,omitempty"`
+	AllowInsecure bool         `json:"allowInsecure,omitempty"`
+	HostPrep      HostPrepSpec `json:"hostPrep,omitempty"`
+	Upgrade       UpgradeSpec  `json:"upgrade,omitempty"`
 }
 
 // RankStatus mirrors `dmg system query -v` for one rank. The operator copies

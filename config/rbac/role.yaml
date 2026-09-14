@@ -27,6 +27,7 @@ rules:
   - ""
   resources:
   - namespaces
+  - serviceaccounts
   verbs:
   - create
   - get
@@ -39,6 +40,20 @@ rules:
   verbs:
   - get
   - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - apps
+  resources:
+  - daemonsets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - daos.gluesys.com
@@ -72,3 +87,13 @@ rules:
   - get
   - patch
   - update
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterrolebindings
+  verbs:
+  - create
+  - get
+  - list
+  - update
+  - watch

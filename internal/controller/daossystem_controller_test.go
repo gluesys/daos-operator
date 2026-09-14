@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -72,6 +73,7 @@ var _ = Describe("DaosSystem Controller", func() {
 			_ = k8sClient.Delete(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: n}})
 		}
 		// envtest has no GC: remove ConfigMaps ourselves
+		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-hostprep"}})
 		cms := &corev1.ConfigMapList{}
 		_ = k8sClient.List(ctx, cms)
 		for i := range cms.Items {
@@ -121,6 +123,28 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(n3.Message).To(ContainSubstring(daosv1alpha1.AnnotationFabricIface))
 		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n3"}, &corev1.ConfigMap{})
 		Expect(err).To(HaveOccurred(), "no ConfigMap for a node without facts")
+
+		By("deploying the host-preparation DaemonSet with the system's node selector")
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-hostprep"}, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue(daosv1alpha1.LabelRole, "storage"))
+		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeTrue())
+		Expect(*ds.Spec.Template.Spec.Containers[0].SecurityContext.Privileged).To(BeTrue())
+		Expect(ds.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "DAOS_HOSTPREP_BIND_NVME", Value: "false"}), "discover-only by default")
+		Expect(ds.OwnerReferences).To(HaveLen(1))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "daos-hostprep"}, &corev1.ServiceAccount{})).To(Succeed())
+	})
+
+	It("removes the DaemonSet when hostPrep is disabled", func() {
+		reconcileOnce()
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		f := false
+		sys.Spec.HostPrep.Enabled = &f
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-hostprep"}, &appsv1.DaemonSet{})
+		Expect(err).To(HaveOccurred())
 	})
 
 	It("excludes nodes that share a physical drive and says so", func() {

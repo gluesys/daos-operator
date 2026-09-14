@@ -15,32 +15,49 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
 
 ## 상태
 - Phase 0: kubebuilder v4 뼈대, CRD 3종(kind·envtest 검증).
-- **Phase 2 #7 (2026-09-14): `DaosSystem` reconcile 1단계 구현.** nodeSelector 로 노드 선택 → Node 어노테이션에서 노드별 사실
+- **Phase 2 #7·#8 (2026-09-14): `DaosSystem` reconcile 1단계 + 호스트 준비 DaemonSet.** nodeSelector 로 노드 선택 → Node 어노테이션에서 노드별 사실
   (fabric NIC, VFIO NVMe 목록, 드라이브 DSN, NUMA) 읽기 → **같은 물리 드라이브(DSN)를 두 노드가 노출하면 그 노드들을 제외하고
   `DriveConflict=True`**(2026-09-03 손상 사고 재발 방지) → 관리 서비스 복제본 노드 선택(이름순 안정) → 노드별 `daos_server.yml`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
   서버 파드는 아직 만들지 않으므로 `Ready=False (PodsNotManaged)` 로 정직하게 표시한다(#9).
 설계 결정은 `doc/adr/` (ADR-001 배포 모델, ADR-002 디바이스·네트워크, ADR-003 업그레이드).
 
-## 노드 사실(facts) 계약
-호스트 준비 DaemonSet(#8)이 쓰기 전까지는 손으로 어노테이션을 단다. spec.engines 의 값이 있으면 그것이 우선한다.
+## 노드 사실(facts) 계약과 호스트 준비 DaemonSet (#8)
+`DaosSystem` 을 만들면 `spec.hostPrep.enabled`(기본 true)에 따라 `<sys>-hostprep` DaemonSet 이 선택된 노드마다 하나씩 뜬다
+(privileged, hostNetwork, hostPID, ServiceAccount `daos-hostprep` ← 함께 배포되는 ClusterRole `daos-hostprep`: nodes get/patch).
+`cmd/hostprep` 가 주기(`intervalSeconds`, 기본 300초)마다:
 
-| 어노테이션 | 값 | 예 |
-|---|---|---|
-| `daos.gluesys.com/fabric-iface` | 엔진이 바인드할 NIC 이름(호스트마다 다름) | `ens2`, `ens2np0`, `ib0` |
-| `daos.gluesys.com/bdev-list` | VFIO 바인딩된 NVMe PCI 주소, 콤마 구분 | `0000:03:00.0,0000:04:00.0` |
-| `daos.gluesys.com/bdev-dsn` | `<pci>=<PCI Device Serial Number>` 목록 | `0000:03:00.0=6479A701A8C0D000,...` |
-| `daos.gluesys.com/numa-node` | (선택) 엔진 0 고정 NUMA | `1` |
-| `daos.gluesys.com/control-addr` | (선택) mgmt_svc_replicas/access_points/hostlist 에 쓸 주소. 기본은 노드 InternalIP | `172.28.136.184` |
+1. `/sys/bus/pci/devices` 에서 NVMe(class 0x010802)를 찾아 드라이버(nvme / vfio-pci / uio_pci_generic), NUMA, **PCI Device Serial
+   Number**(확장 캡 ID 3; 에뮬레이션 NVMe 처럼 256B 설정공간이면 없음)를 읽고, 파티션·마운트·holder 가 있는 디스크는 "사용 중"으로 분류한다.
+2. `/sys/class/net/*/device/infiniband` 가 있는 RDMA NIC 중 `fabricCIDR` 에 맞는(없으면 IPv4 가 있는 첫) 것을 fabric 으로 고른다.
+3. `vm.nr_hugepages` 가 `spec.nrHugepages` 보다 작으면 올린다(0 이면 건드리지 않음).
+4. `hostPrep.bindNvme: true` 일 때만 "사용 중이 아닌 커널 NVMe" 를 `daos_server nvme prepare <pci-allow-list>` 로 SPDK 에 넘긴다.
+   기본값 false 에서는 탐색·어노테이션만 한다. 어떤 경우에도 format/wipe 는 하지 않는다.
+5. 결과를 Node 어노테이션으로 기록한다.
 
+| 어노테이션 | 값 |
+|---|---|
+| `daos.gluesys.com/fabric-iface` | 선택된 RDMA NIC (`ens2`, `ens2np0`, `ib0`) |
+| `daos.gluesys.com/bdev-list` | SPDK 가 쓸 수 있게 이미 바인딩된 NVMe PCI 주소(콤마) — reconcile 은 이것만 `bdev_list` 에 넣는다 |
+| `daos.gluesys.com/bdev-dsn` | `<pci>=<DSN>` 목록. **두 노드에 같은 DSN 이 보이면 reconcile 이 그 노드들을 제외**(9/3 손상 사고) |
+| `daos.gluesys.com/numa-node` | fabric NIC(없으면 첫 NVMe)의 NUMA |
+| `daos.gluesys.com/nvme-candidates` | 커널 NVMe 중 사용 중 아님 = `bindNvme` 가 가져갈 대상(정보용) |
+| `daos.gluesys.com/nvme-in-use` | 파티션/마운트/holder 가 있어 절대 건드리지 않는 NVMe |
+| `daos.gluesys.com/hostprep-status` | 마지막 실행 JSON(time, hugepages, bound/candidates/inUse 수, fabricAddr, fabricError) |
+| `daos.gluesys.com/control-addr` | (사람이 선택적으로) mgmt_svc_replicas/access_points/hostlist 주소. 기본은 노드 InternalIP |
+
+DaemonSet 이 켜져 있으면 **어노테이션의 정본은 hostprep** 이다(주기마다 덮어쓴다). 손으로 달아 쓰려면 `hostPrep.enabled: false` 로 끄고 아래처럼 단다.
+spec.engines 에 `fabricIface`/`bdevList` 를 적으면 어노테이션보다 항상 우선한다.
 ```bash
 kubectl label node cell1 daos.gluesys.com/role=storage
-kubectl annotate node cell1 daos.gluesys.com/fabric-iface=ens2 \
-  daos.gluesys.com/bdev-list=0000:03:00.0 daos.gluesys.com/bdev-dsn=0000:03:00.0=$(lspci -vvs 03:00.0 | awk '/Device Serial/{print $NF}')
-kubectl apply -f config/samples/daos_v1alpha1_daossystem.yaml
+kubectl annotate node cell1 daos.gluesys.com/fabric-iface=ens2 daos.gluesys.com/bdev-list=0000:03:00.0 \
+  daos.gluesys.com/bdev-dsn=0000:03:00.0=$(lspci -vvs 03:00.0 | awk '/Device Serial/{print $NF}' | tr -d -)
 kubectl get daossys daos-dev -o yaml | yq .status      # conditions, nodeConfigs
-kubectl -n daos-system get cm -l daos.gluesys.com/system=daos-dev
+kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 ```
+
+이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
+`registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
 `.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.

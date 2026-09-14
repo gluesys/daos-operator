@@ -259,3 +259,22 @@ endef
 define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
+
+##@ hostprep
+
+HOSTPREP_BASE ?= registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
+HOSTPREP_IMG ?= registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:$(shell git describe --always --dirty 2>/dev/null || echo dev)
+DOCKER ?= docker
+
+.PHONY: hostprep
+hostprep: ## Build the static hostprep binary into bin/.
+	CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o bin/hostprep ./cmd/hostprep
+
+.PHONY: hostprep-image
+hostprep-image: hostprep ## Build the daos-hostprep image (daos-server base + binary).
+	cp bin/hostprep images/hostprep/hostprep
+	$(DOCKER) build -f images/hostprep/Dockerfile --build-arg BASE=$(HOSTPREP_BASE) -t $(HOSTPREP_IMG) images/hostprep
+
+.PHONY: hostprep-push
+hostprep-push: ## Push the daos-hostprep image.
+	$(DOCKER) push $(HOSTPREP_IMG)

@@ -24,6 +24,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -102,6 +103,16 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	status := daosv1alpha1.DaosSystemStatus{Conditions: sys.Status.Conditions}
 	for _, n := range nodes.Items {
 		status.SelectedNodes = append(status.SelectedNodes, n.Name)
+	}
+	// host preparation runs on whatever matches the selector, so facts arrive even
+	// before there are enough nodes for the management service
+	if len(nodes.Items) > 0 {
+		if err := r.ensureNamespace(ctx, ns); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.ensureHostPrep(ctx, sys, ns); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 	if len(nodes.Items) < msWant {
 		setCond(&status, daosv1alpha1.ConditionNodesSelected, metav1.ConditionFalse, "InsufficientNodes",
@@ -319,6 +330,7 @@ func (r *DaosSystemReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&daosv1alpha1.DaosSystem{}).
 		Owns(&corev1.ConfigMap{}).
+		Owns(&appsv1.DaemonSet{}).
 		Watches(&corev1.Node{}, nodeToSystems,
 			// only label/annotation changes matter here; heartbeat status updates must not fan out
 			// to every DaosSystem
