@@ -50,5 +50,7 @@ const (
 	ConditionNodesSelected  = "NodesSelected"
 	ConditionDriveConflict  = "DriveConflict"
 	ConditionConfigRendered = "ConfigRendered"
-	ConditionReady          = "Ready"
+	// ConditionServersReady is True when every rendered node's server pod is Ready.
+	ConditionServersReady = "ServersReady"
+	ConditionReady        = "Ready"
 )

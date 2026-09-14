@@ -84,6 +84,27 @@ type HostPrepSpec struct {
 	IntervalSeconds int32 `json:"intervalSeconds,omitempty"`
 }
 
+// ServerSpec controls the per-node server workloads (#9). Each rendered node
+// gets its own StatefulSet (replicas=1, pinned with a required nodeAffinity)
+// because a DAOS rank is bound to the node that holds its superblock and NVMe:
+// Kubernetes must never reschedule it elsewhere (ADR-002).
+type ServerSpec struct {
+	// Enabled creates the server StatefulSets. Default true. Set false to render
+	// configuration only (e.g. manual bring-up with exastor/daos-images compose).
+	Enabled *bool `json:"enabled,omitempty"`
+	// DataHostPath is the node directory that holds control_metadata (management
+	// service DB, superblock records). Mounted at /var/daos. Default /var/daos/<system>.
+	DataHostPath string `json:"dataHostPath,omitempty"`
+	// LogHostPath is the node directory for daos_server/engine logs. Default /var/log/daos/<system>.
+	LogHostPath string `json:"logHostPath,omitempty"`
+	// Resources overrides the computed requests/limits of the daos-server container.
+	// By default memory request = sum(scmSizeGiB)+2Gi (tmpfs is charged to the pod),
+	// cpu request = sum(targets+helpers+1) and hugepages-2Mi = nrHugepages*2Mi.
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+	// TerminationGracePeriodSeconds for the engine pod. Default 120.
+	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
+}
+
 // UpgradeSpec implements ADR-003: before DAOS 3.0 only a full-stop upgrade
 // exists and it never runs without an explicit approval.
 type UpgradeSpec struct {
@@ -121,6 +142,7 @@ type DaosSystemSpec struct {
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
 	AllowInsecure bool         `json:"allowInsecure,omitempty"`
 	HostPrep      HostPrepSpec `json:"hostPrep,omitempty"`
+	Server        ServerSpec   `json:"server,omitempty"`
 	Upgrade       UpgradeSpec  `json:"upgrade,omitempty"`
 }
 
@@ -141,6 +163,10 @@ type NodeConfigStatus struct {
 	BdevCount   int32  `json:"bdevCount,omitempty"`
 	Ready       bool   `json:"ready"`
 	Message     string `json:"message,omitempty"`
+	// Workload is the server StatefulSet created for this node (#9).
+	Workload string `json:"workload,omitempty"`
+	// ServerReady mirrors the server pod's Ready condition (control port listening).
+	ServerReady bool `json:"serverReady,omitempty"`
 }
 
 // DaosSystemStatus is read back from the DAOS management service and metrics.

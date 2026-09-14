@@ -19,7 +19,9 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   (fabric NIC, VFIO NVMe 목록, 드라이브 DSN, NUMA) 읽기 → **같은 물리 드라이브(DSN)를 두 노드가 노출하면 그 노드들을 제외하고
   `DriveConflict=True`**(2026-09-03 손상 사고 재발 방지) → 관리 서비스 복제본 노드 선택(이름순 안정) → 노드별 `daos_server.yml`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
-  서버 파드는 아직 만들지 않으므로 `Ready=False (PodsNotManaged)` 로 정직하게 표시한다(#9).
+- **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
+  hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다. format 과 rank 멤버십은 아직 다루지 않으므로
+  `Ready=False (FormatNotManaged)` 로 표시한다(#10).
 설계 결정은 `doc/adr/` (ADR-001 배포 모델, ADR-002 디바이스·네트워크, ADR-003 업그레이드).
 
 ## 노드 사실(facts) 계약과 호스트 준비 DaemonSet (#8)
@@ -59,8 +61,35 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
+
+## 서버 워크로드 (#9)
+렌더에 성공한 노드마다 **StatefulSet 하나(replicas 1)** 를 만든다. 한 시스템에 StatefulSet 하나나 DaemonSet 을 쓰지 않는 이유:
+
+- rank 는 superblock·NVMe 가 있는 노드에 묶여 있어 파드가 옮겨 다니면 안 된다 → `requiredDuringScheduling` nodeAffinity 로
+  `metadata.name` 고정, 데이터는 그 노드의 hostPath(ADR-002). 재스케줄은 없다.
+- 노드별 `daos_server.yml` 이 다르다(fabric_iface, bdev_list) → 워크로드마다 자기 ConfigMap 을 `/etc/daos/daos_server.yml` 로 마운트.
+- StatefulSet 은 같은 superblock 위에 엔진이 둘 뜨는 일을 막고, `updateStrategy: OnDelete` 로 이미지·설정이 바뀌어도 **엔진을 스스로
+  재시작하지 않는다**. 재시작·업그레이드는 ADR-003 절차가 단계별로 한다.
+
+| 항목 | 값 |
+|---|---|
+| 이름 | `<sys>-server-<node>`, 라벨 `daos.gluesys.com/{system,node,role=server}` |
+| 파드 | hostNetwork, `system-node-critical`, privileged, `terminationGracePeriodSeconds` 120(`spec.server.terminationGracePeriodSeconds`) |
+| 리소스 | memory request = Σ`scmSizeGiB` + 2Gi(tmpfs 는 파드에 과금), cpu = Σ(targets+helpers+1), `hugepages-2Mi` = nrHugepages×2Mi(request=limit). `spec.server.resources` 로 전체 대체 |
+| 볼륨 | ConfigMap → `/etc/daos/daos_server.yml`; hostPath `spec.server.dataHostPath`(기본 `/var/daos/<sys>`) → `/var/daos`(control_metadata, MS DB); `logHostPath`(기본 `/var/log/daos/<sys>`) → `/var/log/daos`; `/dev/hugepages`, `/dev`, `/sys`(uio_pci_generic 테스트베드의 `/dev/uio*` 와 daos_server 의 `/sys/bus/pci` 바인딩 때문에 통째로) |
+| 프로브 | readiness = TCP 10001(제어 포트, format 전에도 열림). **liveness 없음**: 느린 엔진을 프로브가 죽이면 안 된다 |
+| 삭제 | 사람이 `spec.server.enabled: false` 로 끄거나 DaosSystem 을 지울 때만. 노드가 selector 에서 빠지거나 facts 를 잃어도 워크로드는 남긴다(rank 제외 절차 #10+ 전까지 자동 정지 금지) |
+
+`.status.nodeConfigs[].workload/serverReady` 와 `ServersReady` condition(`PodsNotReady` 면 파드 상태 요약)으로 본다. 파드 상태는 30초 주기로 다시 읽는다.
+
+```bash
+kubectl -n daos-system get sts,pods -l daos.gluesys.com/system=daos-dev -o wide
+kubectl -n daos-system logs daos-dev-server-<node>-0        # "DAOS Server config loaded from /etc/daos/daos_server.yml"
+```
+kind 같은 RDMA 없는 환경에서는 `scan fabric ... DER_HG_FATAL` 로 종료한다(정상: 설정 마운트까지는 검증됨). `nrHugepages: 0` 과
+`spec.server.resources` 를 작게 주면 스케줄까지는 된다.
 
 ## 관리 표면 (v1 목표)
 | 형태 | 담당 |

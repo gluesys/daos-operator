@@ -189,6 +189,95 @@ spec:
                 description: Provider is the fabric provider. UCX is excluded by default
                   (ADR-002).
                 type: string
+              server:
+                description: |-
+                  ServerSpec controls the per-node server workloads (#9). Each rendered node
+                  gets its own StatefulSet (replicas=1, pinned with a required nodeAffinity)
+                  because a DAOS rank is bound to the node that holds its superblock and NVMe:
+                  Kubernetes must never reschedule it elsewhere (ADR-002).
+                properties:
+                  dataHostPath:
+                    description: |-
+                      DataHostPath is the node directory that holds control_metadata (management
+                      service DB, superblock records). Mounted at /var/daos. Default /var/daos/<system>.
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled creates the server StatefulSets. Default true. Set false to render
+                      configuration only (e.g. manual bring-up with exastor/daos-images compose).
+                    type: boolean
+                  logHostPath:
+                    description: LogHostPath is the node directory for daos_server/engine
+                      logs. Default /var/log/daos/<system>.
+                    type: string
+                  resources:
+                    description: |-
+                      Resources overrides the computed requests/limits of the daos-server container.
+                      By default memory request = sum(scmSizeGiB)+2Gi (tmpfs is charged to the pod),
+                      cpu request = sum(targets+helpers+1) and hugepages-2Mi = nrHugepages*2Mi.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  terminationGracePeriodSeconds:
+                    description: TerminationGracePeriodSeconds for the engine pod.
+                      Default 120.
+                    format: int64
+                    type: integer
+                type: object
               tolerations:
                 items:
                   description: |-
@@ -336,6 +425,14 @@ spec:
                       type: string
                     ready:
                       type: boolean
+                    serverReady:
+                      description: ServerReady mirrors the server pod's Ready condition
+                        (control port listening).
+                      type: boolean
+                    workload:
+                      description: Workload is the server StatefulSet created for
+                        this node (#9).
+                      type: string
                   required:
                   - node
                   - ready

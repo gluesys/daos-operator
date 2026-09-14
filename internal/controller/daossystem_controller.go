@@ -51,8 +51,9 @@ import (
 // Phase 2 step 1 (#7): select nodes, read per-node facts from Node annotations,
 // refuse nodes that share a physical NVMe (dual-port chassis), pick the
 // management-service replicas, and render one daos_server.yml ConfigMap per
-// node plus the agent and control configs. Pods (#9), host preparation (#8) and
-// the format approval gate (#10) build on what this step leaves in status.
+// node plus the agent and control configs. Host preparation (#8) writes the
+// facts, server workloads (#9) run one pinned StatefulSet per rendered node,
+// and the format approval gate (#10) builds on what is left in status.
 //
 // Rules carried from the ADRs: status mirrors what we observe, it is never a
 // second source of truth; nothing here can destroy data.
@@ -170,7 +171,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// 5. per-node server config
 	rendered, allReady := 0, true
-	var hostlist []string
+	var hostlist, serversNotReady []string
 	for _, f := range facts {
 		ncs := daosv1alpha1.NodeConfigStatus{Node: f.Name, ControlAddr: f.ControlAddr}
 		if dsn, bad := conflicted[f.Name]; bad {
@@ -213,6 +214,18 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		ncs.ConfigMap, ncs.Ready = cmName, true
 		rendered++
 		hostlist = append(hostlist, f.ControlAddr)
+		// 5b. pinned server workload for this node (#9)
+		if err := r.ensureServer(ctx, sys, ns, f.Name, cmName, cfg.Engines); err != nil {
+			return ctrl.Result{}, fmt.Errorf("server workload for %s: %w", f.Name, err)
+		}
+		if serverEnabled(sys) {
+			ncs.Workload = serverWorkloadName(sys, f.Name)
+			ready, why := r.serverReady(ctx, sys, ns, f.Name)
+			ncs.ServerReady = ready
+			if !ready {
+				serversNotReady = append(serversNotReady, f.Name+": "+why)
+			}
+		}
 		status.NodeConfigs = append(status.NodeConfigs, ncs)
 	}
 
@@ -232,10 +245,25 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		setCond(&status, daosv1alpha1.ConditionConfigRendered, metav1.ConditionFalse, "Partial",
 			fmt.Sprintf("%d of %d node(s) rendered; see nodeConfigs", rendered, len(facts)))
 	}
-	// Engines are not managed yet (#9): Ready stays False with an explicit reason.
-	setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "PodsNotManaged", "configuration rendered; server pods are not managed by this version")
-	log.Info("rendered", "system", sys.Name, "nodes", len(facts), "configmaps", rendered, "conflicts", len(conflicts))
-	return r.updateStatus(ctx, sys, status, 0)
+	// 7. server workloads
+	requeue := time.Duration(0)
+	switch {
+	case !serverEnabled(sys):
+		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionFalse, "Disabled", "spec.server.enabled=false: configuration only, no server pods")
+	case rendered == 0:
+		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionFalse, "NoWorkloads", "no node rendered yet")
+	case len(serversNotReady) > 0:
+		sort.Strings(serversNotReady)
+		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionFalse, "PodsNotReady", strings.Join(serversNotReady, "; "))
+		requeue = requeueSlow // pod status changes are not watched; poll
+	default:
+		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionTrue, "AllReady", fmt.Sprintf("%d server pod(s) ready", rendered))
+	}
+	// Ready still waits for the format gate and rank membership (#10): the
+	// engines are up, but the system is not usable until storage is formatted.
+	setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "FormatNotManaged", "server workloads managed; format and rank membership are not handled by this version")
+	log.Info("rendered", "system", sys.Name, "nodes", len(facts), "configmaps", rendered, "conflicts", len(conflicts), "serversNotReady", len(serversNotReady))
+	return r.updateStatus(ctx, sys, status, requeue)
 }
 
 func systemName(sys *daosv1alpha1.DaosSystem) string {
@@ -331,6 +359,7 @@ func (r *DaosSystemReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&daosv1alpha1.DaosSystem{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.DaemonSet{}).
+		Owns(&appsv1.StatefulSet{}).
 		Watches(&corev1.Node{}, nodeToSystems,
 			// only label/annotation changes matter here; heartbeat status updates must not fan out
 			// to every DaosSystem

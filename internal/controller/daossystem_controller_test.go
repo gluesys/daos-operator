@@ -26,6 +26,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -74,6 +75,13 @@ var _ = Describe("DaosSystem Controller", func() {
 		}
 		// envtest has no GC: remove ConfigMaps ourselves
 		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-hostprep"}})
+		stss := &appsv1.StatefulSetList{}
+		_ = k8sClient.List(ctx, stss)
+		for i := range stss.Items {
+			if stss.Items[i].Namespace == "daos-test" {
+				_ = k8sClient.Delete(ctx, &stss.Items[i])
+			}
+		}
 		cms := &corev1.ConfigMapList{}
 		_ = k8sClient.List(ctx, cms)
 		for i := range cms.Items {
@@ -133,6 +141,86 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(ds.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "DAOS_HOSTPREP_BIND_NVME", Value: "false"}), "discover-only by default")
 		Expect(ds.OwnerReferences).To(HaveLen(1))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "daos-hostprep"}, &corev1.ServiceAccount{})).To(Succeed())
+	})
+
+	It("creates one pinned server StatefulSet per rendered node (#9)", func() {
+		reconcileOnce()
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2"}, sts)).To(Succeed())
+		Expect(*sts.Spec.Replicas).To(Equal(int32(1)))
+		Expect(sts.Spec.UpdateStrategy.Type).To(Equal(appsv1.OnDeleteStatefulSetStrategyType), "no automatic engine restarts")
+		pod := sts.Spec.Template.Spec
+		Expect(pod.HostNetwork).To(BeTrue())
+		Expect(pod.Affinity.NodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms[0].MatchFields[0].Values).To(Equal([]string{"n2"}))
+		c := pod.Containers[0]
+		Expect(c.Image).To(Equal("s"))
+		Expect(*c.SecurityContext.Privileged).To(BeTrue())
+		Expect(c.Resources.Requests.Memory().String()).To(Equal("34Gi"), "tmpfs 32Gi + 2Gi overhead")
+		Expect(c.Resources.Requests.Cpu().String()).To(Equal("11"), "8 targets + 2 helpers + 1")
+		hp := c.Resources.Limits[corev1.ResourceName("hugepages-2Mi")]
+		Expect(hp.String()).To(Equal("16Gi"), "8192 x 2Mi")
+		Expect(c.LivenessProbe).To(BeNil())
+		Expect(c.ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(10001))
+		var mounts []string
+		for _, m := range c.VolumeMounts {
+			mounts = append(mounts, m.MountPath)
+		}
+		Expect(mounts).To(ContainElements("/etc/daos/daos_server.yml", "/var/daos", "/var/log/daos", "/dev/hugepages", "/dev", "/sys"))
+		for _, v := range pod.Volumes {
+			switch v.Name {
+			case "config":
+				Expect(v.ConfigMap.Name).To(Equal("t1-server-n2"))
+			case "data":
+				Expect(v.HostPath.Path).To(Equal("/var/daos/t1"))
+			}
+		}
+		Expect(sts.OwnerReferences).To(HaveLen(1))
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n3"}, &appsv1.StatefulSet{})
+		Expect(err).To(HaveOccurred(), "no workload for a node without facts")
+
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		sr := meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionServersReady)
+		Expect(sr).NotTo(BeNil())
+		Expect(sr.Status).To(Equal(metav1.ConditionFalse), "envtest runs no StatefulSet controller, so no pods")
+		Expect(sr.Reason).To(Equal("PodsNotReady"))
+		for _, nc := range sys.Status.NodeConfigs {
+			if nc.Node == "n1" {
+				Expect(nc.Workload).To(Equal("t1-server-n1"))
+				Expect(nc.ServerReady).To(BeFalse())
+			}
+		}
+		r := meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionReady)
+		Expect(r.Reason).To(Equal("FormatNotManaged"))
+
+		By("honouring spec.server.resources and host paths")
+		sys.Spec.Server.DataHostPath = "/data/daos"
+		sys.Spec.Server.Resources = &corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("4Gi")}}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2"}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Containers[0].Resources.Requests.Memory().String()).To(Equal("4Gi"))
+		for _, v := range sts.Spec.Template.Spec.Volumes {
+			if v.Name == "data" {
+				Expect(v.HostPath.Path).To(Equal("/data/daos"))
+			}
+		}
+	})
+
+	It("removes server workloads only when spec.server.enabled is set to false", func() {
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})).To(Succeed())
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		f := false
+		sys.Spec.Server.Enabled = &f
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})
+		Expect(err).To(HaveOccurred())
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		Expect(meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionServersReady).Reason).To(Equal("Disabled"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &corev1.ConfigMap{})).To(Succeed(), "config stays")
 	})
 
 	It("removes the DaemonSet when hostPrep is disabled", func() {
