@@ -25,12 +25,14 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -43,6 +45,7 @@ import (
 
 	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
 	"gitlab.gluesys.com/exastor/daos-operator/internal/discovery"
+	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
 	"gitlab.gluesys.com/exastor/daos-operator/internal/render"
 )
 
@@ -60,6 +63,12 @@ import (
 type DaosSystemReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Dmg runs the admin tool as Jobs (#10). nil disables the format/membership step.
+	Dmg dmg.Runner
+	// Recorder emits Events for format decisions; nil is allowed.
+	Recorder record.EventRecorder
+	// DisableProbeHold runs a dmg query on every reconcile (tests only).
+	DisableProbeHold bool
 }
 
 const (
@@ -101,7 +110,11 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if msWant == 0 {
 		msWant = 1
 	}
-	status := daosv1alpha1.DaosSystemStatus{Conditions: sys.Status.Conditions}
+	// carry what dmg told us last time; the format step (#10) overwrites it when it learns more
+	status := daosv1alpha1.DaosSystemStatus{Conditions: sys.Status.Conditions,
+		Formatted: sys.Status.Formatted, PendingFormat: sys.Status.PendingFormat, FormatTime: sys.Status.FormatTime,
+		LastQueryTime: sys.Status.LastQueryTime, Ranks: sys.Status.Ranks, RanksJoined: sys.Status.RanksJoined,
+		RanksTotal: sys.Status.RanksTotal, ObservedVersion: sys.Status.ObservedVersion}
 	for _, n := range nodes.Items {
 		status.SelectedNodes = append(status.SelectedNodes, n.Name)
 	}
@@ -259,10 +272,35 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	default:
 		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionTrue, "AllReady", fmt.Sprintf("%d server pod(s) ready", rendered))
 	}
-	// Ready still waits for the format gate and rank membership (#10): the
-	// engines are up, but the system is not usable until storage is formatted.
-	setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "FormatNotManaged", "server workloads managed; format and rank membership are not handled by this version")
-	log.Info("rendered", "system", sys.Name, "nodes", len(facts), "configmaps", rendered, "conflicts", len(conflicts), "serversNotReady", len(serversNotReady))
+	// 8. format gate and membership (#10)
+	nodeByAddr := map[string]string{}
+	for _, f := range facts {
+		nodeByAddr[f.ControlAddr] = f.Name
+	}
+	serversAllReady := serverEnabled(sys) && rendered > 0 && len(serversNotReady) == 0
+	fmtRequeue, err := r.reconcileFormat(ctx, sys, formatInput{ns: ns, nodeByAddr: nodeByAddr, rendered: rendered, serversAllReady: serversAllReady}, &status)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	requeue = minRequeue(requeue, fmtRequeue)
+
+	// 9. Ready = every rendered server up, formatted, all ranks joined
+	switch {
+	case !serverEnabled(sys):
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "ServersDisabled", "spec.server.enabled=false")
+	case !serversAllReady:
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "ServersNotReady", "not every server pod is ready")
+	case status.PendingFormat && !status.Formatted:
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "AwaitingFormat", "storage is not formatted; see condition Formatted")
+	case !status.Formatted:
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "FormatUnknown", "management service state unknown; see condition Formatted")
+	case status.RanksTotal == 0 || status.RanksJoined < status.RanksTotal:
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "RanksNotJoined", fmt.Sprintf("%d/%d ranks joined", status.RanksJoined, status.RanksTotal))
+	default:
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionTrue, "Ready", fmt.Sprintf("%d ranks joined", status.RanksJoined))
+	}
+	log.Info("rendered", "system", sys.Name, "nodes", len(facts), "configmaps", rendered, "conflicts", len(conflicts),
+		"serversNotReady", len(serversNotReady), "formatted", status.Formatted, "pendingFormat", status.PendingFormat, "ranks", status.RanksJoined)
 	return r.updateStatus(ctx, sys, status, requeue)
 }
 
@@ -270,6 +308,18 @@ func systemName(sys *daosv1alpha1.DaosSystem) string {
 	// DAOS 2.8 does not support changing the system name from the default yet
 	// (packaged daos_server.yml: "It must not be changed from the default").
 	return "daos_server"
+}
+
+func minRequeue(a, b time.Duration) time.Duration {
+	switch {
+	case a == 0:
+		return b
+	case b == 0:
+		return a
+	case a < b:
+		return a
+	}
+	return b
 }
 
 func uniq(in []string) []string {
@@ -290,9 +340,6 @@ func setCond(st *daosv1alpha1.DaosSystemStatus, t string, v metav1.ConditionStat
 }
 
 func (r *DaosSystemReconciler) updateStatus(ctx context.Context, sys *daosv1alpha1.DaosSystem, st daosv1alpha1.DaosSystemStatus, requeue time.Duration) (ctrl.Result, error) {
-	// keep fields this step does not own
-	st.Formatted, st.PendingFormat, st.ObservedVersion = sys.Status.Formatted, sys.Status.PendingFormat, sys.Status.ObservedVersion
-	st.Ranks, st.RanksJoined, st.RanksTotal = sys.Status.Ranks, sys.Status.RanksJoined, sys.Status.RanksTotal
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &daosv1alpha1.DaosSystem{}
 		if err := r.Get(ctx, types.NamespacedName{Name: sys.Name}, latest); err != nil {
@@ -360,6 +407,7 @@ func (r *DaosSystemReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.ConfigMap{}).
 		Owns(&appsv1.DaemonSet{}).
 		Owns(&appsv1.StatefulSet{}).
+		Owns(&batchv1.Job{}).
 		Watches(&corev1.Node{}, nodeToSystems,
 			// only label/annotation changes matter here; heartbeat status updates must not fan out
 			// to every DaosSystem

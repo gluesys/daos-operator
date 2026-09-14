@@ -39,6 +39,13 @@ const (
 	// points / hostlist. Default is the node's InternalIP.
 	AnnotationControlAddr = "daos.gluesys.com/control-addr"
 
+	// AnnotationFormatApproved on a DaosSystem lets the operator run `dmg storage
+	// format` exactly once. Formatting destroys whatever is on the drives, so it is
+	// never automated: a human sets the value "true" (kubectl daos system format
+	// will do this) after status.pendingFormat is reported; the operator removes
+	// the annotation when the format Job finished, success or not.
+	AnnotationFormatApproved = "daos.gluesys.com/format-approved"
+
 	// LabelSystem and LabelNode are put on every object the operator creates.
 	LabelSystem = "daos.gluesys.com/system"
 	LabelNode   = "daos.gluesys.com/node"
@@ -52,5 +59,9 @@ const (
 	ConditionConfigRendered = "ConfigRendered"
 	// ConditionServersReady is True when every rendered node's server pod is Ready.
 	ConditionServersReady = "ServersReady"
-	ConditionReady        = "Ready"
+	// ConditionFormatted mirrors what `dmg system query` says about the management
+	// service: True once formatted, False (AwaitingApproval/Formatting/FormatFailed)
+	// before, Unknown when no replica answered.
+	ConditionFormatted = "Formatted"
+	ConditionReady     = "Ready"
 )

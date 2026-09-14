@@ -32,6 +32,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
 )
 
 func mkNode(ctx context.Context, name, ip string, ann map[string]string) {
@@ -95,6 +96,39 @@ var _ = Describe("DaosSystem Controller", func() {
 		r := &DaosSystemReconciler{Client: k8sClient, Scheme: k8sClient.Scheme()}
 		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
 		Expect(err).NotTo(HaveOccurred())
+	}
+	reconcileWith := func(f *fakeDmg) reconcile.Result {
+		r := &DaosSystemReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		return res
+	}
+	getSys := func() *daosv1alpha1.DaosSystem {
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		return sys
+	}
+	cond := func(sys *daosv1alpha1.DaosSystem, t string) *metav1.Condition {
+		c := meta.FindStatusCondition(sys.Status.Conditions, t)
+		Expect(c).NotTo(BeNil(), t)
+		return c
+	}
+	// envtest runs no StatefulSet controller: fake the pods being Ready
+	markServersReady := func(nodes ...string) {
+		for _, n := range nodes {
+			sts := &appsv1.StatefulSet{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-" + n}, sts)).To(Succeed())
+			sts.Status.Replicas, sts.Status.ReadyReplicas = 1, 1
+			Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		}
+	}
+	approve := func() {
+		sys := getSys()
+		if sys.Annotations == nil {
+			sys.Annotations = map[string]string{}
+		}
+		sys.Annotations[daosv1alpha1.AnnotationFormatApproved] = "true"
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 	}
 
 	It("renders one server ConfigMap per node with facts and reports the node without facts", func() {
@@ -191,7 +225,8 @@ var _ = Describe("DaosSystem Controller", func() {
 			}
 		}
 		r := meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionReady)
-		Expect(r.Reason).To(Equal("FormatNotManaged"))
+		Expect(r.Reason).To(Equal("ServersNotReady"))
+		Expect(meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionFormatted).Reason).To(Equal("NoRunner"), "no Dmg runner in this test")
 
 		By("honouring spec.server.resources and host paths")
 		sys.Spec.Server.DataHostPath = "/data/daos"
@@ -205,6 +240,118 @@ var _ = Describe("DaosSystem Controller", func() {
 				Expect(v.HostPath.Path).To(Equal("/data/daos"))
 			}
 		}
+	})
+
+	It("never formats by itself: reports pendingFormat, formats once after approval, then mirrors membership (#10)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		By("probe still running: nothing decided yet")
+		res := reconcileWith(f)
+		Expect(res.RequeueAfter).To(Equal(requeueProbe))
+		Expect(f.count("system query -v")).To(Equal(1))
+		Expect(cond(getSys(), daosv1alpha1.ConditionFormatted).Reason).To(Equal("Probing"))
+
+		By("dmg says uninitialized -> pendingFormat, no format call")
+		f.set("system query -v", &dmg.Result{Done: true, ExitCode: 1, Output: "some log line\n" + dmgUninitialized})
+		reconcileWith(f)
+		sys := getSys()
+		Expect(sys.Status.PendingFormat).To(BeTrue())
+		Expect(sys.Status.Formatted).To(BeFalse())
+		c := cond(sys, daosv1alpha1.ConditionFormatted)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("AwaitingApproval"))
+		Expect(c.Message).To(ContainSubstring("kubectl annotate daossystem t1 " + daosv1alpha1.AnnotationFormatApproved + "=true"))
+		Expect(f.count("storage format")).To(BeZero())
+		// n3 has no facts -> ServersNotReady wins over AwaitingFormat? no: n3 is not rendered, so servers=all rendered
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Reason).To(Equal("ServersNotReady"), "pods not Ready in envtest")
+
+		By("approval with servers not ready is refused")
+		approve()
+		reconcileWith(f)
+		Expect(f.count("storage format")).To(BeZero())
+		Expect(cond(getSys(), daosv1alpha1.ConditionFormatted).Reason).To(Equal("AwaitingServers"))
+
+		By("approval with all servers ready runs dmg storage format exactly once")
+		markServersReady("n1", "n2")
+		f.set("storage format", &dmg.Result{Done: true, ExitCode: 0, Output: dmgFormatOK})
+		reconcileWith(f)
+		Expect(f.count("storage format")).To(Equal(1))
+		sys = getSys()
+		Expect(sys.Status.Formatted).To(BeTrue())
+		Expect(sys.Status.PendingFormat).To(BeFalse())
+		Expect(sys.Status.FormatTime).NotTo(BeNil())
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved), "one-shot approval is consumed")
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Status).To(Equal(metav1.ConditionTrue))
+		spec := f.specs[len(f.specs)-1]
+		Expect(spec.Name).To(Equal("t1-dmg-format"))
+		Expect(spec.Image).To(Equal("d"))
+		Expect(spec.ControlConfigMap).To(Equal("t1-control"))
+
+		By("membership is copied from dmg system query")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		res = reconcileWith(f)
+		Expect(f.count("storage format")).To(Equal(1), "no second format")
+		sys = getSys()
+		Expect(sys.Status.RanksTotal).To(Equal(int32(2)))
+		Expect(sys.Status.RanksJoined).To(Equal(int32(2)))
+		Expect(sys.Status.Ranks).To(Equal([]daosv1alpha1.RankStatus{{Rank: 0, Node: "n1", State: "joined"}, {Rank: 1, Node: "n2", State: "joined"}}))
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+		Expect(res.RequeueAfter).To(Equal(requeueMembership))
+
+		By("a rank in awaitformat (expansion) re-opens the gate; a stale approval is dropped when nothing is pending")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembersAwait})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.PendingFormat).To(BeTrue())
+		Expect(sys.Status.RanksJoined).To(Equal(int32(1)))
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Reason).To(Equal("RanksNotJoined"))
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		approve()
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved))
+		Expect(f.count("storage format")).To(Equal(1))
+
+		By("an unreachable management service leaves the last known state and says Unknown")
+		f.set("system query -v", &dmg.Result{Done: true, ExitCode: 1, Output: dmgUnreachable})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Formatted).To(BeTrue())
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Status).To(Equal(metav1.ConditionUnknown))
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).To(Equal("ManagementUnreachable"))
+	})
+
+	It("holds the query cadence so a finished Job does not immediately spawn the next one", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, ExitCode: 1, Output: dmgUninitialized}}}
+		r := &DaosSystemReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f}
+		clearProbeHold(sysName)
+		defer clearProbeHold(sysName)
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: nn})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count("system query -v")).To(Equal(1), "second reconcile within the hold must not run dmg")
+		Expect(res.RequeueAfter).To(BeNumerically(">", 0))
+		Expect(res.RequeueAfter).To(BeNumerically("<=", requeueSlow))
+		clearProbeHold(sysName)
+	})
+
+	It("reports a failed format, consumes the approval and stays pending", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, ExitCode: 1, Output: dmgUninitialized}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		approve()
+		f.set("storage format", &dmg.Result{Done: true, ExitCode: 1, Output: dmgFormatHostErr})
+		reconcileWith(f)
+		sys := getSys()
+		Expect(sys.Status.Formatted).To(BeFalse())
+		Expect(sys.Status.PendingFormat).To(BeTrue())
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved))
+		c := cond(sys, daosv1alpha1.ConditionFormatted)
+		Expect(c.Reason).To(Equal("FormatFailed"))
+		Expect(c.Message).To(ContainSubstring("10.0.0.2: storage format failed"))
+		By("a second reconcile does not format again without a new approval")
+		reconcileWith(f)
+		Expect(f.count("storage format")).To(Equal(1))
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

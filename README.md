@@ -20,8 +20,10 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   `DriveConflict=True`**(2026-09-03 손상 사고 재발 방지) → 관리 서비스 복제본 노드 선택(이름순 안정) → 노드별 `daos_server.yml`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
-  hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다. format 과 rank 멤버십은 아직 다루지 않으므로
-  `Ready=False (FormatNotManaged)` 로 표시한다(#10).
+  hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #10 (2026-09-14): format 승인 게이트와 멤버십.** `dmg -j system query` 를 daos-admin Job 으로 돌려 미포맷이면
+  `status.pendingFormat=true` 로 보고만 하고, 사람이 `daos.gluesys.com/format-approved=true` 어노테이션을 달아야 `dmg storage format`
+  을 **1회** 실행한다. rank 목록·joined 수는 dmg 출력을 그대로 복사한다. `Ready=True` 는 서버 전부 Ready + 포맷 + 전 rank joined.
 설계 결정은 `doc/adr/` (ADR-001 배포 모델, ADR-002 디바이스·네트워크, ADR-003 업그레이드).
 
 ## 노드 사실(facts) 계약과 호스트 준비 DaemonSet (#8)
@@ -61,7 +63,7 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
 
 ## 서버 워크로드 (#9)
@@ -90,6 +92,36 @@ kubectl -n daos-system logs daos-dev-server-<node>-0        # "DAOS Server confi
 ```
 kind 같은 RDMA 없는 환경에서는 `scan fabric ... DER_HG_FATAL` 로 종료한다(정상: 설정 마운트까지는 검증됨). `nrHugepages: 0` 과
 `spec.server.resources` 를 작게 주면 스케줄까지는 된다.
+
+## format 승인 게이트와 멤버십 (#10)
+포맷은 드라이브를 지운다. operator 는 **포맷 여부를 스스로 결정하지 않는다.**
+
+1. 서버 워크로드가 있으면 `spec.images.admin` 이미지로 `<sys>-dmg-query` Job(`dmg -j system query -v`, `<sys>-control` ConfigMap 마운트,
+   hostNetwork, 스토리지 노드 selector/toleration)을 돌리고 파드 로그의 JSON 을 읽는다. 끝난 Job 은 지우고 다음 주기(미포맷/불명 30초,
+   정상 60초)에 다시 돈다.
+2. dmg 가 `system is uninitialized (storage format required?)`(또는 `raft service unavailable`) 을 돌려주면 `status.pendingFormat=true`,
+   `Formatted=False (AwaitingApproval)` 로 **보고만 한다.**
+3. 사람이 승인한다: `kubectl annotate daossystem <sys> daos.gluesys.com/format-approved=true` (나중의 `kubectl daos system format` 이 이걸 붙인다).
+4. 승인이 있고 `pendingFormat` 이 관측됐고 **렌더된 노드의 서버 파드가 전부 Ready** 일 때만 `<sys>-dmg-format` Job(`dmg -j storage format`)을
+   1회 실행한다. 일부 노드가 빠진 채 포맷하면 그 rank 가 영영 빠지므로 `AwaitingServers` 로 거부한다.
+5. Job 이 끝나면 성공·실패와 무관하게 어노테이션을 지운다(one-shot). 성공이면 `status.formatted=true`, `formatTime`, Event `Formatted`;
+   실패면 `Formatted=False (FormatFailed)` + host_errors 메시지 + Event `FormatFailed`, 다시 승인해야 재시도.
+6. 포맷된 뒤에는 `system query` 결과를 `status.ranks[]{rank,node,state}`, `ranksJoined/ranksTotal`, `lastQueryTime` 으로 복사한다.
+   `awaitformat` 상태 rank(노드 증설)가 보이면 `pendingFormat` 이 다시 켜져 같은 게이트를 거친다. 포맷된 시스템에 남은 승인 어노테이션은
+   지우고 Event `ApprovalIgnored` 를 남긴다.
+7. MS 에 닿지 못하면(`unable to contact the DAOS Management Service`, connection refused) `Formatted=Unknown (ManagementUnreachable)` 로
+   마지막 상태를 유지한다. `--force`/`--reformat` 은 어떤 경로에도 없다.
+
+`Ready` 사유: `ServersDisabled` → `ServersNotReady` → `AwaitingFormat` → `FormatUnknown` → `RanksNotJoined` → `Ready`.
+
+```bash
+kubectl get daossys                                   # FORMATTED / PENDINGFORMAT / READY 열
+kubectl get daossys <sys> -o jsonpath='{.status.conditions[?(@.type=="Formatted")].message}{"\n"}'
+kubectl annotate daossystem <sys> daos.gluesys.com/format-approved=true     # 사람만
+kubectl -n daos-system get jobs,pods -l app.kubernetes.io/name=daos-dmg
+kubectl get events --field-selector involvedObject.kind=DaosSystem
+```
+TLS 인증서(`allowInsecure: false`)의 admin 인증서 Secret 마운트는 아직 없다(Phase 0 은 insecure).
 
 ## 관리 표면 (v1 목표)
 | 형태 | 담당 |

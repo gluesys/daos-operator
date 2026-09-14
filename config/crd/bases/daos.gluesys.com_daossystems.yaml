@@ -26,6 +26,12 @@ spec:
     - jsonPath: .status.formatted
       name: Formatted
       type: boolean
+    - jsonPath: .status.pendingFormat
+      name: PendingFormat
+      type: boolean
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -397,8 +403,18 @@ spec:
                   - type
                   type: object
                 type: array
+              formatTime:
+                description: FormatTime is when the operator's format Job completed
+                  successfully.
+                format: date-time
+                type: string
               formatted:
                 type: boolean
+              lastQueryTime:
+                description: LastQueryTime is when `dmg system query` last answered
+                  (ranks are as of then).
+                format: date-time
+                type: string
               msReplicaNodes:
                 description: MsReplicaNodes are the nodes chosen to host management-service
                   replicas.

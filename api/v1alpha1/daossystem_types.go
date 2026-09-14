@@ -185,6 +185,10 @@ type DaosSystemStatus struct {
 	// PendingFormat is set when storage is unformatted; a human must create the
 	// approval (kubectl daos system format) -- never automated.
 	PendingFormat bool `json:"pendingFormat,omitempty"`
+	// FormatTime is when the operator's format Job completed successfully.
+	FormatTime *metav1.Time `json:"formatTime,omitempty"`
+	// LastQueryTime is when `dmg system query` last answered (ranks are as of then).
+	LastQueryTime *metav1.Time `json:"lastQueryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -193,6 +197,8 @@ type DaosSystemStatus struct {
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.spec.version`
 // +kubebuilder:printcolumn:name="Ranks",type=string,JSONPath=`.status.ranksJoined`
 // +kubebuilder:printcolumn:name="Formatted",type=boolean,JSONPath=`.status.formatted`
+// +kubebuilder:printcolumn:name="PendingFormat",type=boolean,JSONPath=`.status.pendingFormat`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // DaosSystem is a DAOS storage system (one `daos_server` system, N ranks).
