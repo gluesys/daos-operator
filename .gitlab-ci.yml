@@ -42,7 +42,10 @@ license-headers:
 # need envtest run in Phase 2 on a runner with setup-envtest).
 go-build:
   stage: check
-  image: golang:1.24
+  image: golang:1.26
+  variables:
+    GOTOOLCHAIN: auto   # go.mod pins go 1.26.0; let go fetch the exact toolchain if the image lags
+    GOFLAGS: -buildvcs=false
   script:
     - go build ./...
     - go vet ./...
