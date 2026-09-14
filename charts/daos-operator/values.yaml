@@ -77,7 +77,33 @@ system:
       enabled: true
       bindNvme: false
 
-# exastor/daos-csi is not released yet (design only). When it is, this flag
-# will pull it in as a subchart; today it only prints a note.
+# exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a
+# daos_agent sidecar). One driver per DaosSystem: csi.system names the system
+# whose <system>-agent ConfigMap (and <system>-certs when tls) the node plugin uses.
 csi:
   enabled: false
+  system: ""              # defaults to system.name
+  driverName: daos.csi.gluesys.com
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: ""               # defaults to .Chart.appVersion
+    pullPolicy: IfNotPresent
+  agentImage: ""          # defaults to system.spec.images.agent
+  tls: false              # mount <system>-certs (agent set for the sidecar, admin set for the daos client)
+  sidecars:
+    provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
+    registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+  kubeletDir: /var/lib/kubelet
+  nodeSelector: {}        # nodes that may mount DAOS PVs (default: all)
+  tolerations:
+    - operator: Exists
+  controllerResources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+  nodeResources:
+    requests: {cpu: 50m, memory: 128Mi}
+  # StorageClasses to create, one per DaosPool
+  storageClasses: []
+  #  - name: daos-kv
+  #    reclaimPolicy: Delete
+  #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}

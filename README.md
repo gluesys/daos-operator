@@ -27,7 +27,7 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   server/agent/admin 인증서를 Secret `<sys>-certs` 로 1회 생성하고 서버·agent 사이드카·dmg/daos Job 에 필요한 부분만 마운트한다.
 - **Phase 2 #14 (2026-09-15): Helm 차트 `charts/daos-operator`.** CRD + operator Deployment/RBAC + hostprep ClusterRole + (옵션) Grafana 대시보드
   ConfigMap + (옵션) DaosSystem 한 개를 한 번에 설치. `make helm-sync` 가 생성 산출물(CRD, ClusterRole 규칙, JSON)을 차트로 복사하고 CI 가 drift 를 잡는다.
-  CSI 는 exastor/daos-csi 가 설계 단계라 `csi.enabled` 는 안내만 한다.
+  `csi.enabled: true` 면 exastor/daos-csi 드라이버(controller + node DaemonSet + StorageClass)까지 같은 릴리스로 설치한다(2026-09-15).
 - **Phase 2 #13 (2026-09-15): 전체 중단 업그레이드(ADR-003).** 서버 파드 이미지 ≠ `spec.images.server` 이면 `Upgrading=False (Pending)` 로 멈추고,
   `spec.upgrade.approved: true` 뒤에만 `dmg system stop` → 파드 교체 → Ready 대기 → `dmg system start` → 전 rank joined 검증. 승인은 1회용.
 - **Phase 2 #12 (2026-09-15): 텔레메트리.** `telemetry_port`(기본 9191) 렌더 + 헤드리스 `<sys>-metrics` Service + prometheus-operator CRD 가 있으면
@@ -255,7 +255,10 @@ kubectl get daossys daos -w
   `helm.sh/resource-policy: keep` 이라 uninstall 이 엔진을 멈추지 않는다).
 - operator 가 만드는 것(차트 밖): hostprep DaemonSet, 서버 StatefulSet, 메트릭 Service/ServiceMonitor, dmg/daos Job.
 - `hostprep.defaultImage` → env `DAOS_HOSTPREP_DEFAULT_IMAGE`(spec.images.hostPrep 이 비었을 때의 기본 이미지).
-- `csi.enabled` 는 exastor/daos-csi 릴리스 전까지 안내만 출력한다. 이슈 #14 의 "helm install 후 15분 내 PV 마운트" 는 CSI 가 있어야 닫힌다.
+- `csi.enabled: true`: exastor/daos-csi 의 CSIDriver·RBAC·controller Deployment(csi-provisioner)·node DaemonSet(registrar + `daos_agent` 사이드카,
+  `csi.system` 의 `<sys>-agent` ConfigMap, `csi.tls` 면 `<sys>-certs`)·`csi.storageClasses[]` 를 설치한다(`templates/csi.yaml`, daos-csi `deploy/` 와 동일 내용).
+  kind 검증(2026-09-15): operator + CSI 를 한 릴리스로 설치 → CSINode 에 드라이버 등록 → PVC 생성 시 CSI 가 `DaosContainer` CR 을 StorageClass 파라미터로
+  만들고 operator 가 Ready 로 올릴 때까지 `Unavailable` 재시도(kind 엔 DAOS 가 없어 여기까지). 실 노드에서 PV 마운트까지가 Phase 2 종료 기준.
 - CI: `go-build` 잡이 `make helm-sync && git diff --exit-code -- charts/` 로 drift 를 막고, `helm` 잡(alpine/helm)이 lint + 전체 옵션 렌더를 한다.
 - kind 검증(2026-09-15): `daos-operator:dev` 이미지로 `helm install` → Deployment Ready → 클러스터 내부 RBAC 으로 daos-dev 시스템 reconcile(DaemonSet·StatefulSet·Service·ServiceMonitor·Job 생성, forbidden 없음) → `helm uninstall`.
 

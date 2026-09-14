@@ -23,8 +23,13 @@ No DaosSystem was created (system.create=false). Label your storage nodes and cr
 {{- end }}
 {{- if .Values.csi.enabled }}
 
-csi.enabled=true has no effect yet: exastor/daos-csi is design-only. This chart will pull it
-in as a subchart when it is released.
+CSI driver {{ .Values.csi.driverName }} installed for DaosSystem "{{ .Values.csi.system | default .Values.system.name }}":
+
+  kubectl -n {{ .Release.Namespace }} get deploy daos-csi-controller ds daos-csi-node
+  kubectl get csinode -o custom-columns=NODE:.metadata.name,DRIVERS:.spec.drivers[*].name
+{{- if not .Values.csi.storageClasses }}
+Create a StorageClass per DaosPool (see charts values csi.storageClasses or daos-csi deploy/storageclass.yaml).
+{{- end }}
 {{- end }}
 {{- if not .Values.grafana.dashboard.enabled }}
 

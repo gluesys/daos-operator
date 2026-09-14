@@ -1,0 +1,241 @@
+{{- if .Values.csi.enabled }}
+{{- $sys := .Values.csi.system | default .Values.system.name }}
+{{- $ns := .Release.Namespace }}
+{{- $img := printf "%s:%s" .Values.csi.image.repository (default .Chart.AppVersion .Values.csi.image.tag) }}
+# exastor/daos-csi (deploy/ mirrored as templates). One CSI deployment per DaosSystem:
+# the node DaemonSet's daos_agent sidecar reads <system>-agent, so csi.system must
+# name the DaosSystem whose containers this driver mounts.
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: {{ .Values.csi.driverName }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+spec:
+  attachRequired: false
+  podInfoOnMount: false
+  fsGroupPolicy: None
+  volumeLifecycleModes: [Persistent]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: daos-csi-controller
+  namespace: {{ $ns }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: daos-csi-node
+  namespace: {{ $ns }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: daos-csi-controller
+rules:
+  - apiGroups: [""]
+    resources: [persistentvolumes]
+    verbs: [get, list, watch, create, delete, patch]
+  - apiGroups: [""]
+    resources: [persistentvolumeclaims]
+    verbs: [get, list, watch, update]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses, csinodes]
+    verbs: [get, list, watch]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [list, watch, create, update, patch]
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, watch, list, delete, update, create]
+  - apiGroups: [daos.gluesys.com]
+    resources: [daoscontainers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [daos.gluesys.com]
+    resources: [daospools]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: daos-csi-controller
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: daos-csi-controller}
+subjects:
+  - {kind: ServiceAccount, name: daos-csi-controller, namespace: {{ $ns }}}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: daos-csi-node
+rules:
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: daos-csi-node
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: daos-csi-node}
+subjects:
+  - {kind: ServiceAccount, name: daos-csi-node, namespace: {{ $ns }}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: daos-csi-controller
+  namespace: {{ $ns }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: controller}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: controller}
+    spec:
+      serviceAccountName: daos-csi-controller
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: csi-provisioner
+          image: {{ .Values.csi.sidecars.provisioner }}
+          args: ["--csi-address=/csi/csi.sock", "--leader-election", "--leader-election-namespace=$(NAMESPACE)", "--extra-create-metadata", "--timeout=60s", "--retry-interval-start=2s", "--v=2"]
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        - name: daos-csi
+          image: {{ $img }}
+          imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
+          args: ["--mode=controller", "--endpoint=unix:///csi/csi.sock", "--namespace=$(NAMESPACE)", "--driver-name={{ .Values.csi.driverName }}", "--v=2"]
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          volumeMounts: [{name: socket, mountPath: /csi}]
+          resources:
+            {{- toYaml .Values.csi.controllerResources | nindent 12 }}
+      volumes:
+        - {name: socket, emptyDir: {}}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: daos-csi-node
+  namespace: {{ $ns }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+    app.kubernetes.io/component: csi-node
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: node}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: node}
+    spec:
+      serviceAccountName: daos-csi-node
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      shareProcessNamespace: true
+      priorityClassName: system-node-critical
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.csi.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      tolerations:
+        {{- toYaml .Values.csi.tolerations | nindent 8 }}
+      initContainers:
+        - name: agent
+          image: {{ .Values.csi.agentImage | default .Values.system.spec.images.agent }}
+          restartPolicy: Always
+          volumeMounts:
+            - {name: agentcfg, mountPath: /etc/daos/daos_agent.yml, subPath: daos_agent.yml, readOnly: true}
+            - {name: agentsock, mountPath: /var/run/daos_agent}
+            {{- if .Values.csi.tls }}
+            - {name: certs-agent, mountPath: /etc/daos/certs, readOnly: true}
+            {{- end }}
+      containers:
+        - name: registrar
+          image: {{ .Values.csi.sidecars.registrar }}
+          args: ["--csi-address=/csi/csi.sock", "--kubelet-registration-path={{ .Values.csi.kubeletDir }}/plugins/{{ .Values.csi.driverName }}/csi.sock", "--v=2"]
+          volumeMounts:
+            - {name: socket, mountPath: /csi}
+            - {name: registration, mountPath: /registration}
+        - name: daos-csi
+          image: {{ $img }}
+          imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
+          args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--driver-name={{ .Values.csi.driverName }}", "--v=2"]
+          env:
+            - name: NODE_ID
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
+          securityContext: {privileged: true}
+          volumeMounts:
+            - {name: socket, mountPath: /csi}
+            - {name: agentsock, mountPath: /var/run/daos_agent}
+            - {name: kubelet, mountPath: {{ .Values.csi.kubeletDir }}, mountPropagation: Bidirectional}
+            - {name: staging, mountPath: /var/lib/daos-csi, mountPropagation: Bidirectional}
+            - {name: dev, mountPath: /dev}
+            {{- if .Values.csi.tls }}
+            - {name: certs-admin, mountPath: /etc/daos/certs, readOnly: true}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.csi.nodeResources | nindent 12 }}
+      volumes:
+        - {name: socket, hostPath: {path: {{ .Values.csi.kubeletDir }}/plugins/{{ .Values.csi.driverName }}, type: DirectoryOrCreate}}
+        - {name: registration, hostPath: {path: {{ .Values.csi.kubeletDir }}/plugins_registry, type: Directory}}
+        - {name: kubelet, hostPath: {path: {{ .Values.csi.kubeletDir }}, type: Directory}}
+        - {name: staging, hostPath: {path: /var/lib/daos-csi, type: DirectoryOrCreate}}
+        - {name: dev, hostPath: {path: /dev, type: Directory}}
+        - {name: agentsock, emptyDir: {}}
+        - name: agentcfg
+          configMap: {name: {{ $sys }}-agent}
+        {{- if .Values.csi.tls }}
+        - name: certs-agent
+          secret:
+            secretName: {{ $sys }}-certs
+            defaultMode: 0444
+            items:
+              - {key: daosCA.crt, path: daosCA.crt}
+              - {key: agent.crt, path: agent.crt}
+              - {key: agent.key, path: agent.key, mode: 0400}
+        - name: certs-admin
+          secret:
+            secretName: {{ $sys }}-certs
+            defaultMode: 0444
+            items:
+              - {key: daosCA.crt, path: daosCA.crt}
+              - {key: admin.crt, path: admin.crt}
+              - {key: admin.key, path: admin.key, mode: 0400}
+        {{- end }}
+{{- range .Values.csi.storageClasses }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+provisioner: {{ $.Values.csi.driverName }}
+reclaimPolicy: {{ .reclaimPolicy | default "Delete" }}
+volumeBindingMode: Immediate
+allowVolumeExpansion: false
+parameters:
+  {{- toYaml .parameters | nindent 2 }}
+{{- end }}
+{{- end }}
