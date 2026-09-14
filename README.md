@@ -21,6 +21,8 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #17 (2026-09-15): `kubectl daos` 플러그인.** 사람이 내려야 하는 결정(format·업그레이드·pool/cont 파괴)을 무엇이 지워지는지 보여주고
+  확인을 받은 뒤 승인 어노테이션/필드로 쓴다. `system status` 는 조건·rank·대기 중인 결정을 요약한다.
 - **Phase 2 #16 (2026-09-15): TLS 인증서.** `allowInsecure: false` 면 operator 가 upstream `gen_certificates.sh` 와 같은 CA(RSA 3072, SHA-512)와
   server/agent/admin 인증서를 Secret `<sys>-certs` 로 1회 생성하고 서버·agent 사이드카·dmg/daos Job 에 필요한 부분만 마운트한다.
 - **Phase 2 #14 (2026-09-15): Helm 차트 `charts/daos-operator`.** CRD + operator Deployment/RBAC + hostprep ClusterRole + (옵션) Grafana 대시보드
@@ -197,6 +199,19 @@ kubectl patch daossys daos-dev --type merge -p '{"spec":{"images":{"server":"...
 kubectl patch daossys daos-dev --type merge -p '{"spec":{"upgrade":{"approved":true}}}'   # 드레인 뒤, 사람만
 kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 ```
+
+## `kubectl daos` 플러그인 (#17)
+`make kubectl-daos` 로 `bin/kubectl-daos` 를 만들어 PATH 에 두면 `kubectl daos ...` 로 부른다. 선언형 CR 이 못 하는 "사람의 결정" 만 다룬다.
+
+| 명령 | 하는 일 |
+|---|---|
+| `kubectl daos system status <sys>` | 조건 9종, 노드별 렌더/서버 상태, rank, **DECISION PENDING**(format 대기·업그레이드 Pending) 요약 |
+| `kubectl daos system format <sys>` | `status.pendingFormat` 일 때만. 지워질 노드·디바이스 수를 보여주고 `yes` 입력 후 `daos.gluesys.com/format-approved=true` |
+| `kubectl daos system upgrade <sys> [--image I] [--version V]` | 새 서버 이미지/버전을 적고 전체 중단 업그레이드 승인(`spec.upgrade.approved=true`). 클라이언트 드레인 보증 문구 표시 |
+| `kubectl daos pool destroy <pool>` | 사용량을 보여주고 `destroy-approved=true` + `DaosPool` 삭제 → operator 가 `dmg pool destroy --recursive` |
+| `kubectl daos cont destroy -n <ns> <cont>` | 동일, 컨테이너 |
+
+`--yes` 로 프롬프트를 건너뛴다(스크립트). `--kubeconfig`/`--context` 는 kubectl 과 같다. krew 배포는 나중.
 
 ## TLS 인증서 (#16)
 `spec.allowInsecure: false`(운영 기본)이면 operator 가 Secret `<sys>-certs` 를 만든다. 내용과 배치는 upstream `utils/certs/gen_certificates.sh` 와 같다.

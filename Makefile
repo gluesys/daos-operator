@@ -281,6 +281,10 @@ hostprep-image: ## Build the daos-hostprep image (multi-stage, context = repo ro
 hostprep-push: ## Push the daos-hostprep image.
 	$(DOCKER) push $(HOSTPREP_IMG)
 
+.PHONY: kubectl-daos
+kubectl-daos: ## Build the kubectl plugin into bin/kubectl-daos (put it on PATH: kubectl daos ...).
+	CGO_ENABLED=0 go build -o bin/kubectl-daos ./cmd/kubectl-daos
+
 .PHONY: operator-image
 operator-image: ## Build the operator image under the registry name.
 	$(DOCKER) build -t $(OPERATOR_IMG) .
