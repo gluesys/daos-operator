@@ -23,9 +23,15 @@ spec:
     - jsonPath: .spec.type
       name: Type
       type: string
+    - jsonPath: .status.health
+      name: Health
+      type: string
     - jsonPath: .status.ready
       name: Ready
       type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -103,6 +109,8 @@ spec:
           status:
             description: DaosContainerStatus mirrors `daos cont query`.
             properties:
+              appliedACLHash:
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -159,10 +167,24 @@ spec:
                   - type
                   type: object
                 type: array
+              health:
+                type: string
+              lastQueryTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              operation:
+                description: Operation is the daos Job in flight (create, acl, destroy);
+                  empty when idle.
+                type: string
               poolUUID:
                 type: string
               ready:
                 type: boolean
+              type:
+                type: string
               uuid:
                 type: string
             type: object

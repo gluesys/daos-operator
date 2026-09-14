@@ -21,6 +21,9 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #11 (2026-09-15): DaosPool/DaosContainer reconcile.** `dmg pool ...`/`daos cont ...` 를 Job 으로 돌려 없으면 만들고(1회),
+  rank 추가는 `pool extend`, `spec.acl` 변경은 `overwrite-acl` 로 반영한다. status 는 `dmg pool query`/`daos cont query` 미러. 삭제 시
+  DAOS 객체 파괴는 `daos.gluesys.com/destroy-approved=true` 어노테이션이 있을 때만(없으면 남기고 Event `PoolOrphaned`/`ContainerOrphaned`).
 - **Phase 2 #10 (2026-09-14): format 승인 게이트와 멤버십.** `dmg -j system query` 를 daos-admin Job 으로 돌려 미포맷이면
   `status.pendingFormat=true` 로 보고만 하고, 사람이 `daos.gluesys.com/format-approved=true` 어노테이션을 달아야 `dmg storage format`
   을 **1회** 실행한다. rank 목록·joined 수는 dmg 출력을 그대로 복사한다. `Ready=True` 는 서버 전부 Ready + 포맷 + 전 rank joined.
@@ -122,6 +125,33 @@ kubectl -n daos-system get jobs,pods -l app.kubernetes.io/name=daos-dmg
 kubectl get events --field-selector involvedObject.kind=DaosSystem
 ```
 TLS 인증서(`allowInsecure: false`)의 admin 인증서 Secret 마운트는 아직 없다(Phase 0 은 insecure).
+
+## 풀과 컨테이너 (#11)
+`DaosPool`(클러스터 스코프, 라벨 = `metadata.name`)과 `DaosContainer`(네임스페이스, 라벨 = `spec.label` 또는 이름)는 각각 Job 으로 dmg/daos 를 부른다.
+Job 은 DaosSystem 네임스페이스에 만들어지고, 풀 Job 은 `pool-<name>-dmg-<op>`, 컨테이너 Job 은 `cont-<ns>-<name>-daos-<op>` 이름을 쓴다.
+
+| 단계 | DaosPool (`dmg`, admin 이미지) | DaosContainer (`daos`, client 이미지 + agent 사이드카) |
+|---|---|---|
+| 전제 | DaosSystem `status.formatted=true` | DaosPool `status.uuid` 있음 |
+| 조회 | `pool query --show-enabled <label>` | `cont query <pool> <label>` |
+| 없음 | `pool create -z <bytes>B -P rd_fac:N[,k:v] [-r ranks] [-a acl] <label>` (1회) | `cont create <pool> <label> --type --file-oclass --dir-oclass --chunk-size --properties rd_fac,cksum[,k:v] [--acl-file]` (1회) |
+| 드리프트 | `spec.ranks` 에 새 rank → `pool extend --ranks=<빠진 것>`; `spec.acl` 해시 변경 → `pool overwrite-acl` | `spec.acl` 해시 변경 → `cont overwrite-acl` |
+| 미러 | uuid, state, total/free(티어 합), rebuild, disabledTargets, enabledRanks, lastQueryTime | uuid, poolUUID, health, type, ready |
+| 실패 | `Ready=False (CreateFailed/ExtendFailed/AclFailed)` + Event, **spec 이 바뀔 때까지 재시도 안 함**(observedGeneration) | 동일 |
+| 사라짐 | 이전에 uuid 를 알았는데 없어짐 → `PoolMissing`, **재생성 안 함**(데이터 손실은 사람이 봐야 한다) | `ContainerMissing`, 동일 |
+| 삭제 | `destroy-approved=true` → `pool destroy --recursive`; 없으면 풀은 남기고 Event `PoolOrphaned` | `cont destroy`; 없으면 Event `ContainerOrphaned` |
+
+- 크기(`spec.size`)는 생성 시에만 쓰인다. DAOS 2.8 은 풀 크기 변경이 없다(확장 = rank 추가).
+- `overwrite-acl` 은 ACL 전체를 바꾼다. `spec.acl` 에 `A::OWNER@:...` 등 필요한 항목을 모두 적어야 한다.
+- 컨테이너 Job 은 K8s ≥ 1.29 의 네이티브 사이드카(`initContainers[].restartPolicy: Always`)로 `daos_agent` 를 붙이고, 클라이언트가 fabric 을 쓰기
+  위해 hostNetwork·`/dev`·privileged 로 뜬다(Phase 0; RDMA 디바이스 플러그인으로 대체 예정). `spec.images.client` 가 필요하다.
+- 조회 주기 30초(홀드), 정상 60초 requeue. 한 reconcile 에 연산은 하나만 시작한다(`status.operation`).
+
+```bash
+kubectl get daospool,daoscont -A
+kubectl annotate daospool kv daos.gluesys.com/destroy-approved=true && kubectl delete daospool kv   # 정말 파괴할 때만
+kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
+```
 
 ## 관리 표면 (v1 목표)
 | 형태 | 담당 |

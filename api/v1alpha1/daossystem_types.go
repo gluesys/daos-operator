@@ -62,6 +62,9 @@ type ImagesSpec struct {
 	Server string `json:"server"`
 	Agent  string `json:"agent"`
 	Admin  string `json:"admin"`
+	// Client is the daos-client image (daos CLI, dfuse); DaosContainer Jobs run it
+	// with the Agent image as a sidecar.
+	Client string `json:"client,omitempty"`
 	// HostPrep is the host-preparation DaemonSet image (daos-server + hostprep binary).
 	// Empty uses the operator's built-in default.
 	HostPrep string `json:"hostPrep,omitempty"`

@@ -49,16 +49,38 @@ func TestSystemQuery(t *testing.T) {
 func TestClassify(t *testing.T) {
 	cases := map[string]ErrorKind{
 		"": ErrNone,
-		"system is uninitialized (storage format required?)":   ErrUnformatted, // system.ErrUninitialized
-		"raft service unavailable (not started yet?)":          ErrUnformatted, // system.ErrRaftUnavail
-		"unable to contact the DAOS Management Service":        ErrUnreachable,
-		"dial tcp 10.0.0.1:10001: connect: connection refused": ErrUnreachable,
-		"pool not found": ErrOther,
+		"system is uninitialized (storage format required?)":                                         ErrUnformatted, // system.ErrUninitialized
+		"raft service unavailable (not started yet?)":                                                ErrUnformatted, // system.ErrRaftUnavail
+		"unable to contact the DAOS Management Service":                                              ErrUnreachable,
+		"dial tcp 10.0.0.1:10001: connect: connection refused":                                       ErrUnreachable,
+		"unable to find pool service with label \"optest\"":                                          ErrNotFound,
+		"failed to connect to pool: DER_NONEXIST(-1005): The specified entity does not exist":        ErrNotFound,
+		"pool create failed: server: code = 605 description = \"requested NVMe capacity too small\"": ErrOther,
 	}
 	for msg, want := range cases {
 		if got := Classify(msg); got != want {
 			t.Errorf("%q: got %d want %d", msg, got, want)
 		}
+	}
+}
+
+// captured on kind (2026-09-15): pod logs interleave the client log, the JSON and the trailing ERROR line
+const daosUnreachLog = `2026/09/14 15:27:49.533565 daos-dev-control-plane DAOS[28/28/0] mgmt ERR  src/mgmt/cli_mgmt.c:374 get_attach_info() GetAttachInfo((null)) failed: DER_UNREACH(-1006): 'Unreachable node'
+{
+  "response": null,
+  "error": "failed to initialize DAOS API: DER_UNREACH(-1006): Unreachable node",
+  "status": -1006
+}
+ERROR: daos: failed to initialize DAOS API: DER_UNREACH(-1006): Unreachable node
+`
+
+func TestParseTrailingErrorLine(t *testing.T) {
+	e, err := Parse(daosUnreachLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.Error == nil || Classify(*e.Error) != ErrUnreachable || e.Status != -1006 {
+		t.Fatalf("%+v", e)
 	}
 }
 
@@ -77,5 +99,65 @@ func TestErrorEnvelopeAndFormat(t *testing.T) {
 	he, err := StorageFormat(f)
 	if err != nil || len(he) != 1 || he["storage format failed: instance 0: already formatted"] != "10.0.0.[1-2]" {
 		t.Fatalf("%v %v", he, err)
+	}
+}
+
+// captured on daos_ci (2026-09-14): dmg -j pool query nvme_pool (trimmed)
+const poolQueryOK = `{"response": {"query_mask": "disabled_engines,rebuild,space", "state": "Ready",
+  "uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "total_targets": 1, "active_targets": 1, "total_engines": 1, "disabled_targets": 0,
+  "rebuild": {"status": 0, "state": "idle", "derived_state": "idle"},
+  "tier_stats": [{"total": 486539264, "free": 443035176, "media_type": "scm"}, {"total": 7520000000, "free": 7456817152, "media_type": "nvme"}],
+  "disabled_ranks": [], "enabled_ranks": "[0-1,3]"}, "error": null, "status": 0}`
+
+// captured on daos_ci (2026-09-14): daos -j cont query nvme_pool nixltest
+const contQueryOK = `{"response": {"pool_uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "container_uuid": "e4d6c5b3-efd6-4891-9526-3a263925212d",
+  "container_label": "nixltest", "redundancy_factor": 0, "num_handles": 1, "container_type": "POSIX", "health": "HEALTHY",
+  "chunk_size": 1048576, "dir_object_class": "S1", "file_object_class": "S1"}, "error": null, "status": 0}`
+
+func TestPoolAndContainerParsers(t *testing.T) {
+	e, err := Parse(poolQueryOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := PoolQuery(e)
+	if err != nil || p.State != "Ready" || p.UUID == "" || p.Rebuild.State != "idle" {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if tot, free := p.Totals(); tot != 486539264+7520000000 || free != 443035176+7456817152 {
+		t.Errorf("totals %d %d", tot, free)
+	}
+	if r := Ranks(p.EnabledRanks); len(r) != 3 || r[0] != 0 || r[1] != 1 || r[2] != 3 {
+		t.Errorf("ranks from range string: %v", r)
+	}
+	if r := Ranks(p.DisabledRanks); r != nil {
+		t.Errorf("empty array -> nil, got %v", r)
+	}
+	if r := Ranks([]byte(`[2,0]`)); len(r) != 2 || r[0] != 0 {
+		t.Errorf("array: %v", r)
+	}
+	ce, _ := Parse(`{"response": {"uuid": "11111111-2222-3333-4444-555555555555", "svc_ldr": 0, "svc_reps": [0], "tgt_ranks": [0, 1]}, "error": null, "status": 0}`)
+	u, ranks, err := PoolCreate(ce)
+	if err != nil || u != "11111111-2222-3333-4444-555555555555" || len(ranks) != 2 {
+		t.Fatalf("%s %v %v", u, ranks, err)
+	}
+	e, _ = Parse(contQueryOK)
+	c, err := ContainerQuery(e)
+	if err != nil || c.UUID == "" || c.Type != "POSIX" || c.Health != "HEALTHY" || c.ChunkSize != 1048576 {
+		t.Fatalf("%+v %v", c, err)
+	}
+}
+
+func TestWithACLFile(t *testing.T) {
+	cmd := []string{"dmg", "-o", "/etc/daos/daos_control.yml", "-j", "pool", "create", "-a", "/tmp/acl", "p1"}
+	if got := WithACLFile(nil, "/tmp/acl", cmd); len(got) != len(cmd) {
+		t.Fatal("no entries must not wrap")
+	}
+	got := WithACLFile([]string{"A::OWNER@:rw", "A:G:GROUP@:rw"}, "/tmp/acl", cmd)
+	if got[0] != "bash" || got[1] != "-c" {
+		t.Fatal(got)
+	}
+	want := `printf '%s\n' 'A::OWNER@:rw' 'A:G:GROUP@:rw' > '/tmp/acl' && exec 'dmg' '-o' '/etc/daos/daos_control.yml' '-j' 'pool' 'create' '-a' '/tmp/acl' 'p1'`
+	if got[2] != want {
+		t.Fatalf("\n got %s\nwant %s", got[2], want)
 	}
 }

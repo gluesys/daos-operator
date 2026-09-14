@@ -46,6 +46,20 @@ const (
 	// the annotation when the format Job finished, success or not.
 	AnnotationFormatApproved = "daos.gluesys.com/format-approved"
 
+	// AnnotationDestroyApproved on a DaosPool or DaosContainer lets the operator
+	// run `dmg pool destroy` / `daos cont destroy` when the object is deleted.
+	// Without it, deleting the Kubernetes object only forgets the DAOS object
+	// (Event PoolOrphaned / ContainerOrphaned); data is never removed implicitly.
+	AnnotationDestroyApproved = "daos.gluesys.com/destroy-approved"
+
+	// FinalizerPool and FinalizerContainer hold deletion until the destroy decision is made.
+	FinalizerPool      = "daos.gluesys.com/pool"
+	FinalizerContainer = "daos.gluesys.com/container"
+
+	// LabelPool and LabelContainer mark the dmg/daos Jobs run for an object.
+	LabelPool      = "daos.gluesys.com/pool"
+	LabelContainer = "daos.gluesys.com/container"
+
 	// LabelSystem and LabelNode are put on every object the operator creates.
 	LabelSystem = "daos.gluesys.com/system"
 	LabelNode   = "daos.gluesys.com/node"

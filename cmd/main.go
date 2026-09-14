@@ -199,16 +199,21 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "daossystem")
 		os.Exit(1)
 	}
+	runner := &dmg.JobRunner{Client: mgr.GetClient(), Kube: kube, Scheme: mgr.GetScheme()}
 	if err := (&controller.DaosPoolReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Dmg:      runner,
+		Recorder: mgr.GetEventRecorderFor("daospool"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "daospool")
 		os.Exit(1)
 	}
 	if err := (&controller.DaosContainerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Dmg:      runner,
+		Recorder: mgr.GetEventRecorderFor("daoscontainer"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "daoscontainer")
 		os.Exit(1)

@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -225,25 +224,12 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 	return requeueMembership, nil
 }
 
-// probe cadence: in-memory per system, so a restart simply probes once more.
-var (
-	probeMu   sync.Mutex
-	probeNext = map[string]time.Time{}
-)
-
 // probeHold returns how long to wait before the next query Job may start.
 func (r *DaosSystemReconciler) probeHold(name string) time.Duration {
 	if r.DisableProbeHold {
 		return 0
 	}
-	probeMu.Lock()
-	defer probeMu.Unlock()
-	if t, ok := probeNext[name]; ok {
-		if d := time.Until(t); d > 0 {
-			return d
-		}
-	}
-	return 0
+	return holdFor(name)
 }
 
 // setProbeHold schedules the next query: sooner while a format is pending or
@@ -256,16 +242,10 @@ func (r *DaosSystemReconciler) setProbeHold(name string, st *daosv1alpha1.DaosSy
 	if c := findCond(st, daosv1alpha1.ConditionFormatted); c != nil && c.Status == metav1.ConditionTrue && !st.PendingFormat {
 		interval = requeueMembership
 	}
-	probeMu.Lock()
-	probeNext[name] = time.Now().Add(interval)
-	probeMu.Unlock()
+	setHold(name, interval)
 }
 
-func clearProbeHold(name string) {
-	probeMu.Lock()
-	delete(probeNext, name)
-	probeMu.Unlock()
-}
+func clearProbeHold(name string) { clearHold(name) }
 
 func awaitSuffix(n int) string {
 	if n == 0 {

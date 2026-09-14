@@ -29,6 +29,12 @@ spec:
     - jsonPath: .status.rebuildState
       name: Rebuild
       type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -97,8 +103,14 @@ spec:
             - systemRef
             type: object
           status:
-            description: DaosPoolStatus mirrors `dmg pool query`.
+            description: |-
+              DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
+              truth: every field is copied from dmg output.
             properties:
+              appliedACLHash:
+                description: AppliedACLHash identifies the spec.acl last written with
+                  overwrite-acl.
+                type: string
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -158,10 +170,30 @@ spec:
               disabledTargets:
                 format: int32
                 type: integer
+              enabledRanks:
+                description: EnabledRanks are the ranks the pool spans (dmg pool query
+                  --show-enabled).
+                items:
+                  format: int32
+                  type: integer
+                type: array
               freeBytes:
                 format: int64
                 type: integer
               label:
+                type: string
+              lastQueryTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                description: |-
+                  ObservedGeneration is the spec generation the last create attempt was made for;
+                  a failed create is not retried until the spec changes.
+                format: int64
+                type: integer
+              operation:
+                description: Operation is the dmg Job in flight (create, extend, acl,
+                  destroy); empty when idle.
                 type: string
               rebuildState:
                 type: string

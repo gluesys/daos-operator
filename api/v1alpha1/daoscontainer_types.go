@@ -57,6 +57,13 @@ type DaosContainerStatus struct {
 	UUID       string             `json:"uuid,omitempty"`
 	PoolUUID   string             `json:"poolUUID,omitempty"`
 	Ready      bool               `json:"ready,omitempty"`
+	Health     string             `json:"health,omitempty"`
+	Type       string             `json:"type,omitempty"`
+	// Operation is the daos Job in flight (create, acl, destroy); empty when idle.
+	Operation          string       `json:"operation,omitempty"`
+	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
+	AppliedACLHash     string       `json:"appliedACLHash,omitempty"`
+	LastQueryTime      *metav1.Time `json:"lastQueryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -64,7 +71,9 @@ type DaosContainerStatus struct {
 // +kubebuilder:resource:shortName=daoscont
 // +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+// +kubebuilder:printcolumn:name="Health",type=string,JSONPath=`.status.health`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // DaosContainer is a DAOS container; the CSI controller creates one per PV.
 type DaosContainer struct {

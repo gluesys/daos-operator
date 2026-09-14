@@ -52,12 +52,27 @@ type RunSpec struct {
 	// ControlConfigMap holds daos_control.yml (key daos_control.yml).
 	ControlConfigMap string
 	// Args follow `dmg -j`; the admin entrypoint adds `-o /etc/daos/daos_control.yml`.
-	Args         []string
+	Args []string
+	// Command replaces the default `dmg -j <Args>` entirely (e.g. a bash -c wrapper
+	// that writes an ACL file first, or a `daos` client invocation).
+	Command      []string
+	Env          []corev1.EnvVar
 	NodeSelector map[string]string
 	Tolerations  []corev1.Toleration
 	Labels       map[string]string
 	// DeadlineSeconds bounds the Job (default 600).
 	DeadlineSeconds int64
+	// Sidecar runs next to the main container as a native sidecar (initContainer
+	// with restartPolicy Always, Kubernetes >= 1.29) -- used for daos_agent, which
+	// the `daos` client needs. The Job still completes when the main container exits.
+	Sidecar *corev1.Container
+	// Volumes and Mounts are added to the pod / main container (control config is always mounted).
+	Volumes []corev1.Volume
+	Mounts  []corev1.VolumeMount
+	// Privileged runs the main container privileged (RDMA device access for the client library).
+	Privileged bool
+	// ShareProcessNamespace lets the agent sidecar validate the client process.
+	ShareProcessNamespace bool
 }
 
 // Result is what came back. Done=false means the Job is still running (or was
@@ -163,6 +178,28 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 	for k, v := range s.Labels {
 		labels[k] = v
 	}
+	command := s.Command
+	if len(command) == 0 {
+		// admin entrypoint: "dmg ..." -> exec dmg -o /etc/daos/daos_control.yml ...
+		command = append([]string{"dmg", "-j"}, s.Args...)
+	}
+	volumes := append([]corev1.Volume{{Name: "control", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
+		LocalObjectReference: corev1.LocalObjectReference{Name: s.ControlConfigMap}}}}}, s.Volumes...)
+	mounts := append([]corev1.VolumeMount{{Name: "control", MountPath: "/etc/daos/daos_control.yml", SubPath: "daos_control.yml", ReadOnly: true}}, s.Mounts...)
+	var sec *corev1.SecurityContext
+	if s.Privileged {
+		sec = &corev1.SecurityContext{Privileged: ptr.To(true)}
+	}
+	var inits []corev1.Container
+	if s.Sidecar != nil {
+		sc := *s.Sidecar
+		sc.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		inits = append(inits, sc)
+	}
+	var shareNS *bool
+	if s.ShareProcessNamespace {
+		shareNS = ptr.To(true)
+	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: s.Namespace, Name: s.Name, Labels: labels}}
 	job.Spec = batchv1.JobSpec{
 		BackoffLimit:            ptr.To(int32(0)),
@@ -173,19 +210,21 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
 				// same network as the servers: hostlist addresses are node IPs
-				HostNetwork:  true,
-				DNSPolicy:    corev1.DNSClusterFirstWithHostNet,
-				NodeSelector: s.NodeSelector,
-				Tolerations:  s.Tolerations,
-				Volumes: []corev1.Volume{{Name: "control", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-					LocalObjectReference: corev1.LocalObjectReference{Name: s.ControlConfigMap}}}}},
+				HostNetwork:           true,
+				DNSPolicy:             corev1.DNSClusterFirstWithHostNet,
+				ShareProcessNamespace: shareNS,
+				NodeSelector:          s.NodeSelector,
+				Tolerations:           s.Tolerations,
+				Volumes:               volumes,
+				InitContainers:        inits,
 				Containers: []corev1.Container{{
 					Name:            container,
 					Image:           s.Image,
 					ImagePullPolicy: corev1.PullIfNotPresent,
-					// admin entrypoint: "dmg ..." -> exec dmg -o /etc/daos/daos_control.yml ...
-					Command:      append([]string{"dmg", "-j"}, s.Args...),
-					VolumeMounts: []corev1.VolumeMount{{Name: "control", MountPath: "/etc/daos/daos_control.yml", SubPath: "daos_control.yml", ReadOnly: true}},
+					Command:         command,
+					Env:             s.Env,
+					SecurityContext: sec,
+					VolumeMounts:    mounts,
 				}},
 			},
 		},
@@ -209,14 +248,16 @@ type Envelope struct {
 	Status   int             `json:"status"`
 }
 
-// Parse extracts the JSON envelope from dmg output (log lines may precede it).
+// Parse extracts the JSON envelope from dmg/daos output. Pod logs merge stdout
+// and stderr, so client-library log lines may precede the JSON and the tool's
+// own "ERROR: dmg: ..." line may follow it; only the first JSON value counts.
 func Parse(out string) (*Envelope, error) {
 	i := strings.Index(out, "{")
 	if i < 0 {
 		return nil, fmt.Errorf("no JSON in dmg output: %q", strings.TrimSpace(firstLine(out)))
 	}
 	var e Envelope
-	if err := json.Unmarshal([]byte(out[i:]), &e); err != nil {
+	if err := json.NewDecoder(strings.NewReader(out[i:])).Decode(&e); err != nil {
 		return nil, fmt.Errorf("dmg output is not JSON: %w", err)
 	}
 	return &e, nil
@@ -240,6 +281,8 @@ const (
 	ErrUnformatted
 	// ErrUnreachable: no management-service replica answered.
 	ErrUnreachable
+	// ErrNotFound: the pool or container does not exist.
+	ErrNotFound
 	// ErrOther: anything else; the message is shown as is.
 	ErrOther
 )
@@ -253,8 +296,12 @@ func Classify(msg string) ErrorKind {
 	case strings.Contains(m, "system is uninitialized"), strings.Contains(m, "storage format required"),
 		strings.Contains(m, "raft service unavailable"):
 		return ErrUnformatted
+	case strings.Contains(m, "unable to find pool service with label"), strings.Contains(m, "der_nonexist"),
+		strings.Contains(m, "does not exist"), strings.Contains(m, "not found"):
+		return ErrNotFound
 	case strings.Contains(m, "unable to contact the daos management service"), strings.Contains(m, "connection refused"),
-		strings.Contains(m, "no route to host"), strings.Contains(m, "deadline exceeded"), strings.Contains(m, "i/o timeout"):
+		strings.Contains(m, "no route to host"), strings.Contains(m, "deadline exceeded"), strings.Contains(m, "i/o timeout"),
+		strings.Contains(m, "der_unreach"), strings.Contains(m, "unreachable node"), strings.Contains(m, "refused the connection"):
 		return ErrUnreachable
 	default:
 		return ErrOther
@@ -306,4 +353,146 @@ func Host(addr string) string {
 		return addr[:i]
 	}
 	return addr
+}
+
+// PoolInfo is the subset of `dmg -j pool query [--show-enabled]` the operator mirrors.
+type PoolInfo struct {
+	UUID            string `json:"uuid"`
+	Label           string `json:"label"`
+	State           string `json:"state"`
+	TotalTargets    int32  `json:"total_targets"`
+	ActiveTargets   int32  `json:"active_targets"`
+	DisabledTargets int32  `json:"disabled_targets"`
+	Rebuild         struct {
+		State string `json:"state"`
+	} `json:"rebuild"`
+	TierStats []struct {
+		Total     int64  `json:"total"`
+		Free      int64  `json:"free"`
+		MediaType string `json:"media_type"`
+	} `json:"tier_stats"`
+	EnabledRanks  json.RawMessage `json:"enabled_ranks"`
+	DisabledRanks json.RawMessage `json:"disabled_ranks"`
+}
+
+// Totals sums the storage tiers.
+func (p *PoolInfo) Totals() (total, free int64) {
+	for _, t := range p.TierStats {
+		total += t.Total
+		free += t.Free
+	}
+	return total, free
+}
+
+// PoolQuery parses `dmg -j pool query`.
+func PoolQuery(e *Envelope) (*PoolInfo, error) {
+	var p PoolInfo
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, fmt.Errorf("pool query: empty response")
+	}
+	if err := json.Unmarshal(e.Response, &p); err != nil {
+		return nil, fmt.Errorf("pool query response: %w", err)
+	}
+	return &p, nil
+}
+
+// Ranks decodes a rank set that dmg emits either as a JSON array or as a
+// range string such as "[0-3,5]".
+func Ranks(raw json.RawMessage) []int32 {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var arr []int32
+	if err := json.Unmarshal(raw, &arr); err == nil {
+		if len(arr) == 0 {
+			return nil
+		}
+		sort.Slice(arr, func(i, j int) bool { return arr[i] < arr[j] })
+		return arr
+	}
+	var str string
+	if err := json.Unmarshal(raw, &str); err != nil {
+		return nil
+	}
+	str = strings.Trim(strings.TrimSpace(str), "[]")
+	if str == "" {
+		return nil
+	}
+	var out []int32
+	for _, part := range strings.Split(str, ",") {
+		var lo, hi int32
+		switch n, _ := fmt.Sscanf(part, "%d-%d", &lo, &hi); n {
+		case 2:
+			for r := lo; r <= hi; r++ {
+				out = append(out, r)
+			}
+		case 1:
+			out = append(out, lo)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// PoolCreate parses `dmg -j pool create` (control.PoolCreateResp).
+func PoolCreate(e *Envelope) (uuid string, tgtRanks []int32, err error) {
+	var r struct {
+		UUID     string  `json:"uuid"`
+		TgtRanks []int32 `json:"tgt_ranks"`
+	}
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return "", nil, fmt.Errorf("pool create: empty response")
+	}
+	if err := json.Unmarshal(e.Response, &r); err != nil {
+		return "", nil, fmt.Errorf("pool create response: %w", err)
+	}
+	return r.UUID, r.TgtRanks, nil
+}
+
+// ContainerInfo is `daos -j cont query` / `daos -j cont create` output.
+type ContainerInfo struct {
+	PoolUUID         string `json:"pool_uuid"`
+	UUID             string `json:"container_uuid"`
+	Label            string `json:"container_label"`
+	RedundancyFactor int32  `json:"redundancy_factor"`
+	Type             string `json:"container_type"`
+	Health           string `json:"health"`
+	ChunkSize        int64  `json:"chunk_size"`
+	DirObjectClass   string `json:"dir_object_class"`
+	FileObjectClass  string `json:"file_object_class"`
+}
+
+// ContainerQuery parses `daos -j cont query` (also the create output, same struct).
+func ContainerQuery(e *Envelope) (*ContainerInfo, error) {
+	var c ContainerInfo
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, fmt.Errorf("container query: empty response")
+	}
+	if err := json.Unmarshal(e.Response, &c); err != nil {
+		return nil, fmt.Errorf("container query response: %w", err)
+	}
+	return &c, nil
+}
+
+// ShellQuote quotes s for a POSIX shell.
+func ShellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
+// WithACLFile wraps a command so that the ACL entries are written to path first.
+// Empty entries return the command unchanged.
+func WithACLFile(entries []string, path string, command []string) []string {
+	if len(entries) == 0 {
+		return command
+	}
+	var b strings.Builder
+	b.WriteString("printf '%s\\n'")
+	for _, e := range entries {
+		b.WriteString(" " + ShellQuote(e))
+	}
+	b.WriteString(" > " + ShellQuote(path) + " && exec")
+	for _, c := range command {
+		b.WriteString(" " + ShellQuote(c))
+	}
+	return []string{"bash", "-c", b.String()}
 }

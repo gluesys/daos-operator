@@ -44,7 +44,8 @@ type DaosPoolSpec struct {
 	ACL []string `json:"acl,omitempty"`
 }
 
-// DaosPoolStatus mirrors `dmg pool query`.
+// DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
+// truth: every field is copied from dmg output.
 type DaosPoolStatus struct {
 	Conditions      []metav1.Condition `json:"conditions,omitempty"`
 	UUID            string             `json:"uuid,omitempty"`
@@ -54,6 +55,16 @@ type DaosPoolStatus struct {
 	TotalBytes      int64              `json:"totalBytes,omitempty"`
 	RebuildState    string             `json:"rebuildState,omitempty"`
 	DisabledTargets int32              `json:"disabledTargets,omitempty"`
+	// EnabledRanks are the ranks the pool spans (dmg pool query --show-enabled).
+	EnabledRanks []int32 `json:"enabledRanks,omitempty"`
+	// Operation is the dmg Job in flight (create, extend, acl, destroy); empty when idle.
+	Operation string `json:"operation,omitempty"`
+	// ObservedGeneration is the spec generation the last create attempt was made for;
+	// a failed create is not retried until the spec changes.
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// AppliedACLHash identifies the spec.acl last written with overwrite-acl.
+	AppliedACLHash string       `json:"appliedACLHash,omitempty"`
+	LastQueryTime  *metav1.Time `json:"lastQueryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -63,6 +74,8 @@ type DaosPoolStatus struct {
 // +kubebuilder:printcolumn:name="Size",type=string,JSONPath=`.spec.size`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
 // +kubebuilder:printcolumn:name="Rebuild",type=string,JSONPath=`.status.rebuildState`
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // DaosPool is a DAOS pool.
 type DaosPool struct {

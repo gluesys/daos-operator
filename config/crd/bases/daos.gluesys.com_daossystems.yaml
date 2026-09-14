@@ -145,6 +145,11 @@ spec:
                     type: string
                   agent:
                     type: string
+                  client:
+                    description: |-
+                      Client is the daos-client image (daos CLI, dfuse); DaosContainer Jobs run it
+                      with the Agent image as a sidecar.
+                    type: string
                   hostPrep:
                     description: |-
                       HostPrep is the host-preparation DaemonSet image (daos-server + hostprep binary).
