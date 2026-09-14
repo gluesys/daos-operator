@@ -260,24 +260,34 @@ define gomodver
 $(shell go list -m -f '{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}' $(1) 2>/dev/null)
 endef
 
-##@ hostprep
+##@ Images
 
 HOSTPREP_BASE ?= registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
-HOSTPREP_IMG ?= registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:$(shell git describe --always --dirty 2>/dev/null || echo dev)
+IMAGE_TAG ?= $(shell git describe --always --dirty 2>/dev/null || echo dev)
+IMAGE_REGISTRY ?= registry.gitlab.gluesys.com/exastor/daos-operator
+HOSTPREP_IMG ?= $(IMAGE_REGISTRY)/daos-hostprep:$(IMAGE_TAG)
+OPERATOR_IMG ?= $(IMAGE_REGISTRY)/daos-operator:$(IMAGE_TAG)
 DOCKER ?= docker
 
 .PHONY: hostprep
 hostprep: ## Build the static hostprep binary into bin/.
-	CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o bin/hostprep ./cmd/hostprep
+	CGO_ENABLED=0 go build -o bin/hostprep ./cmd/hostprep
 
 .PHONY: hostprep-image
-hostprep-image: hostprep ## Build the daos-hostprep image (daos-server base + binary).
-	cp bin/hostprep images/hostprep/hostprep
-	$(DOCKER) build -f images/hostprep/Dockerfile --build-arg BASE=$(HOSTPREP_BASE) -t $(HOSTPREP_IMG) images/hostprep
+hostprep-image: ## Build the daos-hostprep image (multi-stage, context = repo root).
+	$(DOCKER) build -f images/hostprep/Dockerfile --build-arg BASE=$(HOSTPREP_BASE) -t $(HOSTPREP_IMG) .
 
 .PHONY: hostprep-push
 hostprep-push: ## Push the daos-hostprep image.
 	$(DOCKER) push $(HOSTPREP_IMG)
+
+.PHONY: operator-image
+operator-image: ## Build the operator image under the registry name.
+	$(DOCKER) build -t $(OPERATOR_IMG) .
+
+.PHONY: operator-push
+operator-push: ## Push the operator image.
+	$(DOCKER) push $(OPERATOR_IMG)
 
 ##@ Helm chart
 

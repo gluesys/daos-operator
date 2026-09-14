@@ -196,6 +196,17 @@ kubectl patch daossys daos-dev --type merge -p '{"spec":{"upgrade":{"approved":t
 kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 ```
 
+## 이미지 (#15)
+| 이미지 | 태그 | 만드는 곳 |
+|---|---|---|
+| `registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator` | `<short sha>`, `<VERSION>`(=차트 appVersion), `latest` | GitLab CI `image-operator`(main 푸시·태그 시, exa-build 러너 podman) |
+| `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep` | 동일 | CI `image-hostprep`(multi-stage: golang 빌드 → daos-server 베이스) |
+| `exastor/daos-images/daos-{server,agent,client,admin}` | `2.8.0-<date>` | exastor/daos-images |
+
+- `VERSION` 파일이 차트 `appVersion` 과 같은 값이어야 한다(`image.tag` 기본값). 릴리스는 `VERSION` 을 올리고 태그를 푸시한다.
+- 로컬: `make operator-image operator-push hostprep-image hostprep-push DOCKER="sudo -n docker" IMAGE_TAG=dev`.
+- 레지스트리는 internal 프로젝트라 pull 에 인증이 필요하다. kind 는 `kind load docker-image`, 실클러스터는 `imagePullSecrets`(차트 `imagePullSecrets`).
+
 ## 설치: Helm 차트 (#14)
 ```bash
 make helm-sync helm-lint                       # 생성 산출물 → 차트 동기화 + lint (bin/helm)

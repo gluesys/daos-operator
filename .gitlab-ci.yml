@@ -1,9 +1,12 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Gluesys Co., Ltd.
 #
-# Phase 0 pipeline: only what runs without a DAOS cluster or a Kubernetes
-# cluster. Do not add a job that silently skips when those are missing.
-stages: [check]
+# check: everything that runs without a DAOS or Kubernetes cluster.
+# image: operator + hostprep container images, built with podman on the
+#        exa-build runner (tag daos-build) and pushed to the project registry
+#        as :<short sha>, :<VERSION> and :latest on main.
+# Do not add a job that silently skips when its prerequisites are missing.
+stages: [check, image]
 
 default:
   image: python:3.12-slim
@@ -69,3 +72,39 @@ helm:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+
+# Container images. Runner "exa-build" is a shell executor with podman; the
+# job token can push to the project registry.
+.image-job: &image-job
+  stage: image
+  tags: [daos-build]
+  needs: [go-build]
+  before_script:
+    - podman --version
+    - echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - export VERSION=$(cat VERSION)
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+image-operator:
+  <<: *image-job
+  script:
+    - IMG="$CI_REGISTRY_IMAGE/daos-operator"
+    - podman build --pull -t "$IMG:$CI_COMMIT_SHORT_SHA" .
+    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
+    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
+    - podman push "$IMG:$CI_COMMIT_SHORT_SHA"
+    - podman push "$IMG:$VERSION"
+    - podman push "$IMG:latest"
+
+image-hostprep:
+  <<: *image-job
+  script:
+    - IMG="$CI_REGISTRY_IMAGE/daos-hostprep"
+    - podman build --pull -f images/hostprep/Dockerfile -t "$IMG:$CI_COMMIT_SHORT_SHA" .
+    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
+    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
+    - podman push "$IMG:$CI_COMMIT_SHORT_SHA"
+    - podman push "$IMG:$VERSION"
+    - podman push "$IMG:latest"
