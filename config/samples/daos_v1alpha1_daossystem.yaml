@@ -1,9 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosSystem
 metadata:
-  labels:
-    app.kubernetes.io/name: daos-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: daossystem-sample
+  name: daos-dev
 spec:
-  # TODO(user): Add fields here
+  version: "2.8.0"
+  images:
+    server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
+    agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
+    admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
+  placement: dedicated
+  nodeSelector:
+    daos.gluesys.com/role: storage
+  msReplicas: 1            # Phase 0 test bed has two hosts; not HA (ADR-001)
+  provider: "ofi+verbs;ofi_rxm"
+  nrHugepages: 8192
+  allowInsecure: true      # Phase 0 only
+  engines:
+    - targets: 8
+      helpers: 2
+      fabricIface: ""      # empty = discover per node (ens2 vs ens2np0)
+      bdevList: []         # empty = discover VFIO-bound NVMe per node
+      scmSizeGiB: 32

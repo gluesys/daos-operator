@@ -1,9 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosContainer
 metadata:
-  labels:
-    app.kubernetes.io/name: daos-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: daoscontainer-sample
+  name: kv-cache
+  namespace: default
 spec:
-  # TODO(user): Add fields here
+  poolRef: p0
+  type: POSIX
+  fileOclass: RP_2GX
+  chunkSize: 4194304
+  checksum: crc32

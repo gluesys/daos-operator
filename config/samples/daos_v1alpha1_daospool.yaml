@@ -1,9 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata:
-  labels:
-    app.kubernetes.io/name: daos-operator
-    app.kubernetes.io/managed-by: kustomize
-  name: daospool-sample
+  name: p0
 spec:
-  # TODO(user): Add fields here
+  systemRef: daos-dev
+  size: 1Ti
+  redundancyFactor: 1

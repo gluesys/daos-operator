@@ -55,7 +55,19 @@ var _ = Describe("DaosSystem Controller", func() {
 						Name:      resourceName,
 						Namespace: resourceNamespace,
 					},
-					// TODO(user): Specify other spec details if needed.
+					// Minimal valid spec: version, images and at least one engine are required
+					// by the CRD schema (see api/v1alpha1/daossystem_types.go).
+					Spec: daosv1alpha1.DaosSystemSpec{
+						Version: "2.8.0",
+						Images: daosv1alpha1.ImagesSpec{
+							Server: "daos/daos-server:test",
+							Agent:  "daos/daos-agent:test",
+							Admin:  "daos/daos-admin:test",
+						},
+						MsReplicas:    1,
+						AllowInsecure: true,
+						Engines:       []daosv1alpha1.EngineSpec{{Targets: 8}},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
