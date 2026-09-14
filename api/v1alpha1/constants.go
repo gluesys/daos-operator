@@ -1,0 +1,54 @@
+/*
+SPDX-License-Identifier: Apache-2.0
+Copyright 2026 Gluesys Co., Ltd.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+// Node annotations that carry per-node discovery facts. Phase 2 step 1 reads
+// them from the Node object; the host-preparation DaemonSet (#8) is what writes
+// them. Until then they can be set by hand:
+//
+//	kubectl annotate node n1 daos.gluesys.com/fabric-iface=ens2 \
+//	  daos.gluesys.com/bdev-list=0000:03:00.0,0000:04:00.0 \
+//	  daos.gluesys.com/bdev-dsn=0000:03:00.0=6479A701A8C0D000,0000:04:00.0=6479A701A8C0D001
+const (
+	// AnnotationFabricIface is the NIC the engine binds (differs per host: ens2 vs ens2np0).
+	AnnotationFabricIface = "daos.gluesys.com/fabric-iface"
+	// AnnotationBdevList is the comma-separated list of VFIO-bound NVMe PCI addresses.
+	AnnotationBdevList = "daos.gluesys.com/bdev-list"
+	// AnnotationBdevDSN maps PCI address to the drive's PCI Device Serial Number:
+	// "<pci>=<dsn>,...". Two nodes exposing the same DSN share one physical drive
+	// (dual-port chassis); the operator refuses to render those nodes (2026-09-03 incident).
+	AnnotationBdevDSN = "daos.gluesys.com/bdev-dsn"
+	// AnnotationNumaNode optionally pins the engine (engine 0 only for now).
+	AnnotationNumaNode = "daos.gluesys.com/numa-node"
+	// AnnotationControlAddr overrides the address used for mgmt_svc_replicas / access
+	// points / hostlist. Default is the node's InternalIP.
+	AnnotationControlAddr = "daos.gluesys.com/control-addr"
+
+	// LabelSystem and LabelNode are put on every object the operator creates.
+	LabelSystem = "daos.gluesys.com/system"
+	LabelNode   = "daos.gluesys.com/node"
+	LabelRole   = "daos.gluesys.com/role"
+)
+
+// Condition types on DaosSystem.status.conditions.
+const (
+	ConditionNodesSelected  = "NodesSelected"
+	ConditionDriveConflict  = "DriveConflict"
+	ConditionConfigRendered = "ConfigRendered"
+	ConditionReady          = "Ready"
+)

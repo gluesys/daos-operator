@@ -75,8 +75,11 @@ type UpgradeSpec struct {
 // DaosSystemSpec defines the desired state of a DAOS system.
 type DaosSystemSpec struct {
 	// Version is the DAOS version (image tag prefix), e.g. "2.8.0".
-	Version string     `json:"version"`
-	Images  ImagesSpec `json:"images"`
+	Version string `json:"version"`
+	// Namespace is where the operator creates this system's ConfigMaps, Secrets and pods.
+	// +kubebuilder:default="daos-system"
+	Namespace string     `json:"namespace,omitempty"`
+	Images    ImagesSpec `json:"images"`
 	// +kubebuilder:default=dedicated
 	Placement PlacementMode `json:"placement,omitempty"`
 	// NodeSelector picks storage nodes. Required for dedicated placement.
@@ -108,9 +111,25 @@ type RankStatus struct {
 	State string `json:"state"`
 }
 
+// NodeConfigStatus reports what the operator rendered for one selected node.
+type NodeConfigStatus struct {
+	Node        string `json:"node"`
+	ConfigMap   string `json:"configMap,omitempty"`
+	ControlAddr string `json:"controlAddr,omitempty"`
+	FabricIface string `json:"fabricIface,omitempty"`
+	BdevCount   int32  `json:"bdevCount,omitempty"`
+	Ready       bool   `json:"ready"`
+	Message     string `json:"message,omitempty"`
+}
+
 // DaosSystemStatus is read back from the DAOS management service and metrics.
 type DaosSystemStatus struct {
-	Conditions      []metav1.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+	// SelectedNodes are the nodes matching spec.nodeSelector, sorted.
+	SelectedNodes []string `json:"selectedNodes,omitempty"`
+	// MsReplicaNodes are the nodes chosen to host management-service replicas.
+	MsReplicaNodes  []string           `json:"msReplicaNodes,omitempty"`
+	NodeConfigs     []NodeConfigStatus `json:"nodeConfigs,omitempty"`
 	Formatted       bool               `json:"formatted,omitempty"`
 	RanksJoined     int32              `json:"ranksJoined,omitempty"`
 	RanksTotal      int32              `json:"ranksTotal,omitempty"`

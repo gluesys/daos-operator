@@ -132,6 +132,11 @@ spec:
                 - 5
                 format: int32
                 type: integer
+              namespace:
+                default: daos-system
+                description: Namespace is where the operator creates this system's
+                  ConfigMaps, Secrets and pods.
+                type: string
               nodeSelector:
                 additionalProperties:
                   type: string
@@ -275,6 +280,37 @@ spec:
                 type: array
               formatted:
                 type: boolean
+              msReplicaNodes:
+                description: MsReplicaNodes are the nodes chosen to host management-service
+                  replicas.
+                items:
+                  type: string
+                type: array
+              nodeConfigs:
+                items:
+                  description: NodeConfigStatus reports what the operator rendered
+                    for one selected node.
+                  properties:
+                    bdevCount:
+                      format: int32
+                      type: integer
+                    configMap:
+                      type: string
+                    controlAddr:
+                      type: string
+                    fabricIface:
+                      type: string
+                    message:
+                      type: string
+                    node:
+                      type: string
+                    ready:
+                      type: boolean
+                  required:
+                  - node
+                  - ready
+                  type: object
+                type: array
               observedVersion:
                 type: string
               pendingFormat:
@@ -307,6 +343,12 @@ spec:
               ranksTotal:
                 format: int32
                 type: integer
+              selectedNodes:
+                description: SelectedNodes are the nodes matching spec.nodeSelector,
+                  sorted.
+                items:
+                  type: string
+                type: array
             type: object
         type: object
     served: true
