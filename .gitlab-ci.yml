@@ -86,6 +86,12 @@ helm:
     - export IMG_BASE="$REG/$CI_PROJECT_PATH"
     - echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG"
     - export VERSION=$(cat VERSION)
+    # the registry's bearer token is short-lived and podman does not always refresh it on a
+    # second push: log in again before every push, retry a few times
+    - |
+      push() { for i in 1 2 3; do
+        echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG" >/dev/null && podman push "$1" && return 0
+        echo "push $1 failed (attempt $i)"; sleep 10; done; return 1; }
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
@@ -97,9 +103,9 @@ image-operator:
     - podman build --pull -t "$IMG:$CI_COMMIT_SHORT_SHA" .
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
-    - podman push "$IMG:$CI_COMMIT_SHORT_SHA"
-    - podman push "$IMG:$VERSION"
-    - podman push "$IMG:latest"
+    - push "$IMG:$CI_COMMIT_SHORT_SHA"
+    - push "$IMG:$VERSION"
+    - push "$IMG:latest"
 
 image-hostprep:
   <<: *image-job
@@ -108,6 +114,6 @@ image-hostprep:
     - podman build --pull -f images/hostprep/Dockerfile -t "$IMG:$CI_COMMIT_SHORT_SHA" .
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
-    - podman push "$IMG:$CI_COMMIT_SHORT_SHA"
-    - podman push "$IMG:$VERSION"
-    - podman push "$IMG:latest"
+    - push "$IMG:$CI_COMMIT_SHORT_SHA"
+    - push "$IMG:$VERSION"
+    - push "$IMG:latest"
