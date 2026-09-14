@@ -95,7 +95,7 @@ func (r *DaosContainerReconciler) event(obj runtime.Object, typ, reason, msg str
 
 // clientCommand wraps a `daos` invocation: wait for the agent, optionally write
 // the ACL file, then exec.
-func clientCommand(acl []string, args ...string) []string {
+func clientCommand(sysName string, acl []string, args ...string) []string {
 	var b strings.Builder
 	b.WriteString(waitForAgent)
 	if len(acl) > 0 {
@@ -106,6 +106,9 @@ func clientCommand(acl []string, args ...string) []string {
 		b.WriteString(" > " + dmg.ShellQuote(aclFilePath) + " && ")
 	}
 	b.WriteString("exec daos -j")
+	if sysName != "" {
+		b.WriteString(" -G " + dmg.ShellQuote(sysName))
+	}
 	for _, a := range args {
 		b.WriteString(" " + dmg.ShellQuote(a))
 	}
@@ -142,7 +145,7 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 	}
 	switch op {
 	case "query":
-		spec.Command = clientCommand(nil, "cont", "query", pl, cl)
+		spec.Command = clientCommand(systemName(sys), nil, "cont", "query", pl, cl)
 	case opCreate:
 		props := []string{}
 		if c.Spec.RedundancyFactor != nil {
@@ -178,11 +181,11 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 		if len(c.Spec.ACL) > 0 {
 			args = append(args, "--acl-file", aclFilePath)
 		}
-		spec.Command = clientCommand(c.Spec.ACL, args...)
+		spec.Command = clientCommand(systemName(sys), c.Spec.ACL, args...)
 	case opACL:
-		spec.Command = clientCommand(c.Spec.ACL, "cont", "overwrite-acl", pl, cl, "--acl-file", aclFilePath)
+		spec.Command = clientCommand(systemName(sys), c.Spec.ACL, "cont", "overwrite-acl", pl, cl, "--acl-file", aclFilePath)
 	case opDestroy:
-		spec.Command = clientCommand(nil, "cont", "destroy", pl, cl)
+		spec.Command = clientCommand(systemName(sys), nil, "cont", "destroy", pl, cl)
 	}
 	return spec
 }

@@ -60,6 +60,11 @@ spec:
               DaosContainerSpec maps to `daos cont create`. Defaults come from the
               lmcache-daos measurements (chunk 4 MiB, RP_2GX); the CSI StorageClass
               parameters are passed through here.
+
+              RP_2GX / RP_2G1 place two replicas in two fault domains (= two server
+              nodes). On a single-node system `daos cont create` fails with
+              "grp size (2) is larger than domain nr (1)" (seen on the FlexA test bed,
+              2026-09-15): use fileOclass SX / dirOclass S1 and redundancyFactor 0 there.
             properties:
               acl:
                 items:

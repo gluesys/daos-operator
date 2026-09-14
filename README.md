@@ -262,6 +262,10 @@ kubectl get daossys daos -w
 - CI: `go-build` 잡이 `make helm-sync && git diff --exit-code -- charts/` 로 drift 를 막고, `helm` 잡(alpine/helm)이 lint + 전체 옵션 렌더를 한다.
 - kind 검증(2026-09-15): `daos-operator:dev` 이미지로 `helm install` → Deployment Ready → 클러스터 내부 RBAC 으로 daos-dev 시스템 reconcile(DaemonSet·StatefulSet·Service·ServiceMonitor·Job 생성, forbidden 없음) → `helm uninstall`.
 
+## 실장비 검증
+`doc/testbed-2026-09-15.md`: daos_ci 에서 operator 의 dmg/daos Job 명령 전부, CSI 노드 dfuse 마운트(재시작 복구 포함), hostprep 탐색을 실장비로 확인.
+주의 두 가지 — `spec.systemName`(기본 daos_server; 테스트베드는 daos_flexa), 컨테이너 기본 oclass RP_2GX/RP_2G1 은 서버 노드 2대 이상 필요(1대면 SX/S1, rd_fac 0).
+
 ## 관리 표면 (v1 목표)
 | 형태 | 담당 |
 |---|---|

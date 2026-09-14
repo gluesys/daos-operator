@@ -336,8 +336,12 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 }
 
 func systemName(sys *daosv1alpha1.DaosSystem) string {
-	// DAOS 2.8 does not support changing the system name from the default yet
-	// (packaged daos_server.yml: "It must not be changed from the default").
+	// spec.systemName; default daos_server. The packaged daos_server.yml says the
+	// name "must not be changed from the default", but 2.8 systems with other
+	// names exist (the FlexA test bed runs as daos_flexa), so it is configurable.
+	if sys.Spec.SystemName != "" {
+		return sys.Spec.SystemName
+	}
 	return "daos_server"
 }
 

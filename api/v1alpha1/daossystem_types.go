@@ -156,6 +156,10 @@ type UpgradeStatus struct {
 type DaosSystemSpec struct {
 	// Version is the DAOS version (image tag prefix), e.g. "2.8.0".
 	Version string `json:"version"`
+	// SystemName is the DAOS system name (daos_server.yml `name`, agent/control
+	// `name`). Default "daos_server". Changing it after format is not supported.
+	// +kubebuilder:default="daos_server"
+	SystemName string `json:"systemName,omitempty"`
 	// Namespace is where the operator creates this system's ConfigMaps, Secrets and pods.
 	// +kubebuilder:default="daos-system"
 	Namespace string     `json:"namespace,omitempty"`

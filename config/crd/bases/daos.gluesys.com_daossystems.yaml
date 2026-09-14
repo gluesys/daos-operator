@@ -292,6 +292,12 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              systemName:
+                default: daos_server
+                description: |-
+                  SystemName is the DAOS system name (daos_server.yml `name`, agent/control
+                  `name`). Default "daos_server". Changing it after format is not supported.
+                type: string
               telemetry:
                 description: TelemetrySpec exposes the engines' Prometheus endpoint
                   (#12).
