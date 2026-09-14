@@ -1,0 +1,13 @@
+{{- if .Values.system.create }}
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosSystem
+metadata:
+  name: {{ .Values.system.name }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+  annotations:
+    # keep the system when the release is uninstalled: uninstall must never stop engines
+    helm.sh/resource-policy: keep
+spec:
+  {{- toYaml .Values.system.spec | nindent 2 }}
+{{- end }}

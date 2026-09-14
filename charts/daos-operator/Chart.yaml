@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+apiVersion: v2
+name: daos-operator
+description: DAOS on Kubernetes - operator (DaosSystem/DaosPool/DaosContainer), host preparation, telemetry, Grafana dashboard
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+# native sidecars (initContainers[].restartPolicy) for the daos_agent in DaosContainer Jobs
+kubeVersion: ">=1.29.0-0"
+home: https://gitlab.gluesys.com/exastor/daos-operator
+sources:
+  - https://gitlab.gluesys.com/exastor/daos-operator
+  - https://gitlab.gluesys.com/exastor/daos-images
+keywords: [daos, storage, nvme, rdma, kv-cache]
+maintainers:
+  - name: Gluesys exastor
+annotations:
+  daos.gluesys.com/daos-version: "2.8.0"

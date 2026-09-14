@@ -39,11 +39,13 @@ import (
 // The ClusterRole it binds to is shipped with the operator (config/rbac/hostprep_role.yaml);
 // the operator only creates the ServiceAccount and the binding.
 
+// DefaultHostPrepImage is used when spec.images.hostPrep is empty. The Helm
+// chart overrides it through the DAOS_HOSTPREP_DEFAULT_IMAGE environment variable.
+var DefaultHostPrepImage = "registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:latest"
+
 const (
-	// DefaultHostPrepImage is used when spec.images.hostPrep is empty.
-	DefaultHostPrepImage = "registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:latest"
-	hostPrepClusterRole  = "daos-hostprep"
-	hostPrepSAName       = "daos-hostprep"
+	hostPrepClusterRole = "daos-hostprep"
+	hostPrepSAName      = "daos-hostprep"
 )
 
 // +kubebuilder:rbac:groups=apps,resources=daemonsets,verbs=get;list;watch;create;update;patch;delete

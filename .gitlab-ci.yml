@@ -51,6 +51,21 @@ go-build:
     - go vet ./...
     - gofmt -l api/ internal/ cmd/ | tee /tmp/gofmt.txt; test ! -s /tmp/gofmt.txt
     - make manifests generate && git diff --exit-code -- config/crd api/
+    - make helm-sync && git diff --exit-code -- charts/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Helm chart: lint and render with every optional resource on.
+helm:
+  stage: check
+  image:
+    name: alpine/helm:3.19.0
+    entrypoint: [""]
+  script:
+    - helm lint charts/daos-operator
+    - helm template daos-operator charts/daos-operator --namespace daos-system --set system.create=true --set grafana.dashboard.enabled=true > /tmp/rendered.yaml
+    - grep -c '^kind:' /tmp/rendered.yaml
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"

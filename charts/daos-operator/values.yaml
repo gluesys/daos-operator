@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# daos-operator Helm values. The chart installs the CRDs (crds/), the operator
+# Deployment with its RBAC, the ClusterRole the host-preparation DaemonSet
+# binds to, and optionally the DAOS Grafana dashboard ConfigMap and one
+# DaosSystem. Everything else (hostprep DaemonSet, server StatefulSets,
+# metrics Service/ServiceMonitor, dmg Jobs) is created by the operator.
+
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: ""            # defaults to .Chart.appVersion
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+replicaCount: 1
+leaderElect: true
+# --metrics-bind-address for the operator's own controller-runtime metrics ("0" = off)
+metricsBindAddress: "0"
+logLevel: info
+
+resources:
+  requests: {cpu: 10m, memory: 64Mi}
+  limits: {cpu: 500m, memory: 256Mi}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+podAnnotations: {}
+
+serviceAccount:
+  create: true
+  name: ""           # defaults to the release fullname
+  annotations: {}
+
+rbac:
+  create: true
+
+# ClusterRole "daos-hostprep" that the operator binds to the per-system hostprep ServiceAccount.
+hostprep:
+  clusterRole: daos-hostprep
+  # image the operator uses when DaosSystem.spec.images.hostPrep is empty ("" = operator default)
+  defaultImage: ""
+
+grafana:
+  dashboard:
+    # ConfigMap with the upstream DAOS Grafana dashboard, labelled for the grafana sidecar
+    enabled: false
+    namespace: ""    # defaults to the release namespace
+    label: grafana_dashboard
+    labelValue: "1"
+
+# Create one DaosSystem with the release. spec is passed through as-is (see
+# api/v1alpha1 for the fields); the operator fills status.
+system:
+  create: false
+  name: daos
+  spec:
+    version: "2.8.0"
+    namespace: daos-system
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
+      agent: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
+      admin: registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+    placement: dedicated
+    nodeSelector:
+      daos.gluesys.com/role: storage
+    msReplicas: 1
+    provider: "ofi+verbs;ofi_rxm"
+    nrHugepages: 8192
+    allowInsecure: true
+    engines:
+      - targets: 8
+        helpers: 2
+        scmSizeGiB: 32
+    hostPrep:
+      enabled: true
+      bindNvme: false
+
+# exastor/daos-csi is not released yet (design only). When it is, this flag
+# will pull it in as a subchart; today it only prints a note.
+csi:
+  enabled: false

@@ -187,6 +187,13 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	var hostlist, serversNotReady []string
 	for _, f := range facts {
 		ncs := daosv1alpha1.NodeConfigStatus{Node: f.Name, ControlAddr: f.ControlAddr}
+		if !serverEnabled(sys) {
+			// disabling servers must remove the workload even when the node's facts are
+			// gone (hostprep rewrote them) or it is excluded below
+			if err := r.ensureServer(ctx, sys, ns, f.Name, "", nil); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if dsn, bad := conflicted[f.Name]; bad {
 			ncs.Message = "excluded: shares physical drive " + dsn + " with another node"
 			allReady = false

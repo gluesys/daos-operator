@@ -499,6 +499,11 @@ var _ = Describe("DaosSystem Controller", func() {
 		f := false
 		sys.Spec.Server.Enabled = &f
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		// the node lost its facts in the meantime (hostprep rewrote them): the workload must still go
+		n1 := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "n1"}, n1)).To(Succeed())
+		n1.Annotations = map[string]string{}
+		Expect(k8sClient.Update(ctx, n1)).To(Succeed())
 		reconcileOnce()
 		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})
 		Expect(err).To(HaveOccurred())

@@ -21,6 +21,9 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #14 (2026-09-15): Helm 차트 `charts/daos-operator`.** CRD + operator Deployment/RBAC + hostprep ClusterRole + (옵션) Grafana 대시보드
+  ConfigMap + (옵션) DaosSystem 한 개를 한 번에 설치. `make helm-sync` 가 생성 산출물(CRD, ClusterRole 규칙, JSON)을 차트로 복사하고 CI 가 drift 를 잡는다.
+  CSI 는 exastor/daos-csi 가 설계 단계라 `csi.enabled` 는 안내만 한다.
 - **Phase 2 #13 (2026-09-15): 전체 중단 업그레이드(ADR-003).** 서버 파드 이미지 ≠ `spec.images.server` 이면 `Upgrading=False (Pending)` 로 멈추고,
   `spec.upgrade.approved: true` 뒤에만 `dmg system stop` → 파드 교체 → Ready 대기 → `dmg system start` → 전 rank joined 검증. 승인은 1회용.
 - **Phase 2 #12 (2026-09-15): 텔레메트리.** `telemetry_port`(기본 9191) 렌더 + 헤드리스 `<sys>-metrics` Service + prometheus-operator CRD 가 있으면
@@ -192,6 +195,25 @@ kubectl patch daossys daos-dev --type merge -p '{"spec":{"images":{"server":"...
 kubectl patch daossys daos-dev --type merge -p '{"spec":{"upgrade":{"approved":true}}}'   # 드레인 뒤, 사람만
 kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 ```
+
+## 설치: Helm 차트 (#14)
+```bash
+make helm-sync helm-lint                       # 생성 산출물 → 차트 동기화 + lint (bin/helm)
+helm install daos-operator charts/daos-operator -n daos-system --create-namespace \
+  --set image.tag=<operator 태그> \
+  --set grafana.dashboard.enabled=true \
+  --set system.create=true --set system.name=daos      # values.yaml 의 system.spec 을 편집해서
+kubectl get daossys daos -w
+```
+- 차트가 설치하는 것: `crds/`(3종, 최초 설치 시에만 — 업그레이드 시 `kubectl apply --server-side -f charts/daos-operator/crds/`), ServiceAccount,
+  ClusterRole(`templates/clusterrole.yaml` 은 `make helm-sync` 가 `config/rbac/role.yaml` 에서 **생성**, 손으로 고치지 말 것)·Binding,
+  leader-election Role, ClusterRole `daos-hostprep`, Deployment, 옵션 Grafana ConfigMap(`grafana.dashboard.enabled`), 옵션 DaosSystem(`system.create`,
+  `helm.sh/resource-policy: keep` 이라 uninstall 이 엔진을 멈추지 않는다).
+- operator 가 만드는 것(차트 밖): hostprep DaemonSet, 서버 StatefulSet, 메트릭 Service/ServiceMonitor, dmg/daos Job.
+- `hostprep.defaultImage` → env `DAOS_HOSTPREP_DEFAULT_IMAGE`(spec.images.hostPrep 이 비었을 때의 기본 이미지).
+- `csi.enabled` 는 exastor/daos-csi 릴리스 전까지 안내만 출력한다. 이슈 #14 의 "helm install 후 15분 내 PV 마운트" 는 CSI 가 있어야 닫힌다.
+- CI: `go-build` 잡이 `make helm-sync && git diff --exit-code -- charts/` 로 drift 를 막고, `helm` 잡(alpine/helm)이 lint + 전체 옵션 렌더를 한다.
+- kind 검증(2026-09-15): `daos-operator:dev` 이미지로 `helm install` → Deployment Ready → 클러스터 내부 RBAC 으로 daos-dev 시스템 reconcile(DaemonSet·StatefulSet·Service·ServiceMonitor·Job 생성, forbidden 없음) → `helm uninstall`.
 
 ## 관리 표면 (v1 목표)
 | 형태 | 담당 |

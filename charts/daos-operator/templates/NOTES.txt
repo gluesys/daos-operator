@@ -1,0 +1,37 @@
+daos-operator {{ .Chart.Version }} installed in namespace {{ .Release.Namespace }}.
+
+  kubectl -n {{ .Release.Namespace }} get deploy {{ include "daos-operator.fullname" . }}
+  kubectl get crd | grep daos.gluesys.com
+{{- if .Values.system.create }}
+
+DaosSystem "{{ .Values.system.name }}" was created (helm.sh/resource-policy: keep -- uninstalling
+the chart leaves it and the engines running). Watch it come up:
+
+  kubectl get daossys {{ .Values.system.name }} -w
+  kubectl get daossys {{ .Values.system.name }} -o jsonpath='{range .status.conditions[*]}{.type}={.status} ({.reason}) {.message}{"\n"}{end}'
+
+When status.pendingFormat is true, storage is unformatted. Formatting destroys data and is
+never automatic. After you have checked the drive list, approve it once:
+
+  kubectl annotate daossystem {{ .Values.system.name }} daos.gluesys.com/format-approved=true
+{{- else }}
+
+No DaosSystem was created (system.create=false). Label your storage nodes and create one:
+
+  kubectl label node <node> daos.gluesys.com/role=storage
+  kubectl apply -f config/samples/daos_v1alpha1_daossystem.yaml
+{{- end }}
+{{- if .Values.csi.enabled }}
+
+csi.enabled=true has no effect yet: exastor/daos-csi is design-only. This chart will pull it
+in as a subchart when it is released.
+{{- end }}
+{{- if not .Values.grafana.dashboard.enabled }}
+
+Grafana: set grafana.dashboard.enabled=true to ship the upstream DAOS dashboard as a
+grafana_dashboard ConfigMap (needs the grafana sidecar), or import
+config/grafana/DAOS-Grafana-Dashboard.json by hand.
+{{- end }}
+
+CRDs live in crds/ and are installed on first install only; on chart upgrades apply them with
+  kubectl apply --server-side -f charts/daos-operator/crds/

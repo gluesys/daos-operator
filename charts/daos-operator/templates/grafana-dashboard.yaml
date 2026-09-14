@@ -1,0 +1,15 @@
+{{- if .Values.grafana.dashboard.enabled }}
+# Upstream DAOS dashboard (utils/grafana/DAOS-Grafana-Dashboard.json, BSD-2-Clause-Patent,
+# Copyright Intel Corporation), labelled for the grafana sidecar.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-grafana-dashboard
+  namespace: {{ default .Release.Namespace .Values.grafana.dashboard.namespace }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+    {{ .Values.grafana.dashboard.label }}: {{ .Values.grafana.dashboard.labelValue | quote }}
+data:
+  DAOS-Grafana-Dashboard.json: |-
+    {{- .Files.Get "dashboards/DAOS-Grafana-Dashboard.json" | nindent 4 }}
+{{- end }}

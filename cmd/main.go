@@ -185,6 +185,9 @@ func main() {
 		os.Exit(1)
 	}
 
+	if v := os.Getenv("DAOS_HOSTPREP_DEFAULT_IMAGE"); v != "" {
+		controller.DefaultHostPrepImage = v
+	}
 	kube, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "Failed to create kubernetes clientset")

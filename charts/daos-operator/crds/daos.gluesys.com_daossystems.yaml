@@ -1,0 +1,565 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: daossystems.daos.gluesys.com
+spec:
+  group: daos.gluesys.com
+  names:
+    kind: DaosSystem
+    listKind: DaosSystemList
+    plural: daossystems
+    shortNames:
+    - daossys
+    singular: daossystem
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.version
+      name: Version
+      type: string
+    - jsonPath: .status.ranksJoined
+      name: Ranks
+      type: string
+    - jsonPath: .status.formatted
+      name: Formatted
+      type: boolean
+    - jsonPath: .status.pendingFormat
+      name: PendingFormat
+      type: boolean
+    - jsonPath: .status.upgrade.phase
+      name: Upgrade
+      type: string
+    - jsonPath: .status.conditions[?(@.type=="Ready")].status
+      name: Ready
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DaosSystem is a DAOS storage system (one `daos_server` system,
+          N ranks).
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: DaosSystemSpec defines the desired state of a DAOS system.
+            properties:
+              allowInsecure:
+                description: AllowInsecure disables TLS between dmg/agent and servers.
+                  Phase 0 only.
+                type: boolean
+              engines:
+                description: Engines per node; usually one per socket.
+                items:
+                  description: EngineSpec describes one daos_engine per node (one
+                    per CPU socket).
+                  properties:
+                    bdevList:
+                      description: |-
+                        BdevList is the NVMe PCI address list. Empty means the operator discovers
+                        VFIO-bound devices on the node. Dual-port chassis: the operator must verify
+                        PCI DSN uniqueness across nodes before format (2026-09-03 incident).
+                      items:
+                        type: string
+                      type: array
+                    fabricIface:
+                      description: |-
+                        FabricIface is the NIC name. Empty means the operator discovers it per node
+                        (names differ per host: ens2 vs ens2np0 -- never copy configs between hosts).
+                      type: string
+                    fabricPort:
+                      default: 31316
+                      format: int32
+                      type: integer
+                    helpers:
+                      default: 2
+                      description: Helpers is nr_xs_helpers.
+                      format: int32
+                      type: integer
+                    pinnedNumaNode:
+                      description: PinnedNumaNode pins the engine; nil lets DAOS choose.
+                      format: int32
+                      type: integer
+                    scmSizeGiB:
+                      default: 32
+                      description: |-
+                        ScmSizeGiB is the tmpfs (MD-on-SSD metadata) size; reflected 1:1 into the
+                        pod memory request so the scheduler sees it (ADR-002).
+                      format: int32
+                      type: integer
+                    targets:
+                      default: 8
+                      description: Targets is the number of I/O targets (usually one
+                        per NVMe device).
+                      format: int32
+                      type: integer
+                  type: object
+                minItems: 1
+                type: array
+              hostPrep:
+                description: |-
+                  HostPrepSpec controls the per-node preparation DaemonSet (#8). It discovers
+                  NVMe/DSN/RDMA facts into Node annotations, raises hugepages, and only when
+                  BindNvme is true hands unused NVMe to SPDK. It never touches devices that
+                  have partitions, mounts or holders, and never formats anything.
+                properties:
+                  bindNvme:
+                    description: |-
+                      BindNvme lets hostprep unbind unused NVMe from the kernel (daos_server nvme prepare).
+                      Default false: discover and annotate only.
+                    type: boolean
+                  enabled:
+                    description: Enabled deploys the DaemonSet. Default true.
+                    type: boolean
+                  fabricCIDR:
+                    description: |-
+                      FabricCIDR picks the RDMA NIC whose IPv4 address is in this network, e.g. 172.28.136.0/24.
+                      Empty = first RDMA NIC with an address.
+                    type: string
+                  intervalSeconds:
+                    description: IntervalSeconds between discovery runs. Default 300.
+                    format: int32
+                    type: integer
+                type: object
+              images:
+                description: ImagesSpec pins the container images from exastor/daos-images.
+                properties:
+                  admin:
+                    type: string
+                  agent:
+                    type: string
+                  client:
+                    description: |-
+                      Client is the daos-client image (daos CLI, dfuse); DaosContainer Jobs run it
+                      with the Agent image as a sidecar.
+                    type: string
+                  hostPrep:
+                    description: |-
+                      HostPrep is the host-preparation DaemonSet image (daos-server + hostprep binary).
+                      Empty uses the operator's built-in default.
+                    type: string
+                  server:
+                    type: string
+                required:
+                - admin
+                - agent
+                - server
+                type: object
+              msReplicas:
+                default: 3
+                description: |-
+                  MsReplicas is the number of management-service replicas (odd). Phase 0
+                  test beds with two hosts run 1 and are therefore not HA.
+                enum:
+                - 1
+                - 3
+                - 5
+                format: int32
+                type: integer
+              namespace:
+                default: daos-system
+                description: Namespace is where the operator creates this system's
+                  ConfigMaps, Secrets and pods.
+                type: string
+              nodeSelector:
+                additionalProperties:
+                  type: string
+                description: NodeSelector picks storage nodes. Required for dedicated
+                  placement.
+                type: object
+              nrHugepages:
+                default: 8192
+                format: int32
+                type: integer
+              placement:
+                default: dedicated
+                description: PlacementMode selects where engines run (ADR-001).
+                enum:
+                - dedicated
+                - hyperconverged
+                type: string
+              provider:
+                default: ofi+verbs;ofi_rxm
+                description: Provider is the fabric provider. UCX is excluded by default
+                  (ADR-002).
+                type: string
+              server:
+                description: |-
+                  ServerSpec controls the per-node server workloads (#9). Each rendered node
+                  gets its own StatefulSet (replicas=1, pinned with a required nodeAffinity)
+                  because a DAOS rank is bound to the node that holds its superblock and NVMe:
+                  Kubernetes must never reschedule it elsewhere (ADR-002).
+                properties:
+                  dataHostPath:
+                    description: |-
+                      DataHostPath is the node directory that holds control_metadata (management
+                      service DB, superblock records). Mounted at /var/daos. Default /var/daos/<system>.
+                    type: string
+                  enabled:
+                    description: |-
+                      Enabled creates the server StatefulSets. Default true. Set false to render
+                      configuration only (e.g. manual bring-up with exastor/daos-images compose).
+                    type: boolean
+                  logHostPath:
+                    description: LogHostPath is the node directory for daos_server/engine
+                      logs. Default /var/log/daos/<system>.
+                    type: string
+                  resources:
+                    description: |-
+                      Resources overrides the computed requests/limits of the daos-server container.
+                      By default memory request = sum(scmSizeGiB)+2Gi (tmpfs is charged to the pod),
+                      cpu request = sum(targets+helpers+1) and hugepages-2Mi = nrHugepages*2Mi.
+                    properties:
+                      claims:
+                        description: |-
+                          Claims lists the names of resources, defined in spec.resourceClaims,
+                          that are used by this container.
+
+                          This field depends on the
+                          DynamicResourceAllocation feature gate.
+
+                          This field is immutable. It can only be set for containers.
+                        items:
+                          description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                          properties:
+                            name:
+                              description: |-
+                                Name must match the name of one entry in pod.spec.resourceClaims of
+                                the Pod where this field is used. It makes that resource available
+                                inside a container.
+                              type: string
+                            request:
+                              description: |-
+                                Request is the name chosen for a request in the referenced claim.
+                                If empty, everything from the claim is made available, otherwise
+                                only the result of this request.
+                              type: string
+                          required:
+                          - name
+                          type: object
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                      limits:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Limits describes the maximum amount of compute resources allowed.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                      requests:
+                        additionalProperties:
+                          anyOf:
+                          - type: integer
+                          - type: string
+                          pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                          x-kubernetes-int-or-string: true
+                        description: |-
+                          Requests describes the minimum amount of compute resources required.
+                          If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                          otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                          More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                        type: object
+                    type: object
+                  terminationGracePeriodSeconds:
+                    description: TerminationGracePeriodSeconds for the engine pod.
+                      Default 120.
+                    format: int64
+                    type: integer
+                type: object
+              telemetry:
+                description: TelemetrySpec exposes the engines' Prometheus endpoint
+                  (#12).
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled sets telemetry_port in daos_server.yml and creates the
+                      <sys>-metrics Service. Default true.
+                    type: boolean
+                  interval:
+                    description: Interval is the scrape interval. Default 15s (the
+                      DAOS dashboard uses rate(...[15s])).
+                    type: string
+                  port:
+                    description: Port is the daos_server telemetry_port. Default 9191.
+                    format: int32
+                    type: integer
+                  serviceMonitor:
+                    description: |-
+                      ServiceMonitor creates a monitoring.coreos.com/v1 ServiceMonitor when that
+                      CRD is installed (prometheus-operator / kube-prometheus-stack). Default true;
+                      silently skipped, with a condition message, when the CRD is absent.
+                    type: boolean
+                  serviceMonitorLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ServiceMonitorLabels are added to the ServiceMonitor so a Prometheus with a
+                      serviceMonitorSelector picks it up (e.g. release: kube-prometheus-stack).
+                    type: object
+                type: object
+              tolerations:
+                items:
+                  description: |-
+                    The pod this Toleration is attached to tolerates any taint that matches
+                    the triple <key,value,effect> using the matching operator <operator>.
+                  properties:
+                    effect:
+                      description: |-
+                        Effect indicates the taint effect to match. Empty means match all taint effects.
+                        When specified, allowed values are NoSchedule, PreferNoSchedule and NoExecute.
+                      type: string
+                    key:
+                      description: |-
+                        Key is the taint key that the toleration applies to. Empty means match all taint keys.
+                        If the key is empty, operator must be Exists; this combination means to match all values and all keys.
+                      type: string
+                    operator:
+                      description: |-
+                        Operator represents a key's relationship to the value.
+                        Valid operators are Exists, Equal, Lt, and Gt. Defaults to Equal.
+                        Exists is equivalent to wildcard for value, so that a pod can
+                        tolerate all taints of a particular category.
+                        Lt and Gt perform numeric comparisons (requires feature gate TaintTolerationComparisonOperators).
+                      type: string
+                    tolerationSeconds:
+                      description: |-
+                        TolerationSeconds represents the period of time the toleration (which must be
+                        of effect NoExecute, otherwise this field is ignored) tolerates the taint. By default,
+                        it is not set, which means tolerate the taint forever (do not evict). Zero and
+                        negative values will be treated as 0 (evict immediately) by the system.
+                      format: int64
+                      type: integer
+                    value:
+                      description: |-
+                        Value is the taint value the toleration matches to.
+                        If the operator is Exists, the value should be empty, otherwise just a regular string.
+                      type: string
+                  type: object
+                type: array
+              upgrade:
+                description: |-
+                  UpgradeSpec implements ADR-003: before DAOS 3.0 only a full-stop upgrade
+                  exists and it never runs without an explicit approval.
+                properties:
+                  approved:
+                    description: |-
+                      Approved must be set to true by a human for the operator to execute
+                      a version change. Setting it asserts that clients are drained (the
+                      operator cannot see client handles). It is reset to false when the
+                      upgrade completes or fails.
+                    type: boolean
+                  timeoutMinutes:
+                    description: TimeoutMinutes bounds the wait for pods and ranks
+                      in each phase. Default 30.
+                    format: int32
+                    type: integer
+                type: object
+              version:
+                description: Version is the DAOS version (image tag prefix), e.g.
+                  "2.8.0".
+                type: string
+            required:
+            - engines
+            - images
+            - version
+            type: object
+          status:
+            description: DaosSystemStatus is read back from the DAOS management service
+              and metrics.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              formatTime:
+                description: FormatTime is when the operator's format Job completed
+                  successfully.
+                format: date-time
+                type: string
+              formatted:
+                type: boolean
+              lastQueryTime:
+                description: LastQueryTime is when `dmg system query` last answered
+                  (ranks are as of then).
+                format: date-time
+                type: string
+              msReplicaNodes:
+                description: MsReplicaNodes are the nodes chosen to host management-service
+                  replicas.
+                items:
+                  type: string
+                type: array
+              nodeConfigs:
+                items:
+                  description: NodeConfigStatus reports what the operator rendered
+                    for one selected node.
+                  properties:
+                    bdevCount:
+                      format: int32
+                      type: integer
+                    configMap:
+                      type: string
+                    controlAddr:
+                      type: string
+                    fabricIface:
+                      type: string
+                    message:
+                      type: string
+                    node:
+                      type: string
+                    ready:
+                      type: boolean
+                    serverReady:
+                      description: ServerReady mirrors the server pod's Ready condition
+                        (control port listening).
+                      type: boolean
+                    workload:
+                      description: Workload is the server StatefulSet created for
+                        this node (#9).
+                      type: string
+                  required:
+                  - node
+                  - ready
+                  type: object
+                type: array
+              observedVersion:
+                type: string
+              pendingFormat:
+                description: |-
+                  PendingFormat is set when storage is unformatted; a human must create the
+                  approval (kubectl daos system format) -- never automated.
+                type: boolean
+              ranks:
+                items:
+                  description: |-
+                    RankStatus mirrors `dmg system query -v` for one rank. The operator copies
+                    it; it never keeps its own membership database (no second source of truth).
+                  properties:
+                    node:
+                      type: string
+                    rank:
+                      format: int32
+                      type: integer
+                    state:
+                      type: string
+                  required:
+                  - node
+                  - rank
+                  - state
+                  type: object
+                type: array
+              ranksJoined:
+                format: int32
+                type: integer
+              ranksTotal:
+                format: int32
+                type: integer
+              selectedNodes:
+                description: SelectedNodes are the nodes matching spec.nodeSelector,
+                  sorted.
+                items:
+                  type: string
+                type: array
+              upgrade:
+                description: Upgrade is the state of the last/current full-stop upgrade
+                  (#13).
+                properties:
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  fromImage:
+                    type: string
+                  message:
+                    type: string
+                  phase:
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                  toImage:
+                    type: string
+                type: object
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
