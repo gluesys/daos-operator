@@ -79,6 +79,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		// envtest has no GC: remove ConfigMaps ourselves
 		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-hostprep"}})
 		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-metrics"}})
+		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-certs"}})
 		stss := &appsv1.StatefulSetList{}
 		_ = k8sClient.List(ctx, stss)
 		for i := range stss.Items {
@@ -489,6 +490,78 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sys.Spec.Upgrade.Approved).To(BeFalse())
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1-0"}, p)).To(Succeed())
 		Expect(p.DeletionTimestamp.IsZero()).To(BeTrue(), "no pod touched after a failed stop")
+	})
+
+	It("generates transport certificates once when allowInsecure=false and mounts them (#16)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		reconcileWith(f)
+		Expect(cond(getSys(), daosv1alpha1.ConditionCertificates).Reason).To(Equal("Insecure"))
+		Expect(f.last("-dmg-query").CertsSecret).To(BeEmpty())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, &corev1.Secret{})).NotTo(Succeed())
+
+		sys := getSys()
+		sys.Spec.AllowInsecure = false
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sec := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(sec.Data).To(HaveLen(7))
+		Expect(sec.Data).To(HaveKey("daosCA.crt"))
+		Expect(sec.Data).To(HaveKey("server.key"))
+		Expect(sec.OwnerReferences).To(HaveLen(1))
+		Expect(cond(getSys(), daosv1alpha1.ConditionCertificates).Reason).To(Equal("Generated"))
+		first := string(sec.Data["daosCA.crt"])
+
+		By("server pods mount CA, server cert/key and the clients directory; key is 0400")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		var vol *corev1.Volume
+		for i := range sts.Spec.Template.Spec.Volumes {
+			if sts.Spec.Template.Spec.Volumes[i].Name == "certs" {
+				vol = &sts.Spec.Template.Spec.Volumes[i]
+			}
+		}
+		Expect(vol).NotTo(BeNil())
+		Expect(vol.Secret.SecretName).To(Equal("t1-certs"))
+		paths := map[string]int32{}
+		for _, it := range vol.Secret.Items {
+			paths[it.Path] = *it.Mode
+		}
+		Expect(paths).To(HaveKeyWithValue("server.key", int32(0o400)))
+		Expect(paths).To(HaveKey("clients/agent.crt"))
+		Expect(paths).To(HaveKey("clients/admin.crt"))
+		Expect(paths).NotTo(HaveKey("admin.key"), "servers never get client private keys")
+		var mounted bool
+		for _, m := range sts.Spec.Template.Spec.Containers[0].VolumeMounts {
+			if m.Name == "certs" && m.MountPath == "/etc/daos/certs" && m.ReadOnly {
+				mounted = true
+			}
+		}
+		Expect(mounted).To(BeTrue())
+		Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("s"))
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_server.yml"]).To(ContainSubstring("allow_insecure: false"))
+
+		By("dmg Jobs get the admin certificate set")
+		q := f.last("-dmg-query")
+		Expect(q.CertsSecret).To(Equal("t1-certs"))
+		Expect(q.CertsFiles).To(HaveKey("admin.key"))
+		Expect(q.CertsFiles).NotTo(HaveKey("server.key"))
+
+		By("a second reconcile keeps the Secret and reports it valid")
+		reconcileWith(f)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(string(sec.Data["daosCA.crt"])).To(Equal(first), "no regeneration")
+		Expect(cond(getSys(), daosv1alpha1.ConditionCertificates).Reason).To(Equal("Valid"))
+
+		By("a damaged Secret is reported, never overwritten")
+		delete(sec.Data, "agent.key")
+		Expect(k8sClient.Update(ctx, sec)).To(Succeed())
+		reconcileWith(f)
+		Expect(cond(getSys(), daosv1alpha1.ConditionCertificates).Reason).To(Equal("Invalid"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(sec.Data).To(HaveLen(6))
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

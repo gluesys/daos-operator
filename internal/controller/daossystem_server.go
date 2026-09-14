@@ -110,7 +110,7 @@ func serverResources(sys *daosv1alpha1.DaosSystem, engines []render.Engine) core
 }
 
 // ensureServer creates or updates the pinned StatefulSet for one node.
-func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, node, configMap string, engines []render.Engine) error {
+func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, node, configMap string, engines []render.Engine, certsSecret string) error {
 	name := serverWorkloadName(sys, node)
 	if !serverEnabled(sys) {
 		sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
@@ -165,6 +165,20 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			hostVol("dev", "/dev", &dir),
 			hostVol("sys", "/sys", &dir),
 		}
+		if certsSecret != "" {
+			pod.Volumes = append(pod.Volumes, certsVolume(certsSecret, serverCertFiles()))
+		}
+		mounts := []corev1.VolumeMount{
+			{Name: "config", MountPath: "/etc/daos/daos_server.yml", SubPath: keyServerYML, ReadOnly: true},
+			{Name: "data", MountPath: "/var/daos"},
+			{Name: "logs", MountPath: "/var/log/daos"},
+			{Name: "hugepages", MountPath: "/dev/hugepages"},
+			{Name: "dev", MountPath: "/dev"},
+			{Name: "sys", MountPath: "/sys"},
+		}
+		if certsSecret != "" {
+			mounts = append(mounts, corev1.VolumeMount{Name: "certs", MountPath: certsMountPath, ReadOnly: true})
+		}
 		pod.Containers = []corev1.Container{{
 			Name:            serverContainer,
 			Image:           sys.Spec.Images.Server,
@@ -173,14 +187,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			Ports:           ports,
 			SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
 			Resources:       serverResources(sys, engines),
-			VolumeMounts: []corev1.VolumeMount{
-				{Name: "config", MountPath: "/etc/daos/daos_server.yml", SubPath: keyServerYML, ReadOnly: true},
-				{Name: "data", MountPath: "/var/daos"},
-				{Name: "logs", MountPath: "/var/log/daos"},
-				{Name: "hugepages", MountPath: "/dev/hugepages"},
-				{Name: "dev", MountPath: "/dev"},
-				{Name: "sys", MountPath: "/sys"},
-			},
+			VolumeMounts:    mounts,
 			// the control plane listens as soon as daos_server is up, before format;
 			// no liveness probe: a slow engine must never be killed by a probe
 			ReadinessProbe: &corev1.Probe{

@@ -84,6 +84,24 @@ func TestJobRunnerLifecycle(t *testing.T) {
 	}
 }
 
+func TestSecretVolume(t *testing.T) {
+	v := secretVolume("certs", "s1", map[string]string{"daosCA.crt": "daosCA.crt", "clients/agent.crt": "agent.crt", "admin.key": "admin.key"})
+	if v.Secret.SecretName != "s1" || len(v.Secret.Items) != 3 {
+		t.Fatalf("%+v", v)
+	}
+	for _, it := range v.Secret.Items {
+		if it.Key == "admin.key" && *it.Mode != 0o400 {
+			t.Errorf("key file mode %o", *it.Mode)
+		}
+		if it.Path == "clients/agent.crt" && it.Key != "agent.crt" {
+			t.Errorf("clients mapping: %+v", it)
+		}
+	}
+	if v.Secret.Items[0].Path != "admin.key" {
+		t.Errorf("items must be sorted by path for a stable spec: %v", v.Secret.Items)
+	}
+}
+
 func TestJobFinished(t *testing.T) {
 	j := &batchv1.Job{}
 	if ok, _ := jobFinished(j); ok {

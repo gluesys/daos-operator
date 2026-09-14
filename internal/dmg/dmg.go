@@ -69,6 +69,11 @@ type RunSpec struct {
 	// Volumes and Mounts are added to the pod / main container (control config is always mounted).
 	Volumes []corev1.Volume
 	Mounts  []corev1.VolumeMount
+	// CertsSecret, when set, is mounted at /etc/daos/certs: CertsFiles (path -> key)
+	// into the main container and SidecarCertsFiles into the sidecar.
+	CertsSecret       string
+	CertsFiles        map[string]string
+	SidecarCertsFiles map[string]string
 	// Privileged runs the main container privileged (RDMA device access for the client library).
 	Privileged bool
 	// ShareProcessNamespace lets the agent sidecar validate the client process.
@@ -190,10 +195,18 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 	if s.Privileged {
 		sec = &corev1.SecurityContext{Privileged: ptr.To(true)}
 	}
+	if s.CertsSecret != "" {
+		volumes = append(volumes, secretVolume("certs", s.CertsSecret, s.CertsFiles))
+		mounts = append(mounts, corev1.VolumeMount{Name: "certs", MountPath: "/etc/daos/certs", ReadOnly: true})
+	}
 	var inits []corev1.Container
 	if s.Sidecar != nil {
 		sc := *s.Sidecar
 		sc.RestartPolicy = ptr.To(corev1.ContainerRestartPolicyAlways)
+		if s.CertsSecret != "" && len(s.SidecarCertsFiles) > 0 {
+			volumes = append(volumes, secretVolume("sidecar-certs", s.CertsSecret, s.SidecarCertsFiles))
+			sc.VolumeMounts = append(sc.VolumeMounts, corev1.VolumeMount{Name: "sidecar-certs", MountPath: "/etc/daos/certs", ReadOnly: true})
+		}
 		inits = append(inits, sc)
 	}
 	var shareNS *bool
@@ -239,6 +252,20 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 		return nil
 	}
 	return err
+}
+
+// secretVolume projects selected Secret keys (path -> key); *.key files are 0400.
+func secretVolume(name, secret string, files map[string]string) corev1.Volume {
+	items := make([]corev1.KeyToPath, 0, len(files))
+	for path, key := range files {
+		mode := int32(0o444)
+		if strings.HasSuffix(key, ".key") {
+			mode = 0o400
+		}
+		items = append(items, corev1.KeyToPath{Key: key, Path: path, Mode: ptr.To(mode)})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secret, Items: items, DefaultMode: ptr.To(int32(0o444))}}}
 }
 
 // Envelope is the `dmg -j` output frame.

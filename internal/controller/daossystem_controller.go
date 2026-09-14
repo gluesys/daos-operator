@@ -182,6 +182,12 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 
+	// 4b. transport certificates (#16): generated once when allowInsecure=false
+	certsSecret, err := r.ensureCerts(ctx, sys, ns, &status)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 5. per-node server config
 	rendered, allReady := 0, true
 	var hostlist, serversNotReady []string
@@ -190,7 +196,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if !serverEnabled(sys) {
 			// disabling servers must remove the workload even when the node's facts are
 			// gone (hostprep rewrote them) or it is excluded below
-			if err := r.ensureServer(ctx, sys, ns, f.Name, "", nil); err != nil {
+			if err := r.ensureServer(ctx, sys, ns, f.Name, "", nil, ""); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -236,7 +242,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		rendered++
 		hostlist = append(hostlist, f.ControlAddr)
 		// 5b. pinned server workload for this node (#9)
-		if err := r.ensureServer(ctx, sys, ns, f.Name, cmName, cfg.Engines); err != nil {
+		if err := r.ensureServer(ctx, sys, ns, f.Name, cmName, cfg.Engines, certsSecret); err != nil {
 			return ctrl.Result{}, fmt.Errorf("server workload for %s: %w", f.Name, err)
 		}
 		if serverEnabled(sys) {
@@ -434,6 +440,7 @@ func (r *DaosSystemReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&batchv1.Job{}).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.Secret{}).
 		Watches(&corev1.Node{}, nodeToSystems,
 			// only label/annotation changes matter here; heartbeat status updates must not fan out
 			// to every DaosSystem

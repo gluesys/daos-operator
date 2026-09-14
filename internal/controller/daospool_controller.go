@@ -143,7 +143,8 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		Owner: pool, Namespace: ns, Name: "pool-" + pool.Name + "-dmg-" + op,
 		Image: sys.Spec.Images.Admin, ControlConfigMap: sys.Name + "-control",
 		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
-		Labels: map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name},
+		Labels:      map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name},
+		CertsSecret: adminCertsSecret(sys), CertsFiles: adminCertFiles(),
 	}
 	base := []string{"dmg", "-o", controlConfigPath, "-j"}
 	switch op {

@@ -21,6 +21,8 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #16 (2026-09-15): TLS 인증서.** `allowInsecure: false` 면 operator 가 upstream `gen_certificates.sh` 와 같은 CA(RSA 3072, SHA-512)와
+  server/agent/admin 인증서를 Secret `<sys>-certs` 로 1회 생성하고 서버·agent 사이드카·dmg/daos Job 에 필요한 부분만 마운트한다.
 - **Phase 2 #14 (2026-09-15): Helm 차트 `charts/daos-operator`.** CRD + operator Deployment/RBAC + hostprep ClusterRole + (옵션) Grafana 대시보드
   ConfigMap + (옵션) DaosSystem 한 개를 한 번에 설치. `make helm-sync` 가 생성 산출물(CRD, ClusterRole 규칙, JSON)을 차트로 복사하고 CI 가 drift 를 잡는다.
   CSI 는 exastor/daos-csi 가 설계 단계라 `csi.enabled` 는 안내만 한다.
@@ -73,7 +75,7 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Telemetry`, `Upgrading`, `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Certificates`, `Formatted`, `Telemetry`, `Upgrading`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
 
 ## 서버 워크로드 (#9)
@@ -195,6 +197,22 @@ kubectl patch daossys daos-dev --type merge -p '{"spec":{"images":{"server":"...
 kubectl patch daossys daos-dev --type merge -p '{"spec":{"upgrade":{"approved":true}}}'   # 드레인 뒤, 사람만
 kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 ```
+
+## TLS 인증서 (#16)
+`spec.allowInsecure: false`(운영 기본)이면 operator 가 Secret `<sys>-certs` 를 만든다. 내용과 배치는 upstream `utils/certs/gen_certificates.sh` 와 같다.
+
+| 파일 | 서버 파드 | agent 사이드카 | dmg/daos Job |
+|---|---|---|---|
+| `daosCA.crt` | ✓ | ✓ | ✓ |
+| `server.crt` / `server.key`(0400) | ✓ | | |
+| `agent.crt` / `agent.key`(0400) | `clients/agent.crt` 만 | ✓ | |
+| `admin.crt` / `admin.key`(0400) | `clients/admin.crt` 만 | | ✓ |
+
+- CA: O=DAOS, CN="DAOS CA", RSA 3072, SHA-512, pathlen 1, 1095일. 리프: CN server(serverAuth+clientAuth) / agent(clientAuth) / admin(clientAuth).
+- 이미 있는 Secret 은 검증만 한다(`Certificates=Valid|ExpiringSoon|Invalid`). 사람이 넣은 인증서를 덮어쓰지 않으며, 재생성은 Secret 삭제로 한다.
+  인증서 교체 뒤에는 전체 중단 재시작이 필요하다(ADR-003 절차와 같은 방식; 자동화는 아직 없음).
+- 컨테이너 Job 의 `daos` CLI 는 admin 세트를, 그 사이드카 agent 는 agent 세트를 받는다. hostprep 은 인증서가 필요 없다.
+- `allowInsecure: true` 면 `Certificates=False (Insecure)` 로 표시만 한다(Phase 0).
 
 ## 이미지 (#15)
 | 이미지 | 태그 | 만드는 곳 |

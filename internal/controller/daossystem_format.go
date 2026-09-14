@@ -92,7 +92,17 @@ func (r *DaosSystemReconciler) runDmg(ctx context.Context, sys *daosv1alpha1.Dao
 		NodeSelector:     sys.Spec.NodeSelector,
 		Tolerations:      sys.Spec.Tolerations,
 		Labels:           map[string]string{daosv1alpha1.LabelSystem: sys.Name},
+		CertsSecret:      adminCertsSecret(sys),
+		CertsFiles:       adminCertFiles(),
 	})
+}
+
+// adminCertsSecret is the Secret dmg Jobs mount, "" when insecure.
+func adminCertsSecret(sys *daosv1alpha1.DaosSystem) string {
+	if !certsNeeded(sys) {
+		return ""
+	}
+	return certsSecretName(sys)
 }
 
 // reconcileFormat updates the format/membership part of status and returns how

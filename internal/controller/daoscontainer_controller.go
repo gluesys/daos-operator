@@ -121,6 +121,9 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
 		Labels:                map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name, daosv1alpha1.LabelContainer: contJobLabel(c)},
 		Env:                   []corev1.EnvVar{{Name: "DAOS_AGENT_DRPC_DIR", Value: agentSocketDir}},
+		CertsSecret:           adminCertsSecret(sys),
+		CertsFiles:            adminCertFiles(), // daos CLI is an admin-style client of the MS via the agent; agent gets its own set
+		SidecarCertsFiles:     agentCertFiles(),
 		Privileged:            true,
 		ShareProcessNamespace: true,
 		Sidecar: &corev1.Container{
