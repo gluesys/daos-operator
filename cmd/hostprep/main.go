@@ -53,8 +53,17 @@ func main() {
 		sysRoot    = flag.String("sys-root", os.Getenv("DAOS_HOSTPREP_SYS_ROOT"), "prefix for /sys and /proc (host mounts); empty = /")
 		daosServer = flag.String("daos-server", "daos_server", "daos_server binary used for nvme prepare")
 		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig (empty = in-cluster)")
+		dryRun     = flag.Bool("dry-run", false, "discover once and print facts + annotations as JSON; no hugepages, no nvme prepare, no Node patch")
 	)
 	flag.Parse()
+	if *dryRun {
+		sys := hostprep.Sys{Root: *sysRoot}
+		if err := dryRunOnce(sys, *cidr); err != nil {
+			fmt.Fprintln(os.Stderr, "hostprep:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if *nodeName == "" {
 		fmt.Fprintln(os.Stderr, "NODE_NAME is required")
 		os.Exit(2)
@@ -80,6 +89,34 @@ func main() {
 		case <-time.After(*interval):
 		}
 	}
+}
+
+// dryRunOnce prints what a real run would annotate, without changing anything.
+// Used on test beds to check discovery against real hardware before a cluster exists.
+func dryRunOnce(sys hostprep.Sys, cidr string) error {
+	var f hostprep.Facts
+	hp, err := sys.Hugepages(0) // read only
+	if err != nil {
+		f.HugepagesErr = err.Error()
+	}
+	f.Hugepages = hp
+	devs, err := sys.NVMeDevices()
+	if err != nil {
+		return fmt.Errorf("scan nvme: %w", err)
+	}
+	f.Bound, f.Candidates, f.Skipped = hostprep.Classify(devs)
+	ifaces, err := sys.RDMAIfaces(hostprep.SystemIPv4)
+	if err != nil {
+		f.FabricErr = err.Error()
+	} else if pick, err := hostprep.PickFabric(ifaces, cidr); err != nil {
+		f.FabricErr = err.Error()
+	} else {
+		f.Fabric = pick
+	}
+	out := map[string]any{"nvme": devs, "rdma": ifaces, "facts": f, "annotations": hostprep.Annotations(f, time.Now())}
+	b, _ := json.MarshalIndent(out, "", "  ")
+	fmt.Println(string(b))
+	return nil
 }
 
 func runOnce(ctx context.Context, cs kubernetes.Interface, sys hostprep.Sys, node string, bind bool, cidr string, hugepages int, daosServer string) error {
