@@ -81,7 +81,10 @@ helm:
   needs: [go-build]
   before_script:
     - podman --version
-    - echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    # this GitLab reports the registry as host:80 while it actually serves TLS on 443: drop the port
+    - export REG="${CI_REGISTRY%%:*}"
+    - export IMG_BASE="$REG/$CI_PROJECT_PATH"
+    - echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG"
     - export VERSION=$(cat VERSION)
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -90,7 +93,7 @@ helm:
 image-operator:
   <<: *image-job
   script:
-    - IMG="$CI_REGISTRY_IMAGE/daos-operator"
+    - IMG="$IMG_BASE/daos-operator"
     - podman build --pull -t "$IMG:$CI_COMMIT_SHORT_SHA" .
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
@@ -101,7 +104,7 @@ image-operator:
 image-hostprep:
   <<: *image-job
   script:
-    - IMG="$CI_REGISTRY_IMAGE/daos-hostprep"
+    - IMG="$IMG_BASE/daos-hostprep"
     - podman build --pull -f images/hostprep/Dockerfile -t "$IMG:$CI_COMMIT_SHORT_SHA" .
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
     - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
