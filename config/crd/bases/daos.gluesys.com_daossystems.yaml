@@ -29,6 +29,9 @@ spec:
     - jsonPath: .status.pendingFormat
       name: PendingFormat
       type: boolean
+    - jsonPath: .status.upgrade.phase
+      name: Upgrade
+      type: string
     - jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
@@ -367,8 +370,15 @@ spec:
                   approved:
                     description: |-
                       Approved must be set to true by a human for the operator to execute
-                      a version change. It is reset to false after the upgrade completes.
+                      a version change. Setting it asserts that clients are drained (the
+                      operator cannot see client handles). It is reset to false when the
+                      upgrade completes or fails.
                     type: boolean
+                  timeoutMinutes:
+                    description: TimeoutMinutes bounds the wait for pods and ranks
+                      in each phase. Default 30.
+                    format: int32
+                    type: integer
                 type: object
               version:
                 description: Version is the DAOS version (image tag prefix), e.g.
@@ -528,6 +538,25 @@ spec:
                 items:
                   type: string
                 type: array
+              upgrade:
+                description: Upgrade is the state of the last/current full-stop upgrade
+                  (#13).
+                properties:
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  fromImage:
+                    type: string
+                  message:
+                    type: string
+                  phase:
+                    type: string
+                  startedAt:
+                    format: date-time
+                    type: string
+                  toImage:
+                    type: string
+                type: object
             type: object
         type: object
     served: true

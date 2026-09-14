@@ -25,10 +25,12 @@ import (
 	. "github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
@@ -381,6 +383,112 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
 		Expect(cm.Data["daos_server.yml"]).NotTo(ContainSubstring("telemetry_port"))
 		Expect(telemetryCond(&getSys().Status).Reason).To(Equal("Disabled"))
+	})
+
+	It("runs the full-stop upgrade only after approval: stop, replace pods, start, verify (#13)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		mkPod := func(name, image string) {
+			p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: name,
+				Labels: map[string]string{daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: image}}}}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		}
+		DeferCleanup(func() {
+			pods := &corev1.PodList{}
+			_ = k8sClient.List(ctx, pods, client.InNamespace("daos-test"))
+			for i := range pods.Items {
+				_ = k8sClient.Delete(ctx, &pods.Items[i], client.GracePeriodSeconds(0))
+			}
+		})
+		reconcileWith(f) // StatefulSets exist, image "s"
+		markServersReady("n1", "n2")
+		mkPod("t1-server-n1-0", "s")
+		mkPod("t1-server-n2-0", "s")
+		reconcileWith(f)
+		sys := getSys()
+		Expect(cond(sys, daosv1alpha1.ConditionUpgrading).Reason).To(Equal("UpToDate"))
+		Expect(sys.Status.ObservedVersion).To(Equal("2.8.0"))
+
+		By("a new image without approval only reports Pending; nothing is stopped")
+		sys.Spec.Images.Server, sys.Spec.Version = "s2", "2.8.1"
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradePending))
+		Expect(sys.Status.Upgrade.FromImage).To(Equal("s"))
+		Expect(sys.Status.Upgrade.ToImage).To(Equal("s2"))
+		Expect(f.count("system stop")).To(BeZero())
+		Expect(sys.Status.ObservedVersion).To(Equal("2.8.0"), "version follows the pods, not the spec")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Containers[0].Image).To(Equal("s2"), "template updated, OnDelete keeps pods")
+
+		By("approval -> dmg system stop")
+		sys.Spec.Upgrade.Approved = true
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeStopping))
+		Expect(f.count("system stop")).To(Equal(1))
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Reason).To(Equal("Upgrading"))
+		Expect(f.count("system query -v")).To(Equal(3), "three probes before approval, none while upgrading")
+
+		By("stopped -> pods deleted -> waiting for new pods")
+		f.set("system stop", &dmg.Result{Done: true, Output: dmgOK})
+		reconcileWith(f)
+		Expect(getSys().Status.Upgrade.Phase).To(Equal(upgradeUpdating))
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeStarting))
+		// unscheduled pods are removed by the API server at once (no kubelet in envtest)
+		err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1-0"}, &corev1.Pod{})
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "old pods deleted")
+		reconcileWith(f)
+		Expect(getSys().Status.Upgrade.Message).To(HavePrefix("0/2 server pod(s) Ready"))
+		// no StatefulSet controller in envtest: bring the new pods up by hand
+		mkPod("t1-server-n1-0", "s2")
+		mkPod("t1-server-n2-0", "s2")
+
+		By("all pods Ready -> dmg system start -> verify -> completed, approval consumed")
+		reconcileWith(f)
+		Expect(getSys().Status.Upgrade.Phase).To(Equal(upgradeStartingSystem))
+		reconcileWith(f)
+		Expect(f.count("system start")).To(Equal(1))
+		f.set("system start", &dmg.Result{Done: true, Output: dmgOK})
+		reconcileWith(f)
+		Expect(getSys().Status.Upgrade.Phase).To(Equal(upgradeVerifying))
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeCompleted))
+		Expect(sys.Status.Upgrade.FinishedAt).NotTo(BeNil())
+		Expect(sys.Status.ObservedVersion).To(Equal("2.8.1"))
+		Expect(sys.Spec.Upgrade.Approved).To(BeFalse(), "one-shot approval")
+		Expect(cond(sys, daosv1alpha1.ConditionUpgrading).Reason).To(Equal(upgradeCompleted))
+		reconcileWith(f)
+		Expect(f.count("system stop")).To(Equal(2), "start + poll only; completed upgrade does not run again")
+	})
+
+	It("fails the upgrade honestly when dmg system stop errors and drops the approval", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers},
+			"system stop": {Done: true, ExitCode: 1, Output: dmgUnreachable}}}
+		reconcileWith(f)
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-server-n1-0",
+			Labels: map[string]string{daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: "s"}}}}
+		Expect(k8sClient.Create(ctx, p)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, p, client.GracePeriodSeconds(0)) })
+		sys := getSys()
+		sys.Spec.Images.Server, sys.Spec.Upgrade.Approved = "s2", true
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeFailed))
+		Expect(sys.Status.Upgrade.Message).To(ContainSubstring("dmg system stop"))
+		Expect(sys.Spec.Upgrade.Approved).To(BeFalse())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1-0"}, p)).To(Succeed())
+		Expect(p.DeletionTimestamp.IsZero()).To(BeTrue(), "no pod touched after a failed stop")
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

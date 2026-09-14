@@ -130,8 +130,26 @@ type TelemetrySpec struct {
 // exists and it never runs without an explicit approval.
 type UpgradeSpec struct {
 	// Approved must be set to true by a human for the operator to execute
-	// a version change. It is reset to false after the upgrade completes.
+	// a version change. Setting it asserts that clients are drained (the
+	// operator cannot see client handles). It is reset to false when the
+	// upgrade completes or fails.
 	Approved bool `json:"approved,omitempty"`
+	// TimeoutMinutes bounds the wait for pods and ranks in each phase. Default 30.
+	TimeoutMinutes int32 `json:"timeoutMinutes,omitempty"`
+}
+
+// UpgradeStatus is the full-stop upgrade state machine (ADR-003, #13).
+// Phases: Pending (image differs, waiting for approval) -> Stopping (dmg
+// system stop) -> Updating (server pods deleted, StatefulSets already carry the
+// new image) -> Starting (waiting for pods) -> StartingSystem (dmg system start)
+// -> Verifying (dmg system query, all ranks joined) -> Completed | Failed.
+type UpgradeStatus struct {
+	Phase      string       `json:"phase,omitempty"`
+	Message    string       `json:"message,omitempty"`
+	FromImage  string       `json:"fromImage,omitempty"`
+	ToImage    string       `json:"toImage,omitempty"`
+	StartedAt  *metav1.Time `json:"startedAt,omitempty"`
+	FinishedAt *metav1.Time `json:"finishedAt,omitempty"`
 }
 
 // DaosSystemSpec defines the desired state of a DAOS system.
@@ -211,6 +229,8 @@ type DaosSystemStatus struct {
 	FormatTime *metav1.Time `json:"formatTime,omitempty"`
 	// LastQueryTime is when `dmg system query` last answered (ranks are as of then).
 	LastQueryTime *metav1.Time `json:"lastQueryTime,omitempty"`
+	// Upgrade is the state of the last/current full-stop upgrade (#13).
+	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -220,6 +240,7 @@ type DaosSystemStatus struct {
 // +kubebuilder:printcolumn:name="Ranks",type=string,JSONPath=`.status.ranksJoined`
 // +kubebuilder:printcolumn:name="Formatted",type=boolean,JSONPath=`.status.formatted`
 // +kubebuilder:printcolumn:name="PendingFormat",type=boolean,JSONPath=`.status.pendingFormat`
+// +kubebuilder:printcolumn:name="Upgrade",type=string,JSONPath=`.status.upgrade.phase`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

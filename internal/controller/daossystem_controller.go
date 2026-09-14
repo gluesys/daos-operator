@@ -114,7 +114,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	status := daosv1alpha1.DaosSystemStatus{Conditions: sys.Status.Conditions,
 		Formatted: sys.Status.Formatted, PendingFormat: sys.Status.PendingFormat, FormatTime: sys.Status.FormatTime,
 		LastQueryTime: sys.Status.LastQueryTime, Ranks: sys.Status.Ranks, RanksJoined: sys.Status.RanksJoined,
-		RanksTotal: sys.Status.RanksTotal, ObservedVersion: sys.Status.ObservedVersion}
+		RanksTotal: sys.Status.RanksTotal, ObservedVersion: sys.Status.ObservedVersion, Upgrade: sys.Status.Upgrade}
 	for _, n := range nodes.Items {
 		status.SelectedNodes = append(status.SelectedNodes, n.Name)
 	}
@@ -277,6 +277,18 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if err := r.ensureTelemetry(ctx, sys, ns, &status); err != nil {
 		return ctrl.Result{}, err
 	}
+
+	// 7c. full-stop upgrade (#13): while it runs, membership is expected to be down
+	upgrading, upRequeue, err := r.reconcileUpgrade(ctx, sys, ns, rendered, &status)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if upgrading {
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "Upgrading", status.Upgrade.Phase+": "+status.Upgrade.Message)
+		log.Info("upgrading", "system", sys.Name, "phase", status.Upgrade.Phase)
+		return r.updateStatus(ctx, sys, status, minRequeue(requeue, upRequeue))
+	}
+	requeue = minRequeue(requeue, upRequeue)
 
 	// 8. format gate and membership (#10)
 	nodeByAddr := map[string]string{}

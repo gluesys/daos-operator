@@ -79,5 +79,8 @@ const (
 	ConditionFormatted = "Formatted"
 	// ConditionTelemetry reports the metrics Service / ServiceMonitor state.
 	ConditionTelemetry = "Telemetry"
+	// ConditionUpgrading is True while the full-stop upgrade runs; False with
+	// reason UpToDate / Pending / Completed / Failed otherwise.
+	ConditionUpgrading = "Upgrading"
 	ConditionReady     = "Ready"
 )

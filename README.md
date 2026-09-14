@@ -21,6 +21,8 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #13 (2026-09-15): 전체 중단 업그레이드(ADR-003).** 서버 파드 이미지 ≠ `spec.images.server` 이면 `Upgrading=False (Pending)` 로 멈추고,
+  `spec.upgrade.approved: true` 뒤에만 `dmg system stop` → 파드 교체 → Ready 대기 → `dmg system start` → 전 rank joined 검증. 승인은 1회용.
 - **Phase 2 #12 (2026-09-15): 텔레메트리.** `telemetry_port`(기본 9191) 렌더 + 헤드리스 `<sys>-metrics` Service + prometheus-operator CRD 가 있으면
   ServiceMonitor(15초). DAOS 공식 Grafana 대시보드 JSON 을 `config/grafana/` 에 동봉.
 - **Phase 2 #11 (2026-09-15): DaosPool/DaosContainer reconcile.** `dmg pool ...`/`daos cont ...` 를 Job 으로 돌려 없으면 만들고(1회),
@@ -68,7 +70,7 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Telemetry`, `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Telemetry`, `Upgrading`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
 
 ## 서버 워크로드 (#9)
@@ -168,6 +170,27 @@ kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
 ```bash
 kubectl -n daos-system get svc,servicemonitor daos-dev-metrics
 kubectl get daossys daos-dev -o jsonpath='{.status.conditions[?(@.type=="Telemetry")].message}{"\n"}'
+```
+
+## 업그레이드 (#13, ADR-003)
+DAOS 2.x 서버는 롤링 업그레이드가 없다. operator 는 그 사실을 감추지 않고 **전체 중단 업그레이드**를 상태 머신으로 수행한다.
+
+- 트리거: 서버 **파드**가 실행 중인 이미지 ≠ `spec.images.server`. StatefulSet 은 `OnDelete` 라 spec 을 바꿔도 파드는 그대로다.
+  이 상태에서 `status.upgrade.phase=Pending`, `Upgrading=False (Pending)`. 시스템은 계속 동작한다.
+- `spec.upgrade.approved: true` 는 사람이 **클라이언트를 드레인했음을 보증**하는 것이다(operator 는 클라이언트 핸들을 볼 수 없다).
+- 단계(`status.upgrade.phase`): `Stopping`(`dmg system stop`) → `Updating`(구 이미지 서버 파드 삭제; STS 가 새 이미지로 재생성) →
+  `Starting`(렌더 노드 수만큼 새 이미지 파드 Ready 대기) → `StartingSystem`(`dmg system start`) → `Verifying`(`dmg system query -v` 전 rank joined)
+  → `Completed`. 진행 중엔 `Ready=False (Upgrading)` 이고 format/멤버십 프로브는 쉰다.
+- 어느 단계든 dmg 오류나 타임아웃(`spec.upgrade.timeoutMinutes`, 기본 30)이면 `Failed` + Event `UpgradeFailed`, 승인은 false 로 되돌린다.
+  다시 승인하면 `Stopping` 부터 다시 한다. `--force`, format, wipe 는 어디에도 없다.
+- 완료 시 `status.observedVersion = spec.version`, 승인 false 로 리셋, Event `UpgradeCompleted`.
+- 2.8 → 3.0 은 프로토콜 비호환이라 이 절차의 대상이 아니다(별도 마이그레이션, Phase 4).
+
+```bash
+kubectl get daossys                      # UPGRADE 열 = phase
+kubectl patch daossys daos-dev --type merge -p '{"spec":{"images":{"server":"...:2.8.1"},"version":"2.8.1"}}'
+kubectl patch daossys daos-dev --type merge -p '{"spec":{"upgrade":{"approved":true}}}'   # 드레인 뒤, 사람만
+kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 ```
 
 ## 관리 표면 (v1 목표)
