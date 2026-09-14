@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+namespace: daos-system
+generatorOptions:
+  disableNameSuffixHash: true
+  labels:
+    grafana_dashboard: "1"
+    app.kubernetes.io/managed-by: daos-operator
+configMapGenerator:
+  - name: daos-grafana-dashboard
+    files:
+      - DAOS-Grafana-Dashboard.json

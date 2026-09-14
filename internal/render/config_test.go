@@ -28,7 +28,7 @@ func TestServerRendersParsableYAML(t *testing.T) {
 	numa := int32(1)
 	out, err := Server(ServerConfig{
 		SystemName: "daos_server", MsReplicas: []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, Port: 10001,
-		Provider: "ofi+verbs;ofi_rxm", NrHugepages: 8192, AllowInsecure: true,
+		Provider: "ofi+verbs;ofi_rxm", NrHugepages: 8192, AllowInsecure: true, TelemetryPort: 9191,
 		Engines: []Engine{{Index: 0, Targets: 8, Helpers: 2, FabricIface: "ens2", FabricPort: 31316, PinnedNuma: &numa,
 			ScmSizeGiB: 32, Bdevs: []string{"0000:03:00.0", "0000:04:00.0"}}},
 	})
@@ -51,6 +51,12 @@ func TestServerRendersParsableYAML(t *testing.T) {
 	st := engines[0].(map[string]any)["storage"].([]any)
 	if len(st) != 2 || st[1].(map[string]any)["class"] != "nvme" {
 		t.Errorf("unexpected storage tiers: %v", st)
+	}
+	if !strings.Contains(out, "telemetry_port: 9191") {
+		t.Errorf("telemetry_port missing:\n%s", out)
+	}
+	if off, _ := Server(ServerConfig{SystemName: "daos_server", MsReplicas: []string{"a"}, Engines: []Engine{{FabricIface: "e", Bdevs: []string{"b"}}}}); strings.Contains(off, "telemetry_port") {
+		t.Errorf("telemetry_port must be absent when 0")
 	}
 	if !strings.Contains(out, "pinned_numa_node: 1") {
 		t.Errorf("pinned numa missing")

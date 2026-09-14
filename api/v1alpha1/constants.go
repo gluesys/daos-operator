@@ -77,5 +77,7 @@ const (
 	// service: True once formatted, False (AwaitingApproval/Formatting/FormatFailed)
 	// before, Unknown when no replica answered.
 	ConditionFormatted = "Formatted"
+	// ConditionTelemetry reports the metrics Service / ServiceMonitor state.
+	ConditionTelemetry = "Telemetry"
 	ConditionReady     = "Ready"
 )

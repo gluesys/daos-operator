@@ -49,6 +49,8 @@ type ServerConfig struct {
 	Provider      string
 	NrHugepages   int32
 	AllowInsecure bool
+	// TelemetryPort > 0 enables the Prometheus endpoint on every engine host.
+	TelemetryPort int32
 	Engines       []Engine
 }
 
@@ -63,6 +65,9 @@ port: {{.Port}}
 provider: {{.Provider}}
 nr_hugepages: {{.NrHugepages}}
 disable_vfio: false
+{{- if gt .TelemetryPort 0}}
+telemetry_port: {{.TelemetryPort}}
+{{- end}}
 control_log_file: /var/log/daos/daos_server.log
 control_metadata:
   path: /var/daos/control_metadata

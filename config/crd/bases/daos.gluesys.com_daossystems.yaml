@@ -289,6 +289,37 @@ spec:
                     format: int64
                     type: integer
                 type: object
+              telemetry:
+                description: TelemetrySpec exposes the engines' Prometheus endpoint
+                  (#12).
+                properties:
+                  enabled:
+                    description: |-
+                      Enabled sets telemetry_port in daos_server.yml and creates the
+                      <sys>-metrics Service. Default true.
+                    type: boolean
+                  interval:
+                    description: Interval is the scrape interval. Default 15s (the
+                      DAOS dashboard uses rate(...[15s])).
+                    type: string
+                  port:
+                    description: Port is the daos_server telemetry_port. Default 9191.
+                    format: int32
+                    type: integer
+                  serviceMonitor:
+                    description: |-
+                      ServiceMonitor creates a monitoring.coreos.com/v1 ServiceMonitor when that
+                      CRD is installed (prometheus-operator / kube-prometheus-stack). Default true;
+                      silently skipped, with a condition message, when the CRD is absent.
+                    type: boolean
+                  serviceMonitorLabels:
+                    additionalProperties:
+                      type: string
+                    description: |-
+                      ServiceMonitorLabels are added to the ServiceMonitor so a Prometheus with a
+                      serviceMonitorSelector picks it up (e.g. release: kube-prometheus-stack).
+                    type: object
+                type: object
               tolerations:
                 items:
                   description: |-

@@ -108,6 +108,24 @@ type ServerSpec struct {
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
+// TelemetrySpec exposes the engines' Prometheus endpoint (#12).
+type TelemetrySpec struct {
+	// Enabled sets telemetry_port in daos_server.yml and creates the
+	// <sys>-metrics Service. Default true.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Port is the daos_server telemetry_port. Default 9191.
+	Port int32 `json:"port,omitempty"`
+	// ServiceMonitor creates a monitoring.coreos.com/v1 ServiceMonitor when that
+	// CRD is installed (prometheus-operator / kube-prometheus-stack). Default true;
+	// silently skipped, with a condition message, when the CRD is absent.
+	ServiceMonitor *bool `json:"serviceMonitor,omitempty"`
+	// ServiceMonitorLabels are added to the ServiceMonitor so a Prometheus with a
+	// serviceMonitorSelector picks it up (e.g. release: kube-prometheus-stack).
+	ServiceMonitorLabels map[string]string `json:"serviceMonitorLabels,omitempty"`
+	// Interval is the scrape interval. Default 15s (the DAOS dashboard uses rate(...[15s])).
+	Interval string `json:"interval,omitempty"`
+}
+
 // UpgradeSpec implements ADR-003: before DAOS 3.0 only a full-stop upgrade
 // exists and it never runs without an explicit approval.
 type UpgradeSpec struct {
@@ -143,10 +161,11 @@ type DaosSystemSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	Engines []EngineSpec `json:"engines"`
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
-	AllowInsecure bool         `json:"allowInsecure,omitempty"`
-	HostPrep      HostPrepSpec `json:"hostPrep,omitempty"`
-	Server        ServerSpec   `json:"server,omitempty"`
-	Upgrade       UpgradeSpec  `json:"upgrade,omitempty"`
+	AllowInsecure bool          `json:"allowInsecure,omitempty"`
+	HostPrep      HostPrepSpec  `json:"hostPrep,omitempty"`
+	Server        ServerSpec    `json:"server,omitempty"`
+	Telemetry     TelemetrySpec `json:"telemetry,omitempty"`
+	Upgrade       UpgradeSpec   `json:"upgrade,omitempty"`
 }
 
 // RankStatus mirrors `dmg system query -v` for one rank. The operator copies

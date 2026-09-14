@@ -76,6 +76,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		}
 		// envtest has no GC: remove ConfigMaps ourselves
 		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-hostprep"}})
+		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-metrics"}})
 		stss := &appsv1.StatefulSetList{}
 		_ = k8sClient.List(ctx, stss)
 		for i := range stss.Items {
@@ -352,6 +353,34 @@ var _ = Describe("DaosSystem Controller", func() {
 		By("a second reconcile does not format again without a new approval")
 		reconcileWith(f)
 		Expect(f.count("storage format")).To(Equal(1))
+	})
+
+	It("fronts the servers with a headless metrics Service and renders telemetry_port (#12)", func() {
+		reconcileOnce()
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-metrics"}, svc)).To(Succeed())
+		Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+		Expect(svc.Spec.Selector).To(Equal(map[string]string{daosv1alpha1.LabelSystem: "t1", daosv1alpha1.LabelRole: "server"}))
+		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(9191)))
+		Expect(svc.OwnerReferences).To(HaveLen(1))
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_server.yml"]).To(ContainSubstring("telemetry_port: 9191"))
+		sys := getSys()
+		c := telemetryCond(&sys.Status)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Reason).To(Equal("NoPrometheusOperator"), "envtest has no ServiceMonitor CRD: say so instead of failing")
+
+		By("disabling telemetry removes the Service and the port")
+		f := false
+		sys.Spec.Telemetry.Enabled = &f
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-metrics"}, svc)).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_server.yml"]).NotTo(ContainSubstring("telemetry_port"))
+		Expect(telemetryCond(&getSys().Status).Reason).To(Equal("Disabled"))
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

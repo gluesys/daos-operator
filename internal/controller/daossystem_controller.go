@@ -194,7 +194,8 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			continue
 		}
 		cfg := render.ServerConfig{Label: sys.Name, SystemName: systemName(sys), MsReplicas: msAddrs, Port: controlPort,
-			Provider: sys.Spec.Provider, NrHugepages: sys.Spec.NrHugepages, AllowInsecure: sys.Spec.AllowInsecure}
+			Provider: sys.Spec.Provider, NrHugepages: sys.Spec.NrHugepages, AllowInsecure: sys.Spec.AllowInsecure,
+			TelemetryPort: telemetryPort(sys)}
 		var missing []string
 		for i, e := range sys.Spec.Engines {
 			fabric, bdevs, numa, miss := discovery.Resolve(e, f)
@@ -272,6 +273,11 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	default:
 		setCond(&status, daosv1alpha1.ConditionServersReady, metav1.ConditionTrue, "AllReady", fmt.Sprintf("%d server pod(s) ready", rendered))
 	}
+	// 7b. telemetry (#12): metrics Service (+ ServiceMonitor when the CRD exists)
+	if err := r.ensureTelemetry(ctx, sys, ns, &status); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	// 8. format gate and membership (#10)
 	nodeByAddr := map[string]string{}
 	for _, f := range facts {
@@ -408,6 +414,7 @@ func (r *DaosSystemReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.DaemonSet{}).
 		Owns(&appsv1.StatefulSet{}).
 		Owns(&batchv1.Job{}).
+		Owns(&corev1.Service{}).
 		Watches(&corev1.Node{}, nodeToSystems,
 			// only label/annotation changes matter here; heartbeat status updates must not fan out
 			// to every DaosSystem

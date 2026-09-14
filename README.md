@@ -21,6 +21,8 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   ConfigMap + `-agent`/`-control` ConfigMap 렌더 → `.status`(selectedNodes, msReplicaNodes, nodeConfigs, conditions).
 - **Phase 2 #9 (2026-09-14): 노드 고정 서버 StatefulSet.** 렌더된 노드마다 `<sys>-server-<node>` StatefulSet(replicas 1, 필수 nodeAffinity,
   hostNetwork, privileged, hugepages-2Mi 리소스, hostPath 데이터/로그) 을 만든다.
+- **Phase 2 #12 (2026-09-15): 텔레메트리.** `telemetry_port`(기본 9191) 렌더 + 헤드리스 `<sys>-metrics` Service + prometheus-operator CRD 가 있으면
+  ServiceMonitor(15초). DAOS 공식 Grafana 대시보드 JSON 을 `config/grafana/` 에 동봉.
 - **Phase 2 #11 (2026-09-15): DaosPool/DaosContainer reconcile.** `dmg pool ...`/`daos cont ...` 를 Job 으로 돌려 없으면 만들고(1회),
   rank 추가는 `pool extend`, `spec.acl` 변경은 `overwrite-acl` 로 반영한다. status 는 `dmg pool query`/`daos cont query` 미러. 삭제 시
   DAOS 객체 파괴는 `daos.gluesys.com/destroy-approved=true` 어노테이션이 있을 때만(없으면 남기고 Event `PoolOrphaned`/`ContainerOrphaned`).
@@ -66,7 +68,7 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Formatted`, `Telemetry`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
 
 ## 서버 워크로드 (#9)
@@ -151,6 +153,21 @@ Job 은 DaosSystem 네임스페이스에 만들어지고, 풀 Job 은 `pool-<nam
 kubectl get daospool,daoscont -A
 kubectl annotate daospool kv daos.gluesys.com/destroy-approved=true && kubectl delete daospool kv   # 정말 파괴할 때만
 kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
+```
+
+## 텔레메트리 (#12)
+`spec.telemetry`(기본 enabled, port 9191, serviceMonitor true, interval 15s):
+
+- 서버 설정에 `telemetry_port` 를 넣어 각 엔진 호스트가 `:9191/metrics` 로 `engine_*` 시리즈를 낸다(hostNetwork 라 노드 IP).
+- 헤드리스 Service `<sys>-metrics`(selector `daos.gluesys.com/system,role=server`, 포트 `metrics`)를 만든다. 서버 파드가 Ready 여야 endpoint 가 생긴다.
+- `monitoring.coreos.com/v1 ServiceMonitor` CRD 가 서빙되면(RESTMapper 로 확인) 같은 이름의 ServiceMonitor 를 만든다. `serviceMonitorLabels`
+  (예 `release: kube-prometheus-stack`)로 Prometheus 의 selector 에 맞춘다. CRD 가 없으면 `Telemetry=True (NoPrometheusOperator)` 로 알리고 넘어간다.
+- Grafana: `config/grafana/DAOS-Grafana-Dashboard.json`(upstream 원본, BSD-2-Clause-Patent). `kustomize build config/grafana` 가
+  `grafana_dashboard: "1"` ConfigMap 을 만들고 Helm 차트의 `grafana.dashboard.enabled` 도 같은 것을 설치한다.
+
+```bash
+kubectl -n daos-system get svc,servicemonitor daos-dev-metrics
+kubectl get daossys daos-dev -o jsonpath='{.status.conditions[?(@.type=="Telemetry")].message}{"\n"}'
 ```
 
 ## 관리 표면 (v1 목표)
