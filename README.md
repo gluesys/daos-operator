@@ -282,6 +282,14 @@ kubectl get daossys daos -w
 - CI: `go-build` 잡이 `make helm-sync && git diff --exit-code -- charts/` 로 drift 를 막고, `helm` 잡(alpine/helm)이 lint + 전체 옵션 렌더를 한다.
 - kind 검증(2026-09-15): `daos-operator:dev` 이미지로 `helm install` → Deployment Ready → 클러스터 내부 RBAC 으로 daos-dev 시스템 reconcile(DaemonSet·StatefulSet·Service·ServiceMonitor·Job 생성, forbidden 없음) → `helm uninstall`.
 
+## 렌더된 설정의 2.8 스키마 검증
+`make validate-configs DOCKER="sudo -n docker"` 는 `hack/render-samples` 로 대표 설정 7종(단일 엔진, 2엔진+TLS, 커스텀 systemName,
+agent·control 각각 TLS/insecure)을 렌더한 뒤 **실제 DAOS 2.8 바이너리**로 검사한다(exastor/daos-images `scripts/validate-config.sh`).
+컨트롤 플레인이 YAML 을 `UnmarshalStrict` 로 읽으므로 2.8 에 없는 키·잘못된 타입은 바로 실패한다.
+
+2026-09-15 결과: 7종 전부 OK(부정 대조군 2종은 기대대로 INVALID). 하드웨어 없는 검사 범위는 파싱 → fabric 인터페이스 → 호스트 메모리까지고,
+그 뒤 엔진·bdev 의미 검증은 설정에 적힌 NIC·메모리를 가진 호스트가 필요하다.
+
 ## 실장비 검증
 `doc/testbed-2026-09-15.md`: daos_ci 에서 operator 의 dmg/daos Job 명령 전부, CSI 노드 dfuse 마운트(재시작 복구 포함), hostprep 탐색을 실장비로 확인.
 주의 두 가지 — `spec.systemName`(기본 daos_server; 테스트베드는 daos_flexa), 컨테이너 기본 oclass RP_2GX/RP_2G1 은 서버 노드 2대 이상 필요(1대면 SX/S1, rd_fac 0).

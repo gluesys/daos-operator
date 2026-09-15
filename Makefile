@@ -285,6 +285,18 @@ hostprep-push: ## Push the daos-hostprep image.
 kubectl-daos: ## Build the kubectl plugin into bin/kubectl-daos (put it on PATH: kubectl daos ...).
 	CGO_ENABLED=0 go build -o bin/kubectl-daos ./cmd/kubectl-daos
 
+.PHONY: render-samples
+render-samples: ## Write the configurations the operator renders into dist/render/.
+	go run ./hack/render-samples
+
+.PHONY: validate-configs
+validate-configs: render-samples ## Check every rendered config against the real DAOS 2.8 binaries (needs exastor/daos-images checked out next to this repo).
+	@set -e; for f in dist/render/server-*.yml; do $(DAOS_IMAGES)/scripts/validate-config.sh server $$f; done; \
+	for f in dist/render/agent*.yml; do $(DAOS_IMAGES)/scripts/validate-config.sh agent $$f; done; \
+	for f in dist/render/control*.yml; do $(DAOS_IMAGES)/scripts/validate-config.sh control $$f; done
+
+DAOS_IMAGES ?= ../daos-images
+
 .PHONY: release-cli
 release-cli: ## Build kubectl-daos for all krew platforms into dist/ (VERSION=v0.1.0)
 	VERSION=$(RELEASE_VERSION) hack/release-cli.sh
