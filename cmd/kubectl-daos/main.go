@@ -24,6 +24,7 @@ limitations under the License.
 //	kubectl daos system status  <sys>
 //	kubectl daos system format  <sys>            # daos.gluesys.com/format-approved=true
 //	kubectl daos system upgrade <sys> [--image I] [--version V]   # spec.upgrade.approved=true
+//	kubectl daos system certs   <sys>            # daos.gluesys.com/certs-renew-approved=true
 //	kubectl daos pool destroy   <pool>           # destroy-approved=true + delete
 //	kubectl daos cont destroy   -n <ns> <cont>   # destroy-approved=true + delete
 //
@@ -112,6 +113,7 @@ const usage = `usage: kubectl daos <command> <subcommand> <name> [--yes] [-n ns]
   system status  <sys>                         conditions, ranks, pending decisions
   system format  <sys>                         approve the one-shot storage format
   system upgrade <sys> [--image I] [--version V]  set the new server image and approve the full-stop upgrade
+  system certs   <sys>                         approve replacing the transport certificates (full-stop restart)
   pool   destroy <pool>                        approve destruction and delete the DaosPool
   cont   destroy -n <ns> <cont>                approve destruction and delete the DaosContainer`
 
@@ -144,6 +146,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.systemFormat(ctx, need(rest, "system name"))
 	case "system upgrade":
 		return a.systemUpgrade(ctx, rest)
+	case "system certs":
+		return a.systemCerts(ctx, need(rest, "system name"))
 	case "pool destroy":
 		return a.poolDestroy(ctx, need(rest, "pool name"))
 	case "cont destroy", "container destroy":
@@ -214,8 +218,22 @@ func (a *app) systemStatus(ctx context.Context, name string) error {
 	if sys.Status.PendingFormat && !sys.Status.Formatted {
 		fmt.Fprintf(a.out, "\nDECISION PENDING: storage is not formatted. Review the drives above, then: kubectl daos system format %s\n", name)
 	}
+	if cs := sys.Status.Certificates; cs != nil && cs.NotAfter != nil {
+		fmt.Fprintf(a.out, "certificates: %s until %s", cs.SecretName, cs.NotAfter.UTC().Format(time.RFC3339))
+		if cs.RotatedAt != nil {
+			fmt.Fprintf(a.out, " (rotated %s, previous %s)", cs.RotatedAt.UTC().Format(time.RFC3339), cs.PreviousSecret)
+		}
+		fmt.Fprintln(a.out)
+		if c := meta.FindStatusCondition(sys.Status.Conditions, daosv1alpha1.ConditionCertificates); c != nil && c.Reason == "ExpiringSoon" {
+			fmt.Fprintf(a.out, "DECISION PENDING: certificates expire soon. Rotation is a full-stop restart: kubectl daos system certs %s\n", name)
+		}
+	}
 	if up := sys.Status.Upgrade; up != nil && up.Phase != "" {
-		fmt.Fprintf(a.out, "upgrade: %s %s -> %s  %s\n", up.Phase, up.FromImage, up.ToImage, up.Message)
+		trigger := up.Trigger
+		if trigger == "" {
+			trigger = "ImageChange"
+		}
+		fmt.Fprintf(a.out, "restart (%s): %s %s -> %s  %s\n", trigger, up.Phase, up.FromImage, up.ToImage, up.Message)
 		if up.Phase == "Pending" {
 			fmt.Fprintf(a.out, "DECISION PENDING: drain clients, then: kubectl daos system upgrade %s\n", name)
 		}
@@ -305,6 +323,38 @@ func (a *app) systemUpgrade(ctx context.Context, rest []string) error {
 	return nil
 }
 
+// systemCerts approves rotating the transport certificates.
+func (a *app) systemCerts(ctx context.Context, name string) error {
+	sys := &daosv1alpha1.DaosSystem{}
+	if err := a.c.Get(ctx, types.NamespacedName{Name: name}, sys); err != nil {
+		return err
+	}
+	if sys.Spec.AllowInsecure {
+		return fmt.Errorf("%s runs with allowInsecure=true: there are no transport certificates to rotate", name)
+	}
+	expiry := "unknown"
+	if cs := sys.Status.Certificates; cs != nil && cs.NotAfter != nil {
+		expiry = fmt.Sprintf("%s (%d days left)", cs.NotAfter.UTC().Format(time.RFC3339), int(time.Until(cs.NotAfter.Time).Hours()/24))
+	}
+	msg := fmt.Sprintf("About to approve replacing the transport certificates of DaosSystem %s (current expiry: %s).\n"+
+		"A new CA means every engine and client must reload it, so the operator performs a FULL-STOP restart:\n"+
+		"  dmg system stop -> swap Secret %s-certs (old kept in %s-certs-previous) -> restart server pods -> dmg system start -> verify.\n"+
+		"Afterwards restart DAOS clients yourself: the CSI node DaemonSet and any pod with a daos_agent sidecar.", name, expiry, name, name)
+	if !a.confirm(msg) {
+		return fmt.Errorf("aborted")
+	}
+	patch := client.MergeFrom(sys.DeepCopy())
+	if sys.Annotations == nil {
+		sys.Annotations = map[string]string{}
+	}
+	sys.Annotations[daosv1alpha1.AnnotationCertsRenewApproved] = "true"
+	if err := a.c.Patch(ctx, sys, patch); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "approved: %s=true on DaosSystem %s (watch: kubectl get daossys %s -w)\n", daosv1alpha1.AnnotationCertsRenewApproved, name, name)
+	return nil
+}
+
 func (a *app) poolDestroy(ctx context.Context, name string) error {
 	pool := &daosv1alpha1.DaosPool{}
 	if err := a.c.Get(ctx, types.NamespacedName{Name: name}, pool); err != nil {
@@ -368,5 +418,3 @@ func humanBytes(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
-
-var _ = time.Second

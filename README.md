@@ -208,6 +208,7 @@ kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 | `kubectl daos system status <sys>` | 조건 9종, 노드별 렌더/서버 상태, rank, **DECISION PENDING**(format 대기·업그레이드 Pending) 요약 |
 | `kubectl daos system format <sys>` | `status.pendingFormat` 일 때만. 지워질 노드·디바이스 수를 보여주고 `yes` 입력 후 `daos.gluesys.com/format-approved=true` |
 | `kubectl daos system upgrade <sys> [--image I] [--version V]` | 새 서버 이미지/버전을 적고 전체 중단 업그레이드 승인(`spec.upgrade.approved=true`). 클라이언트 드레인 보증 문구 표시 |
+| `kubectl daos system certs <sys>` | 인증서 교체 승인. 만료일과 "전체 중단 재시작 + 클라이언트 재시작 필요" 를 보여주고 `yes` 후 `certs-renew-approved=true` |
 | `kubectl daos pool destroy <pool>` | 사용량을 보여주고 `destroy-approved=true` + `DaosPool` 삭제 → operator 가 `dmg pool destroy --recursive` |
 | `kubectl daos cont destroy -n <ns> <cont>` | 동일, 컨테이너 |
 
@@ -228,6 +229,21 @@ kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
   인증서 교체 뒤에는 전체 중단 재시작이 필요하다(ADR-003 절차와 같은 방식; 자동화는 아직 없음).
 - 컨테이너 Job 의 `daos` CLI 는 admin 세트를, 그 사이드카 agent 는 agent 세트를 받는다. hostprep 은 인증서가 필요 없다.
 - `allowInsecure: true` 면 `Certificates=False (Insecure)` 로 표시만 한다(Phase 0).
+
+### 교체 (#19)
+`spec.certificates.renewBeforeDays`(기본 30) 안으로 만료가 다가오면 `Certificates=True (ExpiringSoon)` 과 함께 승인 방법을 알린다. 교체는 CA 가 바뀌는 일이라
+**모든 엔진과 클라이언트가 새 CA 를 다시 읽어야 한다**. 그래서 승인은 곧 중단 승인이다:
+
+```bash
+kubectl daos system certs <sys>        # 또는: kubectl annotate daossystem <sys> daos.gluesys.com/certs-renew-approved=true
+```
+승인되면 ADR-003 의 전체 중단 절차를 그대로 쓴다: `dmg system stop` → **엔진이 멈춘 상태에서** Secret 교체(이전 번들은 `<sys>-certs-previous` 로 보존) →
+서버 파드 전부 삭제·재기동 → `dmg system start` → 전 rank joined 검증 → `Completed`. 어노테이션은 성공·실패와 무관하게 소거된다(1회용).
+`status.upgrade.trigger` 가 `CertificateRotation` 으로 구분되고, `status.certificates{secretName,notAfter,rotatedAt,previousSecret}` 에 결과가 남는다.
+
+**operator 가 하지 않는 것**: 클라이언트 재시작. 교체 후 CSI 노드 DaemonSet 과 `daos_agent` 사이드카를 쓰는 파드는 사람이 다시 시작해야 한다
+(`kubectl -n daos-system rollout restart ds/daos-csi-node`). Event `CertificatesRotated`/`CertificateRotationCompleted` 메시지에도 적어 둔다.
+롤백은 `<sys>-certs-previous` 의 데이터를 `<sys>-certs` 로 되돌린 뒤 같은 절차를 한 번 더 도는 것이다(자동화 없음).
 
 ## 이미지 (#15)
 | 이미지 | 태그 | 만드는 곳 |

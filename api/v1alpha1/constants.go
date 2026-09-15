@@ -46,6 +46,14 @@ const (
 	// the annotation when the format Job finished, success or not.
 	AnnotationFormatApproved = "daos.gluesys.com/format-approved"
 
+	// AnnotationCertsRenewApproved on a DaosSystem lets the operator replace the
+	// transport certificates. New certificates mean a new CA, so every engine and
+	// client must reload them: the operator therefore performs the full-stop
+	// restart of ADR-003 (stop, swap the Secret, restart pods, start, verify).
+	// Setting this annotation approves that outage. It is removed when the
+	// rotation finishes, successfully or not.
+	AnnotationCertsRenewApproved = "daos.gluesys.com/certs-renew-approved"
+
 	// AnnotationDestroyApproved on a DaosPool or DaosContainer lets the operator
 	// run `dmg pool destroy` / `daos cont destroy` when the object is deleted.
 	// Without it, deleting the Kubernetes object only forgets the DAOS object

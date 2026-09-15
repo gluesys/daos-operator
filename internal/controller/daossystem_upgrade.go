@@ -52,6 +52,10 @@ const (
 	upgradeCompleted      = "Completed"
 	upgradeFailed         = "Failed"
 
+	// triggers
+	triggerImage = "ImageChange"
+	triggerCerts = "CertificateRotation"
+
 	jobStopSuffix   = "-dmg-stop"
 	jobStartSuffix  = "-dmg-start"
 	jobVerifySuffix = "-dmg-verify"
@@ -136,17 +140,34 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 			stale = append(stale, img)
 		}
 	}
+	rotateWanted := certsRenewApproved(sys)
 	up := status.Upgrade
+	// both approvals are one-shot: whatever ends the restart consumes them
+	done := func() error {
+		if err := r.resetApproval(ctx, sys); err != nil {
+			return err
+		}
+		return r.clearCertsApproval(ctx, sys)
+	}
 	fail := func(msg string) (bool, time.Duration, error) {
 		now := metav1.Now()
 		up.Phase, up.Message, up.FinishedAt = upgradeFailed, msg, &now
 		setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionFalse, upgradeFailed, msg)
 		r.event(sys, corev1.EventTypeWarning, "UpgradeFailed", msg)
-		return false, requeueSlow, r.resetApproval(ctx, sys)
+		return false, requeueSlow, done()
 	}
 
 	if !upgradeInProgress(status) {
 		switch {
+		case rotateWanted:
+			// certificate rotation replaces the CA: the same full-stop restart,
+			// with the Secret swapped while every engine is down
+			now := metav1.Now()
+			status.Upgrade = &daosv1alpha1.UpgradeStatus{Trigger: triggerCerts, Phase: upgradeStopping, FromImage: want, ToImage: want, StartedAt: &now,
+				Message: "certificate rotation approved; stopping the system (dmg system stop)"}
+			up = status.Upgrade
+			setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionTrue, upgradeStopping, up.Message)
+			r.event(sys, corev1.EventTypeNormal, "CertificateRotationStarted", "full-stop restart to replace the transport certificates")
 		case len(stale) == 0:
 			// nothing to do: image is what the pods run
 			if up != nil && up.Phase == upgradePending {
@@ -161,14 +182,14 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 			return false, 0, nil
 		case !sys.Spec.Upgrade.Approved:
 			if up == nil || up.Phase != upgradePending {
-				status.Upgrade = &daosv1alpha1.UpgradeStatus{Phase: upgradePending, FromImage: stale[0], ToImage: want}
+				status.Upgrade = &daosv1alpha1.UpgradeStatus{Trigger: triggerImage, Phase: upgradePending, FromImage: stale[0], ToImage: want}
 			}
 			status.Upgrade.Message = fmt.Sprintf("%d server pod(s) run %s, spec wants %s; full-stop upgrade waits for spec.upgrade.approved=true (drain clients first: the operator cannot see client handles)", len(stale), stale[0], want)
 			setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionFalse, upgradePending, status.Upgrade.Message)
 			return false, 0, nil
 		default:
 			now := metav1.Now()
-			status.Upgrade = &daosv1alpha1.UpgradeStatus{Phase: upgradeStopping, FromImage: stale[0], ToImage: want, StartedAt: &now,
+			status.Upgrade = &daosv1alpha1.UpgradeStatus{Trigger: triggerImage, Phase: upgradeStopping, FromImage: stale[0], ToImage: want, StartedAt: &now,
 				Message: "approved; stopping the system (dmg system stop)"}
 			up = status.Upgrade
 			setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionTrue, upgradeStopping, up.Message)
@@ -200,11 +221,20 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 		return true, time.Second, nil
 
 	case upgradeUpdating:
+		if up.Trigger == triggerCerts {
+			// the engines are down: swap the certificates now, then restart every pod
+			if err := r.rotateCerts(ctx, sys, ns, status); err != nil {
+				return fail("certificate rotation: " + err.Error())
+			}
+		}
 		// the StatefulSets already carry spec.images.server (OnDelete); deleting the
-		// pods is what makes them come back with it
+		// pods is what makes them come back with it -- and with the new certificates
 		deleted := 0
 		for i := range pods {
-			if pods[i].DeletionTimestamp.IsZero() && podImage(&pods[i]) != want {
+			if !pods[i].DeletionTimestamp.IsZero() {
+				continue
+			}
+			if up.Trigger == triggerCerts || podImage(&pods[i]) != want {
 				if err := r.Delete(ctx, &pods[i]); client.IgnoreNotFound(err) != nil {
 					return true, 0, err
 				}
@@ -219,7 +249,7 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 	case upgradeStarting:
 		ready := 0
 		for i := range pods {
-			if podImage(&pods[i]) == want && podReady(&pods[i]) {
+			if podImage(&pods[i]) == want && podReady(&pods[i]) && pods[i].DeletionTimestamp.IsZero() {
 				ready++
 			}
 		}
@@ -286,12 +316,17 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 		}
 		now := metav1.Now()
 		up.Phase, up.FinishedAt = upgradeCompleted, &now
-		up.Message = fmt.Sprintf("%d ranks joined on %s", len(members), want)
-		status.ObservedVersion = sys.Spec.Version
+		if up.Trigger == triggerCerts {
+			up.Message = fmt.Sprintf("%d ranks joined with the new certificates; restart DAOS clients (CSI node DaemonSet, agent sidecars) to pick up the new CA", len(members))
+			r.event(sys, corev1.EventTypeNormal, "CertificateRotationCompleted", up.Message)
+		} else {
+			up.Message = fmt.Sprintf("%d ranks joined on %s", len(members), want)
+			status.ObservedVersion = sys.Spec.Version
+			r.event(sys, corev1.EventTypeNormal, "UpgradeCompleted", up.Message)
+		}
 		setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionFalse, upgradeCompleted, up.Message)
-		r.event(sys, corev1.EventTypeNormal, "UpgradeCompleted", up.Message)
 		clearProbeHold(sys.Name)
-		return false, time.Second, r.resetApproval(ctx, sys)
+		return false, time.Second, done()
 	}
 	return false, 0, nil
 }

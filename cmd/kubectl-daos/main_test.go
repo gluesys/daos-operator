@@ -22,6 +22,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -102,6 +103,30 @@ func TestSystemUpgradeSetsImageAndApproval(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "FULL-STOP") || !strings.Contains(out.String(), "drained") {
 		t.Errorf("prompt: %s", out.String())
+	}
+}
+
+func TestSystemCerts(t *testing.T) {
+	ctx := context.Background()
+	s := sysPending()
+	s.Spec.AllowInsecure = true
+	a, _ := newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"system", "certs", "d1"}); err == nil || !strings.Contains(err.Error(), "allowInsecure") {
+		t.Fatalf("insecure system: %v", err)
+	}
+	s = sysPending()
+	s.Status.Certificates = &daosv1alpha1.CertificatesStatus{SecretName: "d1-certs", NotAfter: &metav1.Time{Time: time.Now().Add(240 * time.Hour)}}
+	a, out := newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"system", "certs", "d1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "FULL-STOP") || !strings.Contains(out.String(), "d1-certs-previous") {
+		t.Errorf("prompt must explain the outage and the backup: %s", out.String())
+	}
+	sys := &daosv1alpha1.DaosSystem{}
+	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+	if sys.Annotations[daosv1alpha1.AnnotationCertsRenewApproved] != "true" {
+		t.Fatal("annotation missing")
 	}
 }
 

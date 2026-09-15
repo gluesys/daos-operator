@@ -27,6 +27,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
@@ -90,12 +91,84 @@ func (r *DaosSystemReconciler) ensureCerts(ctx context.Context, sys *daosv1alpha
 		setCond(status, daosv1alpha1.ConditionCertificates, metav1.ConditionFalse, "Invalid", fmt.Sprintf("Secret %s: %v (fix it or delete it to regenerate)", name, verr))
 		return name, nil
 	}
-	reason, msg := "Valid", fmt.Sprintf("Secret %s valid until %s", name, exp.UTC().Format(time.RFC3339))
-	if time.Until(exp) < 30*24*time.Hour {
+	cs := &daosv1alpha1.CertificatesStatus{SecretName: name, NotAfter: &metav1.Time{Time: exp}}
+	if status.Certificates != nil {
+		cs.RotatedAt, cs.PreviousSecret = status.Certificates.RotatedAt, status.Certificates.PreviousSecret
+	}
+	status.Certificates = cs
+	left := time.Until(exp)
+	reason, msg := "Valid", fmt.Sprintf("Secret %s valid until %s (%d days left)", name, exp.UTC().Format(time.RFC3339), int(left.Hours()/24))
+	if left < renewBefore(sys) {
 		reason = "ExpiringSoon"
+		msg += fmt.Sprintf("; rotation replaces the CA, so it needs a full-stop restart: kubectl annotate daossystem %s %s=true", sys.Name, daosv1alpha1.AnnotationCertsRenewApproved)
+	}
+	if certsRenewApproved(sys) {
+		msg += "; rotation approved, running on the next pass"
 	}
 	setCond(status, daosv1alpha1.ConditionCertificates, metav1.ConditionTrue, reason, msg)
 	return name, nil
+}
+
+// renewBefore is how long before expiry the condition warns.
+func renewBefore(sys *daosv1alpha1.DaosSystem) time.Duration {
+	d := sys.Spec.Certificates.RenewBeforeDays
+	if d <= 0 {
+		d = 30
+	}
+	return time.Duration(d) * 24 * time.Hour
+}
+
+func certsRenewApproved(sys *daosv1alpha1.DaosSystem) bool {
+	return certsNeeded(sys) && sys.Annotations[daosv1alpha1.AnnotationCertsRenewApproved] == "true"
+}
+
+// clearCertsApproval removes the one-shot rotation annotation.
+func (r *DaosSystemReconciler) clearCertsApproval(ctx context.Context, sys *daosv1alpha1.DaosSystem) error {
+	if _, ok := sys.Annotations[daosv1alpha1.AnnotationCertsRenewApproved]; !ok {
+		return nil
+	}
+	patch := client.MergeFrom(sys.DeepCopy())
+	delete(sys.Annotations, daosv1alpha1.AnnotationCertsRenewApproved)
+	return r.Patch(ctx, sys, patch)
+}
+
+// rotateCerts copies the current bundle to <sys>-certs-previous and writes a new
+// one into <sys>-certs. It runs while the system is stopped (upgrade phase
+// Updating), so no engine reads a half-replaced set.
+func (r *DaosSystemReconciler) rotateCerts(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns string, status *daosv1alpha1.DaosSystemStatus) error {
+	name := certsSecretName(sys)
+	cur := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: ns, Name: name}, cur); err != nil {
+		return fmt.Errorf("read %s: %w", name, err)
+	}
+	prevName := name + "-previous"
+	prev := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: prevName, Namespace: ns}}
+	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, prev, func() error {
+		labelManaged(&prev.ObjectMeta, sys, "")
+		prev.Type = corev1.SecretTypeOpaque
+		prev.Data = cur.Data
+		if prev.Annotations == nil {
+			prev.Annotations = map[string]string{}
+		}
+		prev.Annotations["daos.gluesys.com/replaced-at"] = time.Now().UTC().Format(time.RFC3339)
+		return controllerutil.SetControllerReference(sys, prev, r.Scheme)
+	}); err != nil {
+		return fmt.Errorf("back up to %s: %w", prevName, err)
+	}
+	bundle, err := certs.Generate(time.Now())
+	if err != nil {
+		return fmt.Errorf("generate certificates: %w", err)
+	}
+	cur.Data = map[string][]byte(bundle)
+	if err := r.Update(ctx, cur); err != nil {
+		return fmt.Errorf("update %s: %w", name, err)
+	}
+	now := metav1.Now()
+	exp, _ := certs.Verify(bundle, time.Now())
+	status.Certificates = &daosv1alpha1.CertificatesStatus{SecretName: name, NotAfter: &metav1.Time{Time: exp}, RotatedAt: &now, PreviousSecret: prevName}
+	r.event(sys, corev1.EventTypeNormal, "CertificatesRotated",
+		fmt.Sprintf("new CA and certificates written to %s (previous kept in %s); restart DAOS clients too: the CSI node DaemonSet and any pod with a daos_agent sidecar", name, prevName))
+	return nil
 }
 
 // certsVolume returns a Secret volume projecting the given files (path -> key).

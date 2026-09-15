@@ -108,6 +108,26 @@ type ServerSpec struct {
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
+// CertificatesSpec tunes the transport certificates the operator generates
+// when allowInsecure=false (#16, rotation #19).
+type CertificatesSpec struct {
+	// RenewBeforeDays is how long before expiry the Certificates condition
+	// switches to ExpiringSoon. Rotation still needs a human approval
+	// (daos.gluesys.com/certs-renew-approved=true). Default 30.
+	// +kubebuilder:validation:Minimum=1
+	RenewBeforeDays int32 `json:"renewBeforeDays,omitempty"`
+}
+
+// CertificatesStatus mirrors the certificate Secret.
+type CertificatesStatus struct {
+	SecretName string       `json:"secretName,omitempty"`
+	NotAfter   *metav1.Time `json:"notAfter,omitempty"`
+	RotatedAt  *metav1.Time `json:"rotatedAt,omitempty"`
+	// PreviousSecret holds the bundle replaced by the last rotation, kept for
+	// manual rollback; the operator never deletes it.
+	PreviousSecret string `json:"previousSecret,omitempty"`
+}
+
 // TelemetrySpec exposes the engines' Prometheus endpoint (#12).
 type TelemetrySpec struct {
 	// Enabled sets telemetry_port in daos_server.yml and creates the
@@ -144,6 +164,9 @@ type UpgradeSpec struct {
 // new image) -> Starting (waiting for pods) -> StartingSystem (dmg system start)
 // -> Verifying (dmg system query, all ranks joined) -> Completed | Failed.
 type UpgradeStatus struct {
+	// Trigger says why the system is being restarted: ImageChange (spec.images.server)
+	// or CertificateRotation (daos.gluesys.com/certs-renew-approved).
+	Trigger    string       `json:"trigger,omitempty"`
 	Phase      string       `json:"phase,omitempty"`
 	Message    string       `json:"message,omitempty"`
 	FromImage  string       `json:"fromImage,omitempty"`
@@ -183,11 +206,12 @@ type DaosSystemSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	Engines []EngineSpec `json:"engines"`
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
-	AllowInsecure bool          `json:"allowInsecure,omitempty"`
-	HostPrep      HostPrepSpec  `json:"hostPrep,omitempty"`
-	Server        ServerSpec    `json:"server,omitempty"`
-	Telemetry     TelemetrySpec `json:"telemetry,omitempty"`
-	Upgrade       UpgradeSpec   `json:"upgrade,omitempty"`
+	AllowInsecure bool             `json:"allowInsecure,omitempty"`
+	HostPrep      HostPrepSpec     `json:"hostPrep,omitempty"`
+	Server        ServerSpec       `json:"server,omitempty"`
+	Certificates  CertificatesSpec `json:"certificates,omitempty"`
+	Telemetry     TelemetrySpec    `json:"telemetry,omitempty"`
+	Upgrade       UpgradeSpec      `json:"upgrade,omitempty"`
 }
 
 // RankStatus mirrors `dmg system query -v` for one rank. The operator copies
@@ -235,6 +259,8 @@ type DaosSystemStatus struct {
 	LastQueryTime *metav1.Time `json:"lastQueryTime,omitempty"`
 	// Upgrade is the state of the last/current full-stop upgrade (#13).
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
+	// Certificates mirrors the transport-certificate Secret (#16, #19).
+	Certificates *CertificatesStatus `json:"certificates,omitempty"`
 }
 
 // +kubebuilder:object:root=true

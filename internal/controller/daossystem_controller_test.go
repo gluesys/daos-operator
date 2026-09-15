@@ -564,6 +564,98 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sec.Data).To(HaveLen(6))
 	})
 
+	It("rotates certificates only after approval, while the system is stopped (#19)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers},
+			"system stop": {Done: true, Output: dmgOK}, "system start": {Done: true, Output: dmgOK}}}
+		mkPod := func(name string) {
+			p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: name,
+				Labels: map[string]string{daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: "s"}}}}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			p.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+			Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		}
+		DeferCleanup(func() {
+			pods := &corev1.PodList{}
+			_ = k8sClient.List(ctx, pods, client.InNamespace("daos-test"))
+			for i := range pods.Items {
+				_ = k8sClient.Delete(ctx, &pods.Items[i], client.GracePeriodSeconds(0))
+			}
+			_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-certs-previous"}})
+		})
+		sys := getSys()
+		sys.Spec.AllowInsecure = false
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		mkPod("t1-server-n1-0")
+		mkPod("t1-server-n2-0")
+		reconcileWith(f)
+		sys = getSys()
+		Expect(cond(sys, daosv1alpha1.ConditionCertificates).Reason).To(Equal("Valid"))
+		Expect(sys.Status.Certificates.SecretName).To(Equal("t1-certs"))
+		Expect(sys.Status.Certificates.NotAfter).NotTo(BeNil())
+		sec := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		first := string(sec.Data["daosCA.crt"])
+
+		By("a fresh Secret with a short renewBeforeDays reports ExpiringSoon and how to approve")
+		sys.Spec.Certificates.RenewBeforeDays = 4000 // longer than the 1095-day validity
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		c := cond(getSys(), daosv1alpha1.ConditionCertificates)
+		Expect(c.Reason).To(Equal("ExpiringSoon"))
+		Expect(c.Message).To(ContainSubstring(daosv1alpha1.AnnotationCertsRenewApproved + "=true"))
+		Expect(f.count("system stop")).To(BeZero(), "no restart without approval")
+
+		By("approval starts the full-stop restart with trigger CertificateRotation")
+		sys = getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationCertsRenewApproved: "true"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Trigger).To(Equal(triggerCerts))
+		// dmg system stop answers immediately in this test, so the same pass lands in Updating
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeUpdating))
+		Expect(f.count("system stop")).To(Equal(1))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(string(sec.Data["daosCA.crt"])).To(Equal(first), "certificates are not touched before the engines stop")
+
+		By("stopped -> Secret swapped, backup kept, every pod deleted")
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeStarting))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(string(sec.Data["daosCA.crt"])).NotTo(Equal(first), "new CA written while stopped")
+		prev := &corev1.Secret{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs-previous"}, prev)).To(Succeed())
+		Expect(string(prev.Data["daosCA.crt"])).To(Equal(first), "old bundle kept for rollback")
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1-0"}, &corev1.Pod{}))).To(BeTrue())
+
+		By("pods back -> start -> verify -> completed, approval consumed")
+		mkPod("t1-server-n1-0")
+		mkPod("t1-server-n2-0")
+		reconcileWith(f)
+		Expect(getSys().Status.Upgrade.Phase).To(Equal(upgradeStartingSystem))
+		reconcileWith(f)
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradeCompleted))
+		Expect(sys.Status.Upgrade.Message).To(ContainSubstring("restart DAOS clients"))
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationCertsRenewApproved), "one-shot approval")
+		Expect(sys.Status.Certificates.RotatedAt).NotTo(BeNil())
+		Expect(sys.Status.Certificates.PreviousSecret).To(Equal("t1-certs-previous"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		ca := string(sec.Data["daosCA.crt"])
+		before := f.count("system stop")
+		reconcileWith(f)
+		reconcileWith(f)
+		Expect(f.count("system stop")).To(Equal(before), "approval consumed: no second rotation")
+		Expect(getSys().Status.Upgrade.Phase).To(Equal(upgradeCompleted))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-certs"}, sec)).To(Succeed())
+		Expect(string(sec.Data["daosCA.crt"])).To(Equal(ca))
+	})
+
 	It("removes server workloads only when spec.server.enabled is set to false", func() {
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})).To(Succeed())

@@ -68,6 +68,20 @@ spec:
                 description: AllowInsecure disables TLS between dmg/agent and servers.
                   Phase 0 only.
                 type: boolean
+              certificates:
+                description: |-
+                  CertificatesSpec tunes the transport certificates the operator generates
+                  when allowInsecure=false (#16, rotation #19).
+                properties:
+                  renewBeforeDays:
+                    description: |-
+                      RenewBeforeDays is how long before expiry the Certificates condition
+                      switches to ExpiringSoon. Rotation still needs a human approval
+                      (daos.gluesys.com/certs-renew-approved=true). Default 30.
+                    format: int32
+                    minimum: 1
+                    type: integer
+                type: object
               engines:
                 description: Engines per node; usually one per socket.
                 items:
@@ -399,6 +413,24 @@ spec:
             description: DaosSystemStatus is read back from the DAOS management service
               and metrics.
             properties:
+              certificates:
+                description: 'Certificates mirrors the transport-certificate Secret
+                  (#16, #19).'
+                properties:
+                  notAfter:
+                    format: date-time
+                    type: string
+                  previousSecret:
+                    description: |-
+                      PreviousSecret holds the bundle replaced by the last rotation, kept for
+                      manual rollback; the operator never deletes it.
+                    type: string
+                  rotatedAt:
+                    format: date-time
+                    type: string
+                  secretName:
+                    type: string
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current
@@ -561,6 +593,11 @@ spec:
                     format: date-time
                     type: string
                   toImage:
+                    type: string
+                  trigger:
+                    description: |-
+                      Trigger says why the system is being restarted: ImageChange (spec.images.server)
+                      or CertificateRotation (daos.gluesys.com/certs-renew-approved).
                     type: string
                 type: object
             type: object
