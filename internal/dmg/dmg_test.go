@@ -161,3 +161,25 @@ func TestWithACLFile(t *testing.T) {
 		t.Fatalf("\n got %s\nwant %s", got[2], want)
 	}
 }
+
+func TestRankOpBothShapes(t *testing.T) {
+	// exclude/reintegrate: member results (no json tags on most fields in DAOS 2.8)
+	e, err := Parse(`{"response": {"Results": [{"Addr": "10.0.0.2:10001", "Rank": 1, "Action": "exclude", "Errored": false, "Msg": "", "state": "adminexcluded"}]}, "error": null, "status": 0}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := RankOp(e)
+	if err != nil || len(r) != 1 || r[0].Rank != 1 || r[0].State != "adminexcluded" || r[0].Errored {
+		t.Fatalf("%+v %v", r, err)
+	}
+	// drain: per-pool results
+	e, _ = Parse(`{"response": {"responses": [{"id": "kv", "results": [{"rank": 2, "errored": true, "msg": "pool busy"}, {"rank": 1, "errored": false, "msg": ""}]}]}, "error": null, "status": 0}`)
+	r, err = RankOp(e)
+	if err != nil || len(r) != 2 || r[0].Rank != 1 || r[1].Rank != 2 || !r[1].Errored || r[1].Pool != "kv" {
+		t.Fatalf("%+v %v", r, err)
+	}
+	e, _ = Parse(`{"response": null, "error": null, "status": 0}`)
+	if r, err := RankOp(e); err != nil || r != nil {
+		t.Fatalf("empty response: %+v %v", r, err)
+	}
+}

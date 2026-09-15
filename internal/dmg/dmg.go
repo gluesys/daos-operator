@@ -523,3 +523,68 @@ func WithACLFile(entries []string, path string, command []string) []string {
 	}
 	return []string{"bash", "-c", b.String()}
 }
+
+// RankResult is one rank's outcome from `dmg system drain|exclude|reintegrate`.
+// DAOS 2.8 answers with two different shapes: exclude/reintegrate return
+// {"Results": [{Rank, Errored, Msg, state}]} (member results) while drain
+// returns {"responses": [{id, results: [{rank, errored, msg}]}]} (per pool).
+type RankResult struct {
+	Rank    int32
+	Errored bool
+	Msg     string
+	State   string
+	Pool    string // set for the per-pool shape
+}
+
+// RankOp parses the response of a rank operation.
+func RankOp(e *Envelope) ([]RankResult, error) {
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, nil
+	}
+	var perPool struct {
+		Responses []struct {
+			ID      string `json:"id"`
+			Results []struct {
+				Rank    int32  `json:"rank"`
+				Errored bool   `json:"errored"`
+				Msg     string `json:"msg"`
+			} `json:"results"`
+		} `json:"responses"`
+	}
+	if err := json.Unmarshal(e.Response, &perPool); err == nil && len(perPool.Responses) > 0 {
+		var out []RankResult
+		for _, p := range perPool.Responses {
+			for _, r := range p.Results {
+				out = append(out, RankResult{Rank: r.Rank, Errored: r.Errored, Msg: r.Msg, Pool: p.ID})
+			}
+		}
+		sortRanks(out)
+		return out, nil
+	}
+	var members struct {
+		Results []struct {
+			Rank    int32  `json:"Rank"`
+			Errored bool   `json:"Errored"`
+			Msg     string `json:"Msg"`
+			State   string `json:"state"`
+		} `json:"Results"`
+	}
+	if err := json.Unmarshal(e.Response, &members); err != nil {
+		return nil, fmt.Errorf("rank operation response: %w", err)
+	}
+	out := make([]RankResult, 0, len(members.Results))
+	for _, r := range members.Results {
+		out = append(out, RankResult{Rank: r.Rank, Errored: r.Errored, Msg: r.Msg, State: r.State})
+	}
+	sortRanks(out)
+	return out, nil
+}
+
+func sortRanks(r []RankResult) {
+	sort.Slice(r, func(i, j int) bool {
+		if r[i].Rank != r[j].Rank {
+			return r[i].Rank < r[j].Rank
+		}
+		return r[i].Pool < r[j].Pool
+	})
+}

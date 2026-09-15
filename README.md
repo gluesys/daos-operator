@@ -164,6 +164,26 @@ kubectl annotate daospool kv daos.gluesys.com/destroy-approved=true && kubectl d
 kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
 ```
 
+## rank 멤버십 조작 (#20)
+rank 를 빼고 넣는 일은 데이터가 어디 있느냐를 바꾸는 결정이라 operator 가 스스로 하지 않는다. 죽은 rank 는 **보고**할 뿐 쫓아내지 않는다.
+
+```bash
+kubectl daos rank drain daos-dev --ranks=2          # 또는 annotate daossystem ... daos.gluesys.com/rank-op=drain:2
+kubectl daos system status daos-dev                 # last rank op: drain 2 -> ok ...
+```
+
+| 요청 | 실행 | 뜻 |
+|---|---|---|
+| `drain:<ranks>` | `dmg system drain --ranks=` | 데이터를 먼저 옮긴다(점진적, 풀 중복도 유지) |
+| `exclude:<ranks>` | `dmg system exclude --ranks=` | 즉시 down 처리 → 해당 풀 전부 리빌드 |
+| `reintegrate:<ranks>` | `dmg system reintegrate --ranks=` | 다시 합류시키고 데이터를 되돌린다 |
+| `clear-exclude:<ranks>` | `dmg system clear-exclude --ranks=` | 관리자 제외 상태만 해제 |
+
+- 어노테이션은 1회용이다. operator 가 Job 을 한 번 돌리고 rank 별 결과를 `status.lastRankOp{op,ranks,succeeded,message}` 에 적은 뒤 지운다.
+  실패한 rank 가 하나라도 있으면 `succeeded=false` 와 함께 어느 rank 가 왜 실패했는지 남는다(Event `RankOpFailed`).
+- 잘못된 요청(알 수 없는 연산, rank 표기 오류, 미포맷 시스템)은 실행하지 않고 그 이유를 status 에 적는다.
+- 멤버십 자체는 여기서 추측하지 않는다. 다음 `dmg system query` 결과가 `status.ranks` 를 갱신한다.
+
 ## 텔레메트리 (#12)
 `spec.telemetry`(기본 enabled, port 9191, serviceMonitor true, interval 15s):
 
@@ -209,6 +229,7 @@ kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 | `kubectl daos system format <sys>` | `status.pendingFormat` 일 때만. 지워질 노드·디바이스 수를 보여주고 `yes` 입력 후 `daos.gluesys.com/format-approved=true` |
 | `kubectl daos system upgrade <sys> [--image I] [--version V]` | 새 서버 이미지/버전을 적고 전체 중단 업그레이드 승인(`spec.upgrade.approved=true`). 클라이언트 드레인 보증 문구 표시 |
 | `kubectl daos system certs <sys>` | 인증서 교체 승인. 만료일과 "전체 중단 재시작 + 클라이언트 재시작 필요" 를 보여주고 `yes` 후 `certs-renew-approved=true` |
+| `kubectl daos rank drain\|exclude\|reintegrate\|clear-exclude <sys> --ranks=N[,M-O]` | rank 멤버십 조작 요청. 영향(데이터 이동·리빌드)과 현재 rank 목록을 보여주고 `yes` 후 `rank-op` 어노테이션 |
 | `kubectl daos pool destroy <pool>` | 사용량을 보여주고 `destroy-approved=true` + `DaosPool` 삭제 → operator 가 `dmg pool destroy --recursive` |
 | `kubectl daos cont destroy -n <ns> <cont>` | 동일, 컨테이너 |
 

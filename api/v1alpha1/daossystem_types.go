@@ -108,6 +108,16 @@ type ServerSpec struct {
 	TerminationGracePeriodSeconds *int64 `json:"terminationGracePeriodSeconds,omitempty"`
 }
 
+// RankOpStatus is the outcome of the last rank membership operation (#20).
+type RankOpStatus struct {
+	Op          string       `json:"op,omitempty"`
+	Ranks       string       `json:"ranks,omitempty"`
+	RequestedAt *metav1.Time `json:"requestedAt,omitempty"`
+	FinishedAt  *metav1.Time `json:"finishedAt,omitempty"`
+	Succeeded   bool         `json:"succeeded,omitempty"`
+	Message     string       `json:"message,omitempty"`
+}
+
 // CertificatesSpec tunes the transport certificates the operator generates
 // when allowInsecure=false (#16, rotation #19).
 type CertificatesSpec struct {
@@ -261,6 +271,8 @@ type DaosSystemStatus struct {
 	Upgrade *UpgradeStatus `json:"upgrade,omitempty"`
 	// Certificates mirrors the transport-certificate Secret (#16, #19).
 	Certificates *CertificatesStatus `json:"certificates,omitempty"`
+	// LastRankOp is the result of the last drain/exclude/reintegrate request (#20).
+	LastRankOp *RankOpStatus `json:"lastRankOp,omitempty"`
 }
 
 // +kubebuilder:object:root=true

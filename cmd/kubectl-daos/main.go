@@ -25,6 +25,7 @@ limitations under the License.
 //	kubectl daos system format  <sys>            # daos.gluesys.com/format-approved=true
 //	kubectl daos system upgrade <sys> [--image I] [--version V]   # spec.upgrade.approved=true
 //	kubectl daos system certs   <sys>            # daos.gluesys.com/certs-renew-approved=true
+//	kubectl daos rank drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M]
 //	kubectl daos pool destroy   <pool>           # destroy-approved=true + delete
 //	kubectl daos cont destroy   -n <ns> <cont>   # destroy-approved=true + delete
 //
@@ -103,7 +104,7 @@ func main() {
 
 func needsValue(f string) bool {
 	switch strings.TrimLeft(f, "-") {
-	case "n", "namespace", "kubeconfig", "context", "image", "version":
+	case "n", "namespace", "kubeconfig", "context", "image", "version", "ranks":
 		return true
 	}
 	return false
@@ -115,6 +116,8 @@ const usage = `usage: kubectl daos <command> <subcommand> <name> [--yes] [-n ns]
   system format  <sys>                         approve the one-shot storage format
   system upgrade <sys> [--image I] [--version V]  set the new server image and approve the full-stop upgrade
   system certs   <sys>                         approve replacing the transport certificates (full-stop restart)
+  rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O]
+                                               ask the operator to run one rank membership operation
   pool   destroy <pool>                        approve destruction and delete the DaosPool
   cont   destroy -n <ns> <cont>                approve destruction and delete the DaosContainer`
 
@@ -149,6 +152,8 @@ func (a *app) run(ctx context.Context, args []string) error {
 		return a.systemUpgrade(ctx, rest)
 	case "system certs":
 		return a.systemCerts(ctx, need(rest, "system name"))
+	case "rank drain", "rank exclude", "rank reintegrate", "rank clear-exclude":
+		return a.rankOp(ctx, strings.TrimPrefix(cmd, "rank "), rest)
 	case "pool destroy":
 		return a.poolDestroy(ctx, need(rest, "pool name"))
 	case "cont destroy", "container destroy":
@@ -218,6 +223,16 @@ func (a *app) systemStatus(ctx context.Context, name string) error {
 	}
 	if sys.Status.PendingFormat && !sys.Status.Formatted {
 		fmt.Fprintf(a.out, "\nDECISION PENDING: storage is not formatted. Review the drives above, then: kubectl daos system format %s\n", name)
+	}
+	if op := sys.Status.LastRankOp; op != nil && op.Op != "" {
+		outcome := "running"
+		if op.FinishedAt != nil {
+			outcome = "failed"
+			if op.Succeeded {
+				outcome = "ok"
+			}
+		}
+		fmt.Fprintf(a.out, "last rank op: %s %s -> %s  %s\n", op.Op, op.Ranks, outcome, op.Message)
 	}
 	if cs := sys.Status.Certificates; cs != nil && cs.NotAfter != nil {
 		fmt.Fprintf(a.out, "certificates: %s until %s", cs.SecretName, cs.NotAfter.UTC().Format(time.RFC3339))
@@ -334,6 +349,16 @@ func (a *app) systemCerts(ctx context.Context, name string) error {
 		return fmt.Errorf("%s runs with allowInsecure=true: there are no transport certificates to rotate", name)
 	}
 	expiry := "unknown"
+	if op := sys.Status.LastRankOp; op != nil && op.Op != "" {
+		outcome := "running"
+		if op.FinishedAt != nil {
+			outcome = "failed"
+			if op.Succeeded {
+				outcome = "ok"
+			}
+		}
+		fmt.Fprintf(a.out, "last rank op: %s %s -> %s  %s\n", op.Op, op.Ranks, outcome, op.Message)
+	}
 	if cs := sys.Status.Certificates; cs != nil && cs.NotAfter != nil {
 		expiry = fmt.Sprintf("%s (%d days left)", cs.NotAfter.UTC().Format(time.RFC3339), int(time.Until(cs.NotAfter.Time).Hours()/24))
 	}
@@ -353,6 +378,64 @@ func (a *app) systemCerts(ctx context.Context, name string) error {
 		return err
 	}
 	fmt.Fprintf(a.out, "approved: %s=true on DaosSystem %s (watch: kubectl get daossys %s -w)\n", daosv1alpha1.AnnotationCertsRenewApproved, name, name)
+	return nil
+}
+
+// rankOp asks the operator to run one rank membership operation.
+func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
+	fs := flag.NewFlagSet("rank", flag.ContinueOnError)
+	ranks := fs.String("ranks", "", "ranks to operate on: 1 or 0,2 or 1-3")
+	var pos []string
+	for i := 0; i < len(rest); i++ {
+		if strings.HasPrefix(rest[i], "-") {
+			if err := fs.Parse(rest[i:]); err != nil {
+				return err
+			}
+			pos = append(pos, fs.Args()...)
+			break
+		}
+		pos = append(pos, rest[i])
+	}
+	if len(pos) == 0 {
+		return fmt.Errorf("missing system name")
+	}
+	if *ranks == "" {
+		return fmt.Errorf("--ranks is required (e.g. --ranks=2 or --ranks=1,3-4)")
+	}
+	name := pos[0]
+	sys := &daosv1alpha1.DaosSystem{}
+	if err := a.c.Get(ctx, types.NamespacedName{Name: name}, sys); err != nil {
+		return err
+	}
+	if !sys.Status.Formatted {
+		return fmt.Errorf("%s is not formatted yet: there are no ranks to operate on", name)
+	}
+	impact := map[string]string{
+		"drain":         "Data is migrated off these ranks first; pools stay redundant. This moves a lot of data and takes as long as it takes.",
+		"exclude":       "The ranks are marked down IMMEDIATELY and every pool on them starts rebuilding. Data on them is not migrated first.",
+		"reintegrate":   "The ranks rejoin their pools and data rebuilds back onto them.",
+		"clear-exclude": "An administrative exclusion is cleared so the ranks may rejoin. Nothing moves until they are reintegrated.",
+	}[op]
+	var b strings.Builder
+	fmt.Fprintf(&b, "About to ask DaosSystem %s to run: dmg system %s --ranks=%s\n%s\n", name, op, *ranks, impact)
+	if len(sys.Status.Ranks) > 0 {
+		b.WriteString("current membership:\n")
+		for _, r := range sys.Status.Ranks {
+			fmt.Fprintf(&b, "  rank %-3d %-24s %s\n", r.Rank, r.Node, r.State)
+		}
+	}
+	if !a.confirm(b.String()) {
+		return fmt.Errorf("aborted")
+	}
+	patch := client.MergeFrom(sys.DeepCopy())
+	if sys.Annotations == nil {
+		sys.Annotations = map[string]string{}
+	}
+	sys.Annotations[daosv1alpha1.AnnotationRankOp] = op + ":" + *ranks
+	if err := a.c.Patch(ctx, sys, patch); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "requested: %s=%s:%s (result: kubectl daos system status %s)\n", daosv1alpha1.AnnotationRankOp, op, *ranks, name)
 	return nil
 }
 

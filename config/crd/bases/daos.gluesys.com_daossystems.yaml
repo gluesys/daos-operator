@@ -499,6 +499,25 @@ spec:
                   (ranks are as of then).
                 format: date-time
                 type: string
+              lastRankOp:
+                description: LastRankOp is the result of the last drain/exclude/reintegrate
+                  request (#20).
+                properties:
+                  finishedAt:
+                    format: date-time
+                    type: string
+                  message:
+                    type: string
+                  op:
+                    type: string
+                  ranks:
+                    type: string
+                  requestedAt:
+                    format: date-time
+                    type: string
+                  succeeded:
+                    type: boolean
+                type: object
               msReplicaNodes:
                 description: MsReplicaNodes are the nodes chosen to host management-service
                   replicas.

@@ -54,6 +54,14 @@ const (
 	// rotation finishes, successfully or not.
 	AnnotationCertsRenewApproved = "daos.gluesys.com/certs-renew-approved"
 
+	// AnnotationRankOp asks the operator to run one rank membership operation:
+	// "<op>:<ranks>", e.g. "drain:2" or "exclude:1,3-4". Operations are
+	// drain (migrate data off, graceful), exclude (mark down now; pools rebuild),
+	// reintegrate (bring back; pools rebuild onto it) and clear-exclude (undo an
+	// administrative exclusion). The operator runs it once and removes the
+	// annotation; `kubectl daos rank ...` writes it after showing the impact.
+	AnnotationRankOp = "daos.gluesys.com/rank-op"
+
 	// AnnotationDestroyApproved on a DaosPool or DaosContainer lets the operator
 	// run `dmg pool destroy` / `daos cont destroy` when the object is deleted.
 	// Without it, deleting the Kubernetes object only forgets the DAOS object

@@ -130,6 +130,49 @@ func TestSystemCerts(t *testing.T) {
 	}
 }
 
+func TestRankOp(t *testing.T) {
+	ctx := context.Background()
+	s := sysPending()
+	a, _ := newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "drain", "d1", "--ranks", "1"}); err == nil || !strings.Contains(err.Error(), "not formatted") {
+		t.Fatalf("unformatted system: %v", err)
+	}
+	s = sysPending()
+	s.Status.Formatted, s.Status.PendingFormat = true, false
+	s.Status.Ranks = []daosv1alpha1.RankStatus{{Rank: 0, Node: "n1", State: "joined"}, {Rank: 1, Node: "n2", State: "joined"}}
+	a, _ = newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "drain", "d1"}); err == nil || !strings.Contains(err.Error(), "--ranks is required") {
+		t.Fatalf("missing ranks: %v", err)
+	}
+	a, out := newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "exclude", "d1", "--ranks", "1"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "IMMEDIATELY") || !strings.Contains(out.String(), "rank 1") {
+		t.Errorf("prompt must show the impact and the current membership: %s", out.String())
+	}
+	sys := &daosv1alpha1.DaosSystem{}
+	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+	if sys.Annotations[daosv1alpha1.AnnotationRankOp] != "exclude:1" {
+		t.Fatalf("annotation: %q", sys.Annotations[daosv1alpha1.AnnotationRankOp])
+	}
+	// refusing at the prompt writes nothing
+	a, _ = newApp(t, "no\n", false, sysFormatted())
+	if err := a.run(ctx, []string{"rank", "drain", "d1", "--ranks", "0"}); err == nil || err.Error() != "aborted" {
+		t.Fatalf("expected abort: %v", err)
+	}
+	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+	if _, ok := sys.Annotations[daosv1alpha1.AnnotationRankOp]; ok {
+		t.Fatal("nothing must be written when the operator says no")
+	}
+}
+
+func sysFormatted() *daosv1alpha1.DaosSystem {
+	s := sysPending()
+	s.Status.Formatted, s.Status.PendingFormat = true, false
+	return s
+}
+
 func TestPoolAndContainerDestroy(t *testing.T) {
 	ctx := context.Background()
 	pool := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "p1"}, Status: daosv1alpha1.DaosPoolStatus{UUID: "u", TotalBytes: 10 << 30, FreeBytes: 4 << 30}}

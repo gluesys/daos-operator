@@ -656,6 +656,58 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(string(sec.Data["daosCA.crt"])).To(Equal(ca))
 	})
 
+	It("runs a requested rank operation once and reports each rank's result (#20)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		reconcileWith(f) // formatted = true after the membership query
+		Expect(getSys().Status.Formatted).To(BeTrue())
+
+		By("a bad request is refused with a message, never run")
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "evacuate:2"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeFalse())
+		Expect(sys.Status.LastRankOp.Message).To(ContainSubstring("unknown operation"))
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
+		Expect(f.count("system evacuate --ranks=2")).To(BeZero())
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "drain:two"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(getSys().Status.LastRankOp.Message).To(ContainSubstring("is not a rank set"))
+
+		By("drain:1 runs dmg system drain --ranks=1 and records the per-pool result")
+		sys = getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "drain:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f) // job created, still running
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.FinishedAt).To(BeNil())
+		Expect(sys.Annotations).To(HaveKey(daosv1alpha1.AnnotationRankOp), "kept until the job finishes")
+		f.set("system drain --ranks=1", &dmg.Result{Done: true, Output: `{"response": {"responses": [{"id": "kv", "results": [{"rank": 1, "errored": false, "msg": ""}]}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.Op).To(Equal("drain"))
+		Expect(sys.Status.LastRankOp.Ranks).To(Equal("1"))
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeTrue())
+		Expect(sys.Status.LastRankOp.FinishedAt).NotTo(BeNil())
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp), "one-shot request")
+		before := f.count("system drain --ranks=1")
+		reconcileWith(f)
+		Expect(f.count("system drain --ranks=1")).To(Equal(before), "not repeated")
+
+		By("a rank that reports an error fails the request and says which rank")
+		sys = getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "exclude:0,1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		f.set("system exclude --ranks=0,1", &dmg.Result{Done: true, Output: `{"response": {"Results": [{"Rank": 0, "Errored": false, "Msg": "", "state": "adminexcluded"}, {"Rank": 1, "Errored": true, "Msg": "rank not found", "state": "unknown"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeFalse())
+		Expect(sys.Status.LastRankOp.Message).To(ContainSubstring("rank 1: rank not found"))
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
+	})
+
 	It("removes server workloads only when spec.server.enabled is set to false", func() {
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})).To(Succeed())

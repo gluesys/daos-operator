@@ -115,7 +115,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Formatted: sys.Status.Formatted, PendingFormat: sys.Status.PendingFormat, FormatTime: sys.Status.FormatTime,
 		LastQueryTime: sys.Status.LastQueryTime, Ranks: sys.Status.Ranks, RanksJoined: sys.Status.RanksJoined,
 		RanksTotal: sys.Status.RanksTotal, ObservedVersion: sys.Status.ObservedVersion, Upgrade: sys.Status.Upgrade,
-		Certificates: sys.Status.Certificates}
+		Certificates: sys.Status.Certificates, LastRankOp: sys.Status.LastRankOp}
 	for _, n := range nodes.Items {
 		status.SelectedNodes = append(status.SelectedNodes, n.Name)
 	}
@@ -315,6 +315,13 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, err
 	}
 	requeue = minRequeue(requeue, fmtRequeue)
+
+	// 8b. rank membership operations requested by a human (#20)
+	rankRequeue, err := r.reconcileRankOp(ctx, sys, ns, &status)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	requeue = minRequeue(requeue, rankRequeue)
 
 	// 9. Ready = every rendered server up, formatted, all ranks joined
 	switch {
