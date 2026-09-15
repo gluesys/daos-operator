@@ -30,3 +30,4 @@ go.work
 *.kubeconfig
 dist/
 images/hostprep/hostprep
+krew/daos.yaml

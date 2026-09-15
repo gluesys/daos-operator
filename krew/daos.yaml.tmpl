@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Template for the krew plugin manifest. `hack/krew-manifest.sh` fills in
+# @VERSION@, @BASE_URL@ and the per-platform checksums.
+apiVersion: krew.googlecontainertools.github.com/v1alpha2
+kind: Plugin
+metadata:
+  name: daos
+spec:
+  version: @VERSION@
+  homepage: https://github.com/gluesys/daos-operator
+  shortDescription: Approve and inspect DAOS storage systems on Kubernetes
+  description: |
+    kubectl-daos is the imperative side of the DAOS operator
+    (daos.gluesys.com CRDs). The operator keeps everything declarative except
+    the decisions a human must make, and this plugin is how you make them:
+
+      kubectl daos system status  <sys>   conditions, ranks, pending decisions
+      kubectl daos system format  <sys>   approve the one-shot storage format
+      kubectl daos system upgrade <sys>   approve the full-stop upgrade
+      kubectl daos system certs   <sys>   approve rotating transport certificates
+      kubectl daos pool destroy   <pool>  approve destroying a pool
+      kubectl daos cont destroy   <cont>  approve destroying a container
+
+    Every destructive command prints what it will erase and asks before it
+    writes the approval; nothing is automated behind your back.
+  caveats: |
+    Needs the DAOS operator (daos.gluesys.com/v1alpha1) installed in the cluster.
+  platforms:
+    - selector:
+        matchLabels:
+          os: linux
+          arch: amd64
+      uri: @BASE_URL@/kubectl-daos_@VERSION@_linux_amd64.tar.gz
+      sha256: @SHA256_LINUX_AMD64@
+      bin: kubectl-daos
+      files:
+        - from: kubectl-daos
+          to: .
+        - from: LICENSE
+          to: .
+    - selector:
+        matchLabels:
+          os: linux
+          arch: arm64
+      uri: @BASE_URL@/kubectl-daos_@VERSION@_linux_arm64.tar.gz
+      sha256: @SHA256_LINUX_ARM64@
+      bin: kubectl-daos
+      files:
+        - from: kubectl-daos
+          to: .
+        - from: LICENSE
+          to: .
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: amd64
+      uri: @BASE_URL@/kubectl-daos_@VERSION@_darwin_amd64.tar.gz
+      sha256: @SHA256_DARWIN_AMD64@
+      bin: kubectl-daos
+      files:
+        - from: kubectl-daos
+          to: .
+        - from: LICENSE
+          to: .
+    - selector:
+        matchLabels:
+          os: darwin
+          arch: arm64
+      uri: @BASE_URL@/kubectl-daos_@VERSION@_darwin_arm64.tar.gz
+      sha256: @SHA256_DARWIN_ARM64@
+      bin: kubectl-daos
+      files:
+        - from: kubectl-daos
+          to: .
+        - from: LICENSE
+          to: .

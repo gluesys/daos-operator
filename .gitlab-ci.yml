@@ -6,7 +6,7 @@
 #        exa-build runner (tag daos-build) and pushed to the project registry
 #        as :<short sha>, :<VERSION> and :latest on main.
 # Do not add a job that silently skips when its prerequisites are missing.
-stages: [check, image]
+stages: [check, image, release]
 
 default:
   image: python:3.12-slim
@@ -117,3 +117,36 @@ image-hostprep:
     - push "$IMG:$CI_COMMIT_SHORT_SHA"
     - push "$IMG:$VERSION"
     - push "$IMG:latest"
+
+# kubectl-daos binaries for krew platforms, published as a generic package and
+# linked from a GitLab Release. Tags only.
+release-cli:
+  stage: release
+  image: golang:1.26
+  variables:
+    GOTOOLCHAIN: auto
+    GOFLAGS: -buildvcs=false
+  script:
+    - VERSION="$CI_COMMIT_TAG" hack/release-cli.sh
+    - |
+      base="$CI_API_V4_URL/projects/$CI_PROJECT_ID/packages/generic/kubectl-daos/$CI_COMMIT_TAG"
+      for f in dist/*.tar.gz dist/SHA256SUMS; do
+        curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --upload-file "$f" "$base/$(basename "$f")" >/dev/null
+        echo "uploaded $(basename "$f")"
+      done
+      links=""
+      for f in dist/*.tar.gz; do
+        n=$(basename "$f")
+        links="$links{\"name\":\"$n\",\"url\":\"$base/$n\",\"link_type\":\"package\"},"
+      done
+      links="${links%,}"
+      printf '{"name":"kubectl-daos %s","tag_name":"%s","description":"kubectl-daos %s\\n\\nkrew platforms: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64. Checksums in SHA256SUMS.","assets":{"links":[%s]}}' \
+        "$CI_COMMIT_TAG" "$CI_COMMIT_TAG" "$CI_COMMIT_TAG" "$links" > /tmp/release.json
+      curl -fsS --header "JOB-TOKEN: $CI_JOB_TOKEN" --header "Content-Type: application/json" \
+        --data @/tmp/release.json "$CI_API_V4_URL/projects/$CI_PROJECT_ID/releases" >/dev/null || \
+        echo "release already exists or could not be created; package upload is done"
+  artifacts:
+    paths: [dist/]
+    expire_in: 30 days
+  rules:
+    - if: $CI_COMMIT_TAG

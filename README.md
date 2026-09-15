@@ -212,7 +212,11 @@ kubectl get daossys daos-dev -o jsonpath='{.status.upgrade}{"\n"}'
 | `kubectl daos pool destroy <pool>` | 사용량을 보여주고 `destroy-approved=true` + `DaosPool` 삭제 → operator 가 `dmg pool destroy --recursive` |
 | `kubectl daos cont destroy -n <ns> <cont>` | 동일, 컨테이너 |
 
-`--yes` 로 프롬프트를 건너뛴다(스크립트). `--kubeconfig`/`--context` 는 kubectl 과 같다. krew 배포는 나중.
+`--yes` 로 프롬프트를 건너뛴다(스크립트). `--kubeconfig`/`--context` 는 kubectl 과 같다.
+
+**설치**: 태그를 푸시하면 CI 가 linux/amd64·arm64, darwin/amd64·arm64 바이너리를 만들어 GitLab generic package `kubectl-daos/<tag>` 와
+Release 에 올린다. 내려받아 PATH 에 두면 `kubectl daos` 로 불린다. krew-index 제출은 공개 URL 이 필요해 아직 미결이다 — `krew/README.md` 참고
+(매니페스트 템플릿 `krew/daos.yaml.tmpl`, 생성기 `hack/krew-manifest.sh`).
 
 ## TLS 인증서 (#16)
 `spec.allowInsecure: false`(운영 기본)이면 operator 가 Secret `<sys>-certs` 를 만든다. 내용과 배치는 upstream `utils/certs/gen_certificates.sh` 와 같다.

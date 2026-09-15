@@ -285,6 +285,17 @@ hostprep-push: ## Push the daos-hostprep image.
 kubectl-daos: ## Build the kubectl plugin into bin/kubectl-daos (put it on PATH: kubectl daos ...).
 	CGO_ENABLED=0 go build -o bin/kubectl-daos ./cmd/kubectl-daos
 
+.PHONY: release-cli
+release-cli: ## Build kubectl-daos for all krew platforms into dist/ (VERSION=v0.1.0)
+	VERSION=$(RELEASE_VERSION) hack/release-cli.sh
+
+.PHONY: krew-manifest
+krew-manifest: ## Render krew/daos.yaml from dist/SHA256SUMS (needs BASE_URL)
+	VERSION=$(RELEASE_VERSION) BASE_URL=$(BASE_URL) hack/krew-manifest.sh
+
+RELEASE_VERSION ?= v$(shell cat VERSION)
+BASE_URL ?=
+
 .PHONY: operator-image
 operator-image: ## Build the operator image under the registry name.
 	$(DOCKER) build -t $(OPERATOR_IMG) .
