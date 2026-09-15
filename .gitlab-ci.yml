@@ -24,6 +24,7 @@ syntax:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
 
 license-headers:
   stage: check
@@ -40,6 +41,7 @@ license-headers:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
 
 # Go: build + vet + unit tests without envtest binaries (controller tests that
 # need envtest run in Phase 2 on a runner with setup-envtest).
@@ -58,6 +60,7 @@ go-build:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
 
 # Helm chart: lint and render with every optional resource on.
 helm:
@@ -72,13 +75,16 @@ helm:
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
 
 # Container images. Runner "exa-build" is a shell executor with podman; the
 # job token can push to the project registry.
 .image-job: &image-job
   stage: image
   tags: [daos-build]
-  needs: [go-build]
+  needs:
+    - job: go-build
+      optional: true
   before_script:
     - podman --version
     # this GitLab reports the registry as host:80 while it actually serves TLS on 443: drop the port
