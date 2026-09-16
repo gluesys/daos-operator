@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.state
       name: State
       type: string
+    - jsonPath: .status.usedPercent
+      name: Used%
+      type: integer
     - jsonPath: .status.rebuildState
       name: Rebuild
       type: string
@@ -95,6 +98,16 @@ spec:
                   by adding ranks, not by editing Size (DAOS 2.8 has no shrink).
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+              spaceWarningPercent:
+                description: |-
+                  SpaceWarningPercent is where the SpaceLow condition flips to True.
+                  DAOS enforces capacity per pool, so this is the number that matters for
+                  every container and PV in it. Unset means 85; 0 disables the check
+                  (a pointer, because with a default an omitted 0 would be indistinguishable).
+                format: int32
+                maximum: 100
+                minimum: 0
+                type: integer
               systemRef:
                 description: SystemRef names the DaosSystem this pool lives in.
                 type: string
@@ -201,6 +214,11 @@ spec:
                 type: string
               totalBytes:
                 format: int64
+                type: integer
+              usedPercent:
+                description: UsedPercent is (total-free)/total from the last query,
+                  rounded down.
+                format: int32
                 type: integer
               uuid:
                 type: string

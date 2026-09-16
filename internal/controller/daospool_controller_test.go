@@ -174,6 +174,37 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "finalizer removed, object gone")
 	})
 
+	It("reports pool usage and warns once when it crosses the threshold (#21)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f) // finalizer
+		p := getPool()
+		p.Spec.ACL = nil // no ACL drift, so the query result is not followed by an operation
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		poolRec(f)
+		p = getPool()
+		// dmgPoolQuery: 486539264+7520000000 total, 443035176+7456817152 free -> ~1% used
+		Expect(p.Status.UsedPercent).To(Equal(int32(1)))
+		Expect(meta.IsStatusConditionFalse(p.Status.Conditions, daosv1alpha1.ConditionSpaceLow)).To(BeTrue())
+
+		By("crossing spec.spaceWarningPercent flips SpaceLow with the numbers in the message")
+		p.Spec.SpaceWarningPercent = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		poolRec(f)
+		p = getPool()
+		c := meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpaceLow)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Message).To(ContainSubstring("1% used"))
+		Expect(c.Message).To(ContainSubstring("free"))
+
+		By("0 disables the check but keeps the number")
+		p.Spec.SpaceWarningPercent = ptr.To(int32(0))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		poolRec(f)
+		p = getPool()
+		Expect(meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpaceLow)).To(BeNil())
+		Expect(p.Status.UsedPercent).To(Equal(int32(1)))
+	})
+
 	It("does not retry a failed create until the spec changes", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
 		poolRec(f)

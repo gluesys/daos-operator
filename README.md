@@ -147,12 +147,15 @@ Job 은 DaosSystem 네임스페이스에 만들어지고, 풀 Job 은 `pool-<nam
 | 조회 | `pool query --show-enabled <label>` | `cont query <pool> <label>` |
 | 없음 | `pool create -z <bytes>B -P rd_fac:N[,k:v] [-r ranks] [-a acl] <label>` (1회) | `cont create <pool> <label> --type --file-oclass --dir-oclass --chunk-size --properties rd_fac,cksum[,k:v] [--acl-file]` (1회) |
 | 드리프트 | `spec.ranks` 에 새 rank → `pool extend --ranks=<빠진 것>`; `spec.acl` 해시 변경 → `pool overwrite-acl` | `spec.acl` 해시 변경 → `cont overwrite-acl` |
-| 미러 | uuid, state, total/free(티어 합), rebuild, disabledTargets, enabledRanks, lastQueryTime | uuid, poolUUID, health, type, ready |
+| 미러 | uuid, state, total/free(티어 합), **usedPercent**, rebuild, disabledTargets, enabledRanks, lastQueryTime | uuid, poolUUID, health, type, ready |
 | 실패 | `Ready=False (CreateFailed/ExtendFailed/AclFailed)` + Event, **spec 이 바뀔 때까지 재시도 안 함**(observedGeneration) | 동일 |
 | 사라짐 | 이전에 uuid 를 알았는데 없어짐 → `PoolMissing`, **재생성 안 함**(데이터 손실은 사람이 봐야 한다) | `ContainerMissing`, 동일 |
 | 삭제 | `destroy-approved=true` → `pool destroy --recursive`; 없으면 풀은 남기고 Event `PoolOrphaned` | `cont destroy`; 없으면 Event `ContainerOrphaned` |
 
 - 크기(`spec.size`)는 생성 시에만 쓰인다. DAOS 2.8 은 풀 크기 변경이 없다(확장 = rank 추가).
+- **용량 경고(#21)**: DAOS 는 용량을 풀에서 강제한다. 풀이 차면 그 안의 컨테이너·PV 가 한꺼번에 영향을 받으므로, 질의마다
+  `status.usedPercent`(printcolumn `USED%`)를 갱신하고 `spec.spaceWarningPercent`(미지정=85, `0`=끔)를 넘으면 `SpaceLow=True` 와
+  Event `PoolSpaceLow` 를 **상태가 바뀔 때 한 번만** 낸다(복구 시 `PoolSpaceRecovered`). CSI 는 같은 수치를 `GetCapacity` 로 보고한다.
 - `overwrite-acl` 은 ACL 전체를 바꾼다. `spec.acl` 에 `A::OWNER@:...` 등 필요한 항목을 모두 적어야 한다.
 - 컨테이너 Job 은 K8s ≥ 1.29 의 네이티브 사이드카(`initContainers[].restartPolicy: Always`)로 `daos_agent` 를 붙이고, 클라이언트가 fabric 을 쓰기
   위해 hostNetwork·`/dev`·privileged 로 뜬다(Phase 0; RDMA 디바이스 플러그인으로 대체 예정). `spec.images.client` 가 필요하다.

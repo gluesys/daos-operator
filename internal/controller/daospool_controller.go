@@ -275,6 +275,9 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	status.TotalBytes, status.FreeBytes = info.Totals()
 	status.EnabledRanks = dmg.Ranks(info.EnabledRanks)
 	status.LastQueryTime = &now
+	// space: one number that decides for every container and PV in this pool.
+	// Reported on every successful query, even when an operation follows.
+	r.checkSpace(pool, &status)
 
 	// drift -> at most one operation per pass; a failed operation is not retried
 	// until the spec changes
@@ -296,6 +299,56 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	log.Info("pool", "name", pool.Name, "state", info.State, "ranks", len(status.EnabledRanks))
 	return r.updateStatus(ctx, pool, status, poolRequeueIdle)
+}
+
+// checkSpace sets usedPercent and the SpaceLow condition, and emits an Event
+// when the answer changes (not on every poll).
+func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus) {
+	threshold := int32(85)
+	if pool.Spec.SpaceWarningPercent != nil {
+		threshold = *pool.Spec.SpaceWarningPercent
+	}
+	if status.TotalBytes <= 0 {
+		status.UsedPercent = 0
+		return
+	}
+	used := status.TotalBytes - status.FreeBytes
+	status.UsedPercent = int32(used * 100 / status.TotalBytes)
+	if threshold <= 0 {
+		meta.RemoveStatusCondition(&status.Conditions, daosv1alpha1.ConditionSpaceLow)
+		return
+	}
+	was := meta.IsStatusConditionTrue(status.Conditions, daosv1alpha1.ConditionSpaceLow)
+	low := status.UsedPercent >= threshold
+	msg := fmt.Sprintf("%d%% used (%s of %s), %s free; DAOS enforces capacity per pool, so this applies to every container in it",
+		status.UsedPercent, humanBytes(used), humanBytes(status.TotalBytes), humanBytes(status.FreeBytes))
+	if low {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionTrue,
+			Reason: "AboveThreshold", Message: msg, ObservedGeneration: pool.Generation})
+		if !was {
+			r.event(pool, corev1.EventTypeWarning, "PoolSpaceLow", msg)
+		}
+		return
+	}
+	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionFalse,
+		Reason: "BelowThreshold", Message: msg, ObservedGeneration: pool.Generation})
+	if was {
+		r.event(pool, corev1.EventTypeNormal, "PoolSpaceRecovered", msg)
+	}
+}
+
+// humanBytes formats a byte count for humans reading conditions.
+func humanBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func parseResult(res *dmg.Result) (*dmg.Envelope, error) {

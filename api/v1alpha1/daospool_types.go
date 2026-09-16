@@ -42,6 +42,13 @@ type DaosPoolSpec struct {
 	Properties map[string]string `json:"properties,omitempty"`
 	// ACL entries in DAOS ACE syntax (A::user@:rw). Declarative.
 	ACL []string `json:"acl,omitempty"`
+	// SpaceWarningPercent is where the SpaceLow condition flips to True.
+	// DAOS enforces capacity per pool, so this is the number that matters for
+	// every container and PV in it. Unset means 85; 0 disables the check
+	// (a pointer, because with a default an omitted 0 would be indistinguishable).
+	// +kubebuilder:validation:Maximum=100
+	// +kubebuilder:validation:Minimum=0
+	SpaceWarningPercent *int32 `json:"spaceWarningPercent,omitempty"`
 }
 
 // DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
@@ -57,6 +64,8 @@ type DaosPoolStatus struct {
 	DisabledTargets int32              `json:"disabledTargets,omitempty"`
 	// EnabledRanks are the ranks the pool spans (dmg pool query --show-enabled).
 	EnabledRanks []int32 `json:"enabledRanks,omitempty"`
+	// UsedPercent is (total-free)/total from the last query, rounded down.
+	UsedPercent int32 `json:"usedPercent,omitempty"`
 	// Operation is the dmg Job in flight (create, extend, acl, destroy); empty when idle.
 	Operation string `json:"operation,omitempty"`
 	// ObservedGeneration is the spec generation the last create attempt was made for;
@@ -73,6 +82,7 @@ type DaosPoolStatus struct {
 // +kubebuilder:printcolumn:name="System",type=string,JSONPath=`.spec.systemRef`
 // +kubebuilder:printcolumn:name="Size",type=string,JSONPath=`.spec.size`
 // +kubebuilder:printcolumn:name="State",type=string,JSONPath=`.status.state`
+// +kubebuilder:printcolumn:name="Used%",type=integer,JSONPath=`.status.usedPercent`
 // +kubebuilder:printcolumn:name="Rebuild",type=string,JSONPath=`.status.rebuildState`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`

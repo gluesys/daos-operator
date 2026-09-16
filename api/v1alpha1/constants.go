@@ -101,4 +101,8 @@ const (
 	// reason UpToDate / Pending / Completed / Failed otherwise.
 	ConditionUpgrading = "Upgrading"
 	ConditionReady     = "Ready"
+	// ConditionSpaceLow is set on a DaosPool when usage crosses
+	// spec.spaceWarningPercent. DAOS has no per-container quota, so a full pool
+	// hits every container and PV in it at once.
+	ConditionSpaceLow = "SpaceLow"
 )
