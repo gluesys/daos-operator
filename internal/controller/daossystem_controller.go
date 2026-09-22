@@ -72,10 +72,34 @@ type DaosSystemReconciler struct {
 }
 
 const (
-	controlPort  = int32(10001)
-	requeueSlow  = 30 * time.Second
-	keyServerYML = "daos_server.yml"
+	defaultControlPort = int32(10001)
+	requeueSlow        = 30 * time.Second
+	keyServerYML       = "daos_server.yml"
 )
+
+// controlPortOf is the control-plane port every component must agree on.
+// hugepagesOf is spec.nrHugepages with the documented default.
+func hugepagesOf(sys *daosv1alpha1.DaosSystem) int32 {
+	if sys.Spec.NrHugepages == nil {
+		return 8192
+	}
+	return *sys.Spec.NrHugepages
+}
+
+// helpersOf is engine.helpers with the documented default.
+func helpersOf(e daosv1alpha1.EngineSpec) int32 {
+	if e.Helpers == nil {
+		return 2
+	}
+	return *e.Helpers
+}
+
+func controlPortOf(sys *daosv1alpha1.DaosSystem) int32 {
+	if sys.Spec.ControlPort > 0 {
+		return sys.Spec.ControlPort
+	}
+	return defaultControlPort
+}
 
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daossystems,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daossystems/status,verbs=get;update;patch
@@ -221,9 +245,9 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			status.NodeConfigs = append(status.NodeConfigs, ncs)
 			continue
 		}
-		cfg := render.ServerConfig{Label: sys.Name, SystemName: systemName(sys), MsReplicas: msAddrs, Port: controlPort,
-			Provider: sys.Spec.Provider, NrHugepages: sys.Spec.NrHugepages, AllowInsecure: sys.Spec.AllowInsecure,
-			TelemetryPort: telemetryPort(sys)}
+		cfg := render.ServerConfig{Label: sys.Name, SystemName: systemName(sys), MsReplicas: msAddrs, Port: controlPortOf(sys),
+			Provider: sys.Spec.Provider, NrHugepages: hugepagesOf(sys), AllowInsecure: sys.Spec.AllowInsecure,
+			TelemetryPort: telemetryPort(sys), SystemRamReservedGiB: sys.Spec.SystemRamReservedGiB, DisableVFIO: sys.Spec.DisableVFIO}
 		var missing []string
 		for i, e := range sys.Spec.Engines {
 			fabric, bdevs, numa, miss := discovery.Resolve(e, f)
@@ -232,8 +256,9 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			if port == 0 {
 				port = 31316
 			}
-			cfg.Engines = append(cfg.Engines, render.Engine{Index: i, Targets: e.Targets, Helpers: e.Helpers,
-				FabricIface: fabric, FabricPort: port + int32(i)*100, PinnedNuma: numa, ScmSizeGiB: e.ScmSizeGiB, Bdevs: bdevs})
+			cfg.Engines = append(cfg.Engines, render.Engine{Index: i, Targets: e.Targets, Helpers: helpersOf(e),
+				FabricIface: fabric, FabricPort: port + int32(i)*100, PinnedNuma: numa, ScmSizeGiB: e.ScmSizeGiB, Bdevs: bdevs,
+				BdevClass: e.BdevClass, BdevSizeGiB: e.BdevSizeGiB})
 			ncs.FabricIface, ncs.BdevCount = fabric, int32(len(bdevs))
 		}
 		if len(missing) > 0 {
@@ -273,11 +298,11 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// 6. agent + control configs
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-agent", "", map[string]string{
-		"daos_agent.yml": render.Agent(systemName(sys), msAddrs, controlPort, sys.Spec.AllowInsecure)}); err != nil {
+		"daos_agent.yml": render.Agent(systemName(sys), msAddrs, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-control", "", map[string]string{
-		"daos_control.yml": render.Control(systemName(sys), hostlist, controlPort, sys.Spec.AllowInsecure)}); err != nil {
+		"daos_control.yml": render.Control(systemName(sys), hostlist, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
 		return ctrl.Result{}, err
 	}
 

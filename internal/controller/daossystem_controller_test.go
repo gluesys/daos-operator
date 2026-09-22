@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -64,8 +65,8 @@ var _ = Describe("DaosSystem Controller", func() {
 			Spec: daosv1alpha1.DaosSystemSpec{Version: "2.8.0", Namespace: "daos-test",
 				Images:       daosv1alpha1.ImagesSpec{Server: "s", Agent: "a", Admin: "d"},
 				NodeSelector: map[string]string{daosv1alpha1.LabelRole: "storage"},
-				MsReplicas:   1, Provider: "ofi+verbs;ofi_rxm", NrHugepages: 8192, AllowInsecure: true,
-				Engines: []daosv1alpha1.EngineSpec{{Targets: 8, Helpers: 2, ScmSizeGiB: 32}}}}
+				MsReplicas:   1, Provider: "ofi+verbs;ofi_rxm", NrHugepages: ptr.To(int32(8192)), AllowInsecure: true,
+				Engines: []daosv1alpha1.EngineSpec{{Targets: 8, Helpers: ptr.To(int32(2)), ScmSizeGiB: 32}}}}
 		Expect(k8sClient.Create(ctx, sys)).To(Succeed())
 	})
 	AfterEach(func() {
@@ -753,6 +754,34 @@ var _ = Describe("DaosSystem Controller", func() {
 		reconcileWith(f)
 		reconcileWith(f)
 		Expect(getSys().Status.LastRankOp.Succeeded).To(BeTrue())
+	})
+
+	It("renders a test-bed engine without SPDK and on the configured control port (#23)", func() {
+		sys := getSys()
+		sys.Spec.ControlPort = 10101
+		sys.Spec.NrHugepages = ptr.To(int32(0))
+		sys.Spec.SystemRamReservedGiB = 2
+		sys.Spec.Provider = "ofi+tcp"
+		sys.Spec.Engines = []daosv1alpha1.EngineSpec{{Targets: 2, Helpers: ptr.To(int32(0)), ScmSizeGiB: 4,
+			BdevClass: "file", BdevSizeGiB: 20, BdevList: []string{"/var/daos/bdev0"}, FabricIface: "ens18"}}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
+		yml := cm.Data["daos_server.yml"]
+		for _, want := range []string{"port: 10101", "nr_hugepages: 0", "system_ram_reserved: 2", "class: file", "bdev_size: 20", "provider: ofi+tcp"} {
+			Expect(yml).To(ContainSubstring(want))
+		}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("port: 10101"), "agent must use the same control port")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-control"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_control.yml"]).To(ContainSubstring("port: 10101"))
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(10101)))
+		Expect(sts.Spec.Template.Spec.Containers[0].ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(10101))
+		hp := sts.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceName("hugepages-2Mi")]
+		Expect(hp.IsZero()).To(BeTrue(), "no hugepages requested when nrHugepages is 0")
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

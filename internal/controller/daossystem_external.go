@@ -58,11 +58,11 @@ func (r *DaosSystemReconciler) reconcileExternal(ctx context.Context, sys *daosv
 
 	// client and admin configuration, from the addresses we were given
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-agent", "", map[string]string{
-		"daos_agent.yml": render.Agent(systemName(sys), addrs, controlPort, sys.Spec.AllowInsecure)}); err != nil {
+		"daos_agent.yml": render.Agent(systemName(sys), addrs, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-control", "", map[string]string{
-		"daos_control.yml": render.Control(systemName(sys), addrs, controlPort, sys.Spec.AllowInsecure)}); err != nil {
+		"daos_control.yml": render.Control(systemName(sys), addrs, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
 		return ctrl.Result{}, err
 	}
 	setCond(&status, daosv1alpha1.ConditionConfigRendered, metav1.ConditionTrue, "ExternalClientConfig",

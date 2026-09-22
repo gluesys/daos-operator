@@ -101,8 +101,8 @@ func serverResources(sys *daosv1alpha1.DaosSystem, engines []render.Engine) core
 	mem := resource.MustParse(fmt.Sprintf("%dGi", scm+serverMemoryOverheadGiB))
 	req := corev1.ResourceList{corev1.ResourceCPU: *resource.NewQuantity(cpu, resource.DecimalSI), corev1.ResourceMemory: mem}
 	lim := corev1.ResourceList{}
-	if sys.Spec.NrHugepages > 0 {
-		hp := resource.MustParse(fmt.Sprintf("%dMi", int64(sys.Spec.NrHugepages)*2))
+	if hugepagesOf(sys) > 0 {
+		hp := resource.MustParse(fmt.Sprintf("%dMi", int64(hugepagesOf(sys))*2))
 		req["hugepages-2Mi"] = hp
 		lim["hugepages-2Mi"] = hp // hugepages request must equal limit
 	}
@@ -129,7 +129,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 		return corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: p, Type: t}}}
 	}
 	var ports []corev1.ContainerPort
-	ports = append(ports, corev1.ContainerPort{Name: "control", ContainerPort: controlPort, Protocol: corev1.ProtocolTCP})
+	ports = append(ports, corev1.ContainerPort{Name: "control", ContainerPort: controlPortOf(sys), Protocol: corev1.ProtocolTCP})
 	for _, e := range engines {
 		ports = append(ports, corev1.ContainerPort{Name: fmt.Sprintf("fabric%d", e.Index), ContainerPort: e.FabricPort, Protocol: corev1.ProtocolTCP})
 	}
@@ -191,7 +191,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			// the control plane listens as soon as daos_server is up, before format;
 			// no liveness probe: a slow engine must never be killed by a probe
 			ReadinessProbe: &corev1.Probe{
-				ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(controlPort)}},
+				ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(controlPortOf(sys))}},
 				InitialDelaySeconds: 10, PeriodSeconds: 10, FailureThreshold: 3,
 			},
 		}}

@@ -82,14 +82,47 @@ spec:
                     minimum: 1
                     type: integer
                 type: object
+              controlPort:
+                default: 10001
+                description: |-
+                  ControlPort is the daos_server control-plane port (server, agent and dmg
+                  must agree). Default 10001; change it to run a second system on hosts that
+                  already have one.
+                format: int32
+                type: integer
+              disableVFIO:
+                description: |-
+                  DisableVFIO makes SPDK use uio_pci_generic instead of VFIO, for hosts
+                  without an IOMMU. Ignored by the kdev and file classes.
+                type: boolean
               engines:
                 description: |-
                   Engines per node; usually one per socket. Required unless
                   ExternalMsReplicas is set (then the engines run elsewhere).
                 items:
-                  description: EngineSpec describes one daos_engine per node (one
-                    per CPU socket).
+                  description: |-
+                    A note on defaults: a field where 0 is a meaningful value must be a pointer.
+                    With `+kubebuilder:default` and `omitempty`, an explicit 0 is dropped by the
+                    client and the API server puts the default back, so the 0 never arrives. That
+                    bit us three times (redundancyFactor, spaceWarningPercent, nrHugepages).
+
+                    EngineSpec describes one daos_engine per node (one per CPU socket).
                   properties:
+                    bdevClass:
+                      default: nvme
+                      description: |-
+                        BdevClass is the storage class of the data tier.
+                          nvme  SPDK-owned NVMe. The only class supported in production (ADR-002).
+                          kdev  kernel block devices (bdevList holds device paths). Test beds only.
+                          file  files on a filesystem, sized by BdevSizeGiB. Test beds only.
+                        kdev and file need no hugepages, no VFIO and no IOMMU, which is what makes
+                        a small VM able to run an engine at all; they are not a performance
+                        configuration and must not be used to measure anything.
+                      enum:
+                      - nvme
+                      - kdev
+                      - file
+                      type: string
                     bdevList:
                       description: |-
                         BdevList is the NVMe PCI address list. Empty means the operator discovers
@@ -98,6 +131,11 @@ spec:
                       items:
                         type: string
                       type: array
+                    bdevSizeGiB:
+                      description: BdevSizeGiB is the size of each backing file (class
+                        file only).
+                      format: int32
+                      type: integer
                     fabricIface:
                       description: |-
                         FabricIface is the NIC name. Empty means the operator discovers it per node
@@ -108,8 +146,9 @@ spec:
                       format: int32
                       type: integer
                     helpers:
-                      default: 2
-                      description: Helpers is nr_xs_helpers.
+                      description: |-
+                        Helpers is nr_xs_helpers. 0 is a real setting (small engines run without
+                        helper xstreams), so this is a pointer; unset means 2.
                       format: int32
                       type: integer
                     pinnedNumaNode:
@@ -120,7 +159,8 @@ spec:
                       default: 32
                       description: |-
                         ScmSizeGiB is the tmpfs (MD-on-SSD metadata) size; reflected 1:1 into the
-                        pod memory request so the scheduler sees it (ADR-002).
+                        pod memory request so the scheduler sees it (ADR-002). DAOS refuses less
+                        than 4 GiB per engine.
                       format: int32
                       type: integer
                     targets:
@@ -216,7 +256,10 @@ spec:
                   placement.
                 type: object
               nrHugepages:
-                default: 8192
+                description: |-
+                  NrHugepages is the SPDK hugepage count for all engines on a host. 0 means
+                  none, which is right (and required) for the kdev and file classes, so this
+                  is a pointer; unset means 8192.
                 format: int32
                 type: integer
               placement:
@@ -326,6 +369,14 @@ spec:
                   SystemName is the DAOS system name (daos_server.yml `name`, agent/control
                   `name`). Default "daos_server". Changing it after format is not supported.
                 type: string
+              systemRamReservedGiB:
+                description: |-
+                  SystemRamReservedGiB is DAOS's `system_ram_reserved`: memory it leaves to
+                  the operating system. DAOS defaults to 64 GiB, which no small test host
+                  can meet; lowering it is how those hosts run an engine at all. Unset keeps
+                  the DAOS default.
+                format: int32
+                type: integer
               telemetry:
                 description: TelemetrySpec exposes the engines' Prometheus endpoint
                   (#12).

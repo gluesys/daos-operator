@@ -52,6 +52,25 @@ func TestServerRendersParsableYAML(t *testing.T) {
 	if len(st) != 2 || st[1].(map[string]any)["class"] != "nvme" {
 		t.Errorf("unexpected storage tiers: %v", st)
 	}
+	// test-bed shapes: no SPDK, lowered reservation, data tier on files
+	tb, err := Server(ServerConfig{SystemName: "daos_k8s", MsReplicas: []string{"10.0.0.9"}, Port: 10101, Provider: "ofi+tcp",
+		NrHugepages: 0, SystemRamReservedGiB: 2, AllowInsecure: true,
+		Engines: []Engine{{Index: 0, Targets: 2, FabricIface: "ens18", FabricPort: 31516, ScmSizeGiB: 4,
+			BdevClass: "file", BdevSizeGiB: 20, Bdevs: []string{"/var/daos/bdev0"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"port: 10101", "nr_hugepages: 0", "system_ram_reserved: 2", "class: file", "bdev_size: 20", "fabric_iface_port: 31516"} {
+		if !strings.Contains(tb, want) {
+			t.Errorf("missing %q in:\n%s", want, tb)
+		}
+	}
+	if strings.Contains(out, "system_ram_reserved") {
+		t.Error("system_ram_reserved must be omitted when unset (DAOS default applies)")
+	}
+	if !strings.Contains(out, "class: nvme") {
+		t.Error("nvme must stay the default class")
+	}
 	if !strings.Contains(out, "telemetry_port: 9191") {
 		t.Errorf("telemetry_port missing:\n%s", out)
 	}

@@ -67,6 +67,20 @@ func main() {
 				ScmSizeGiB: 4, Bdevs: []string{"0000:00:03.0"}}},
 		},
 	}
+	// test-bed shapes without SPDK (#23): no hugepages, no VFIO, lowered system
+	// reservation, data tier on kernel devices or files
+	servers["server-kdev-testbed.yml"] = render.ServerConfig{
+		Label: "daos-k8s", SystemName: "daos_k8s", MsReplicas: []string{"192.0.2.22"}, Port: 10101,
+		Provider: "ofi+tcp", NrHugepages: 0, AllowInsecure: true, SystemRamReservedGiB: 2,
+		Engines: []render.Engine{{Index: 0, Targets: 2, Helpers: 0, FabricIface: "ens18", FabricPort: 31516,
+			ScmSizeGiB: 4, BdevClass: "kdev", Bdevs: []string{"/dev/sdb", "/dev/sdc"}}},
+	}
+	servers["server-file-testbed.yml"] = render.ServerConfig{
+		Label: "daos-k8s", SystemName: "daos_k8s", MsReplicas: []string{"192.0.2.22"}, Port: 10101,
+		Provider: "ofi+tcp", NrHugepages: 0, AllowInsecure: true, SystemRamReservedGiB: 2,
+		Engines: []render.Engine{{Index: 0, Targets: 2, Helpers: 0, FabricIface: "ens18", FabricPort: 31516,
+			ScmSizeGiB: 4, BdevClass: "file", BdevSizeGiB: 20, Bdevs: []string{"/var/daos/bdev0"}}},
+	}
 	for name, cfg := range servers {
 		yml, err := render.Server(cfg)
 		if err != nil {

@@ -32,14 +32,19 @@ const (
 	PlacementHyperconverged PlacementMode = "hyperconverged"
 )
 
+// A note on defaults: a field where 0 is a meaningful value must be a pointer.
+// With `+kubebuilder:default` and `omitempty`, an explicit 0 is dropped by the
+// client and the API server puts the default back, so the 0 never arrives. That
+// bit us three times (redundancyFactor, spaceWarningPercent, nrHugepages).
+//
 // EngineSpec describes one daos_engine per node (one per CPU socket).
 type EngineSpec struct {
 	// Targets is the number of I/O targets (usually one per NVMe device).
 	// +kubebuilder:default=8
 	Targets int32 `json:"targets,omitempty"`
-	// Helpers is nr_xs_helpers.
-	// +kubebuilder:default=2
-	Helpers int32 `json:"helpers,omitempty"`
+	// Helpers is nr_xs_helpers. 0 is a real setting (small engines run without
+	// helper xstreams), so this is a pointer; unset means 2.
+	Helpers *int32 `json:"helpers,omitempty"`
 	// FabricIface is the NIC name. Empty means the operator discovers it per node
 	// (names differ per host: ens2 vs ens2np0 -- never copy configs between hosts).
 	FabricIface string `json:"fabricIface,omitempty"`
@@ -50,9 +55,22 @@ type EngineSpec struct {
 	// PCI DSN uniqueness across nodes before format (2026-09-03 incident).
 	BdevList []string `json:"bdevList,omitempty"`
 	// ScmSizeGiB is the tmpfs (MD-on-SSD metadata) size; reflected 1:1 into the
-	// pod memory request so the scheduler sees it (ADR-002).
+	// pod memory request so the scheduler sees it (ADR-002). DAOS refuses less
+	// than 4 GiB per engine.
 	// +kubebuilder:default=32
 	ScmSizeGiB int32 `json:"scmSizeGiB,omitempty"`
+	// BdevClass is the storage class of the data tier.
+	//   nvme  SPDK-owned NVMe. The only class supported in production (ADR-002).
+	//   kdev  kernel block devices (bdevList holds device paths). Test beds only.
+	//   file  files on a filesystem, sized by BdevSizeGiB. Test beds only.
+	// kdev and file need no hugepages, no VFIO and no IOMMU, which is what makes
+	// a small VM able to run an engine at all; they are not a performance
+	// configuration and must not be used to measure anything.
+	// +kubebuilder:validation:Enum=nvme;kdev;file
+	// +kubebuilder:default=nvme
+	BdevClass string `json:"bdevClass,omitempty"`
+	// BdevSizeGiB is the size of each backing file (class file only).
+	BdevSizeGiB int32 `json:"bdevSizeGiB,omitempty"`
 	// PinnedNumaNode pins the engine; nil lets DAOS choose.
 	PinnedNumaNode *int32 `json:"pinnedNumaNode,omitempty"`
 }
@@ -219,8 +237,23 @@ type DaosSystemSpec struct {
 	// Provider is the fabric provider. UCX is excluded by default (ADR-002).
 	// +kubebuilder:default="ofi+verbs;ofi_rxm"
 	Provider string `json:"provider,omitempty"`
-	// +kubebuilder:default=8192
-	NrHugepages int32 `json:"nrHugepages,omitempty"`
+	// NrHugepages is the SPDK hugepage count for all engines on a host. 0 means
+	// none, which is right (and required) for the kdev and file classes, so this
+	// is a pointer; unset means 8192.
+	NrHugepages *int32 `json:"nrHugepages,omitempty"`
+	// SystemRamReservedGiB is DAOS's `system_ram_reserved`: memory it leaves to
+	// the operating system. DAOS defaults to 64 GiB, which no small test host
+	// can meet; lowering it is how those hosts run an engine at all. Unset keeps
+	// the DAOS default.
+	SystemRamReservedGiB int32 `json:"systemRamReservedGiB,omitempty"`
+	// DisableVFIO makes SPDK use uio_pci_generic instead of VFIO, for hosts
+	// without an IOMMU. Ignored by the kdev and file classes.
+	DisableVFIO bool `json:"disableVFIO,omitempty"`
+	// ControlPort is the daos_server control-plane port (server, agent and dmg
+	// must agree). Default 10001; change it to run a second system on hosts that
+	// already have one.
+	// +kubebuilder:default=10001
+	ControlPort int32 `json:"controlPort,omitempty"`
 	// Engines per node; usually one per socket. Required unless
 	// ExternalMsReplicas is set (then the engines run elsewhere).
 	Engines []EngineSpec `json:"engines,omitempty"`

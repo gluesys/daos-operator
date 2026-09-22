@@ -167,6 +167,35 @@ kubectl annotate daospool kv daos.gluesys.com/destroy-approved=true && kubectl d
 kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
 ```
 
+## 테스트베드용 비SPDK 구성 (#23, 성능 측정 금지)
+SPDK 가 요구하는 hugepages·IOMMU·전용 NVMe 가 없는 장비에서도 **서버를 파드로 올려** 전체 흐름(hostprep → format 승인 → 풀 → PVC)을
+검증할 수 있게 한 설정이다. ADR-002 개정으로 테스트 전용으로만 허용한다.
+
+| 필드 | 뜻 |
+|---|---|
+| `spec.engines[].bdevClass` | `nvme`(기본, 운영) / `kdev`(커널 블록 장치, `bdevList` 에 경로) / `file`(파일, `bdevSizeGiB` 로 크기) |
+| `spec.nrHugepages: 0` | SPDK 미사용. kdev·file 에서는 0 이어야 한다 |
+| `spec.systemRamReservedGiB` | DAOS 기본 64 GiB 예약을 낮춘다. 작은 호스트는 이걸 낮추지 않으면 엔진이 뜨지 않는다 |
+| `spec.disableVFIO` | IOMMU 없는 호스트에서 uio_pci_generic 사용 |
+| `spec.controlPort` | 기본 10001. 이미 DAOS 가 도는 호스트에 두 번째 시스템을 올릴 때 바꾼다 |
+
+```yaml
+spec:
+  systemName: daos_k8s
+  controlPort: 10101
+  provider: ofi+tcp          # IB 주소가 없는 호스트
+  nrHugepages: 0
+  systemRamReservedGiB: 2
+  engines:
+    - targets: 2
+      helpers: 0
+      scmSizeGiB: 4          # DAOS 최소값
+      bdevClass: file
+      bdevSizeGiB: 20
+      bdevList: ["/var/daos/bdev0"]
+```
+**이 구성으로 성능을 재지 말 것.** 숫자는 `nvme` 구성에서만 의미가 있다. 렌더 결과는 `make validate-configs` 로 실제 2.8 바이너리 검증을 거친다.
+
 ## 이미 도는 DAOS 에 붙기 (#22, spec.externalMsReplicas)
 DAOS 가 베어메탈이나 다른 클러스터에서 돌고 있고 K8s 는 그걸 **쓰기만** 하는 배치가 실제로 있다. `spec.externalMsReplicas` 에 그 시스템의
 관리 서비스 주소를 적으면 operator 는 남의 시스템을 운영하려 들지 않는다.
