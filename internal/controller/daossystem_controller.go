@@ -125,8 +125,12 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		if err := r.ensureNamespace(ctx, ns); err != nil {
 			return ctrl.Result{}, err
 		}
-		if err := r.ensureHostPrep(ctx, sys, ns); err != nil {
-			return ctrl.Result{}, err
+		// host preparation belongs to nodes we run engines on; an external system
+		// prepares its own hosts
+		if !external(sys) {
+			if err := r.ensureHostPrep(ctx, sys, ns); err != nil {
+				return ctrl.Result{}, err
+			}
 		}
 	}
 	if len(nodes.Items) < msWant {
@@ -137,6 +141,16 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return r.updateStatus(ctx, sys, status, requeueSlow)
 	}
 	setCond(&status, daosv1alpha1.ConditionNodesSelected, metav1.ConditionTrue, "Selected", fmt.Sprintf("%d node(s)", len(nodes.Items)))
+
+	if external(sys) {
+		return r.reconcileExternal(ctx, sys, ns, status)
+	}
+	if len(sys.Spec.Engines) == 0 {
+		setCond(&status, daosv1alpha1.ConditionConfigRendered, metav1.ConditionFalse, "NoEngines",
+			"spec.engines is empty: define at least one engine, or set spec.externalMsReplicas to consume a DAOS system run elsewhere")
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "NotReady", "no engines defined")
+		return r.updateStatus(ctx, sys, status, requeueSlow)
+	}
 
 	// 2. facts and drive-conflict check
 	facts := make([]discovery.NodeFacts, 0, len(nodes.Items))
@@ -341,6 +355,14 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	log.Info("rendered", "system", sys.Name, "nodes", len(facts), "configmaps", rendered, "conflicts", len(conflicts),
 		"serversNotReady", len(serversNotReady), "formatted", status.Formatted, "pendingFormat", status.PendingFormat, "ranks", status.RanksJoined)
 	return r.updateStatus(ctx, sys, status, requeue)
+}
+
+// external reports whether this DaosSystem only consumes an existing DAOS
+// system (spec.externalMsReplicas). The operator then runs no servers, no host
+// preparation and no upgrades; it renders client configuration and drives the
+// admin commands from the nodes that match the selector.
+func external(sys *daosv1alpha1.DaosSystem) bool {
+	return len(sys.Spec.ExternalMsReplicas) > 0
 }
 
 func systemName(sys *daosv1alpha1.DaosSystem) string {

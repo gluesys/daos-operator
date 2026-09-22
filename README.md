@@ -167,6 +167,24 @@ kubectl annotate daospool kv daos.gluesys.com/destroy-approved=true && kubectl d
 kubectl -n daos-system get jobs -l daos.gluesys.com/pool=kv
 ```
 
+## 이미 도는 DAOS 에 붙기 (#22, spec.externalMsReplicas)
+DAOS 가 베어메탈이나 다른 클러스터에서 돌고 있고 K8s 는 그걸 **쓰기만** 하는 배치가 실제로 있다. `spec.externalMsReplicas` 에 그 시스템의
+관리 서비스 주소를 적으면 operator 는 남의 시스템을 운영하려 들지 않는다.
+
+| 하는 것 | 하지 않는 것 |
+|---|---|
+| agent·control 설정 렌더(그 주소로), 멤버십 미러(`status.ranks`), 풀·컨테이너 reconcile, rank 연산, CSI 연동 | 서버 StatefulSet, hostprep DaemonSet, 메트릭 Service, 인증서 생성, 업그레이드, **포맷**(승인 어노테이션이 붙어도 거부하고 지운다) |
+
+```yaml
+spec:
+  systemName: daos_flexa            # 그 시스템의 이름(기본 daos_server 가 아닐 수 있다)
+  externalMsReplicas: ["127.0.0.100"]
+  nodeSelector: {daos.gluesys.com/client: "true"}   # dmg/daos Job 이 뜰 노드 = MS 와 fabric 에 닿는 노드
+  allowInsecure: true
+```
+`spec.engines` 는 이 모드에서 비워 둔다. Job 은 `nodeSelector` 노드에 hostNetwork 로 뜨므로 **그 노드가 MS 주소와 fabric 에 닿아야 한다**
+(로컬 주소에만 MS 가 열려 있으면 그 호스트에서만 가능).
+
 ## rank 멤버십 조작 (#20)
 rank 를 빼고 넣는 일은 데이터가 어디 있느냐를 바꾸는 결정이라 operator 가 스스로 하지 않는다. 죽은 rank 는 **보고**할 뿐 쫓아내지 않는다.
 

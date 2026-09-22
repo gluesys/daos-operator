@@ -116,7 +116,16 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "NoServers", "no server workloads to query")
 		return 0, nil
 	}
-	approved := formatApproved(sys)
+	approved := formatApproved(sys) && !external(sys)
+	if external(sys) && formatApproved(sys) {
+		// refuse politely and drop the annotation: formatting a system we do not
+		// run is not ours to decide
+		r.event(sys, corev1.EventTypeWarning, "FormatRefused",
+			"spec.externalMsReplicas is set: the operator will not format a DAOS system it does not run")
+		if err := r.clearApproval(ctx, sys); err != nil {
+			return 0, err
+		}
+	}
 
 	// --- format path: only after pendingFormat was observed and a human approved
 	if approved && status.PendingFormat && !status.Formatted {
@@ -181,6 +190,9 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 			status.PendingFormat, status.Formatted = true, false
 			status.Ranks, status.RanksJoined, status.RanksTotal = nil, 0, 0
 			msg := "storage is not formatted (" + *env.Error + ")"
+			if external(sys) {
+				msg = "the external system reports it is not formatted (" + *env.Error + "); format it where it runs"
+			}
 			if approved {
 				msg += "; approval present, formatting on the next pass"
 			} else {

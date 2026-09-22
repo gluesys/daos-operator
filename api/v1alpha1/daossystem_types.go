@@ -199,6 +199,15 @@ type DaosSystemSpec struct {
 	Images    ImagesSpec `json:"images"`
 	// +kubebuilder:default=dedicated
 	Placement PlacementMode `json:"placement,omitempty"`
+	// ExternalMsReplicas attaches this DaosSystem to a DAOS system the operator
+	// does NOT run: the addresses of an existing management service. With it set
+	// the operator manages no server pods and no host preparation; it renders the
+	// client (agent) and admin (control) configuration from these addresses,
+	// mirrors membership, and runs pool/container/rank operations as Jobs.
+	// Use it when DAOS runs on bare metal and Kubernetes only consumes it.
+	// The Jobs still run on nodes matching NodeSelector, so those nodes must be
+	// able to reach these addresses and the fabric.
+	ExternalMsReplicas []string `json:"externalMsReplicas,omitempty"`
 	// NodeSelector picks storage nodes. Required for dedicated placement.
 	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
 	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
@@ -212,9 +221,9 @@ type DaosSystemSpec struct {
 	Provider string `json:"provider,omitempty"`
 	// +kubebuilder:default=8192
 	NrHugepages int32 `json:"nrHugepages,omitempty"`
-	// Engines per node; usually one per socket.
-	// +kubebuilder:validation:MinItems=1
-	Engines []EngineSpec `json:"engines"`
+	// Engines per node; usually one per socket. Required unless
+	// ExternalMsReplicas is set (then the engines run elsewhere).
+	Engines []EngineSpec `json:"engines,omitempty"`
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
 	AllowInsecure bool             `json:"allowInsecure,omitempty"`
 	HostPrep      HostPrepSpec     `json:"hostPrep,omitempty"`

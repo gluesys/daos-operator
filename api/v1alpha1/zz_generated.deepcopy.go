@@ -373,6 +373,11 @@ func (in *DaosSystemList) DeepCopyObject() runtime.Object {
 func (in *DaosSystemSpec) DeepCopyInto(out *DaosSystemSpec) {
 	*out = *in
 	out.Images = in.Images
+	if in.ExternalMsReplicas != nil {
+		in, out := &in.ExternalMsReplicas, &out.ExternalMsReplicas
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.NodeSelector != nil {
 		in, out := &in.NodeSelector, &out.NodeSelector
 		*out = make(map[string]string, len(*in))

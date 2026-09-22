@@ -708,6 +708,52 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
 	})
 
+	It("attaches to a DAOS system run elsewhere without managing servers (#22)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		sys := getSys()
+		sys.Spec.ExternalMsReplicas = []string{"10.9.9.1", "10.9.9.2"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+
+		By("client and admin configuration point at the given management service")
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.9.9.1\n  - 10.9.9.2"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-control"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_control.yml"]).To(ContainSubstring("hostlist:\n  - 10.9.9.1\n  - 10.9.9.2"))
+		Expect(cond(sys, daosv1alpha1.ConditionConfigRendered).Reason).To(Equal("ExternalClientConfig"))
+
+		By("nothing that belongs to a system we run is created")
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-hostprep"}, &appsv1.DaemonSet{})).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-metrics"}, &corev1.Service{})).NotTo(Succeed())
+		for _, c := range []string{daosv1alpha1.ConditionServersReady, daosv1alpha1.ConditionTelemetry, daosv1alpha1.ConditionUpgrading, daosv1alpha1.ConditionCertificates} {
+			Expect(cond(sys, c).Reason).To(Equal("External"), c)
+		}
+
+		By("membership is mirrored and Ready follows it")
+		Expect(sys.Status.Formatted).To(BeTrue())
+		Expect(sys.Status.RanksJoined).To(Equal(int32(2)))
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+
+		By("a format approval on someone else's system is refused and dropped")
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationFormatApproved: "true"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved))
+		Expect(f.count("storage format")).To(BeZero())
+
+		By("rank operations still work, because they are just dmg")
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "drain:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		f.set("system drain --ranks=1", &dmg.Result{Done: true, Output: `{"response": {"responses": [{"id": "kv", "results": [{"rank": 1, "errored": false, "msg": ""}]}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		reconcileWith(f)
+		Expect(getSys().Status.LastRankOp.Succeeded).To(BeTrue())
+	})
+
 	It("removes server workloads only when spec.server.enabled is set to false", func() {
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, &appsv1.StatefulSet{})).To(Succeed())

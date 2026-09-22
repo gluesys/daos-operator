@@ -83,7 +83,9 @@ spec:
                     type: integer
                 type: object
               engines:
-                description: Engines per node; usually one per socket.
+                description: |-
+                  Engines per node; usually one per socket. Required unless
+                  ExternalMsReplicas is set (then the engines run elsewhere).
                 items:
                   description: EngineSpec describes one daos_engine per node (one
                     per CPU socket).
@@ -128,7 +130,19 @@ spec:
                       format: int32
                       type: integer
                   type: object
-                minItems: 1
+                type: array
+              externalMsReplicas:
+                description: |-
+                  ExternalMsReplicas attaches this DaosSystem to a DAOS system the operator
+                  does NOT run: the addresses of an existing management service. With it set
+                  the operator manages no server pods and no host preparation; it renders the
+                  client (agent) and admin (control) configuration from these addresses,
+                  mirrors membership, and runs pool/container/rank operations as Jobs.
+                  Use it when DAOS runs on bare metal and Kubernetes only consumes it.
+                  The Jobs still run on nodes matching NodeSelector, so those nodes must be
+                  able to reach these addresses and the fabric.
+                items:
+                  type: string
                 type: array
               hostPrep:
                 description: |-
@@ -405,7 +419,6 @@ spec:
                   "2.8.0".
                 type: string
             required:
-            - engines
             - images
             - version
             type: object
