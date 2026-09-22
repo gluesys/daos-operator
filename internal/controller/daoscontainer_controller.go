@@ -372,6 +372,9 @@ func (r *DaosContainerReconciler) finalize(ctx context.Context, c *daosv1alpha1.
 		controllerutil.RemoveFinalizer(c, daosv1alpha1.FinalizerContainer)
 		return ctrl.Result{}, r.Update(ctx, c)
 	}
+	if wait := holdFor(contKey(c)); wait > 0 && !r.DisableProbeHold {
+		return ctrl.Result{RequeueAfter: wait}, nil
+	}
 	res, err := r.Dmg.Run(ctx, r.opSpec(c, pool, sys, ns, opDestroy))
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("destroy job: %w", err)
@@ -391,9 +394,16 @@ func (r *DaosContainerReconciler) finalize(ctx context.Context, c *daosv1alpha1.
 	if perr != nil {
 		status.Operation = ""
 		msg := "daos cont destroy: " + perr.Error() + "; the DaosContainer stays until destroy succeeds or the annotation is removed (then the container is kept)"
+		if strings.Contains(perr.Error(), "DER_BUSY") {
+			msg = "daos cont destroy: the container is still open (DER_BUSY) -- a node still has it mounted; retrying. " +
+				"If a pod was force-deleted, its dfuse mount can outlive it: check `mount | grep dfuse` on the nodes."
+		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "DestroyFailed", Message: msg, ObservedGeneration: c.Generation})
 		r.event(c, corev1.EventTypeWarning, "DestroyFailed", msg)
-		return r.updateStatus(ctx, c, status, poolRequeueIdle)
+		// the finished Job is deleted, and that event would bring us straight back;
+		// hold the retry so a busy container does not spin
+		setHold(contKey(c), poolRequeueWait)
+		return r.updateStatus(ctx, c, status, poolRequeueWait)
 	}
 	r.event(c, corev1.EventTypeNormal, "ContainerDestroyed", "DAOS container "+contLabel(c)+" destroyed on request")
 	controllerutil.RemoveFinalizer(c, daosv1alpha1.FinalizerContainer)
