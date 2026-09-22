@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -131,9 +132,14 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 		ShareProcessNamespace: true,
 		Sidecar: &corev1.Container{
 			Name: "agent", Image: sys.Spec.Images.Agent, ImagePullPolicy: corev1.PullIfNotPresent,
+			// the agent enumerates the fabric itself (ib0 -> mlx5_0) to answer
+			// GetAttachInfo, so it needs the RDMA devices too; without /dev the
+			// client fails with DER_MISC on API init (seen on exaci4-2, 2026-09-22)
+			SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "agentcfg", MountPath: "/etc/daos/daos_agent.yml", SubPath: "daos_agent.yml", ReadOnly: true},
 				{Name: "agentsock", MountPath: agentSocketDir},
+				{Name: "dev", MountPath: "/dev"},
 			},
 		},
 		Volumes: []corev1.Volume{

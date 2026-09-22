@@ -163,9 +163,12 @@ spec:
         - name: agent
           image: {{ .Values.csi.agentImage | default .Values.system.spec.images.agent }}
           restartPolicy: Always
+          # the agent enumerates the fabric (ib0 -> mlx5_0) to answer GetAttachInfo
+          securityContext: {privileged: true}
           volumeMounts:
             - {name: agentcfg, mountPath: /etc/daos/daos_agent.yml, subPath: daos_agent.yml, readOnly: true}
             - {name: agentsock, mountPath: /var/run/daos_agent}
+            - {name: dev, mountPath: /dev}
             {{- if .Values.csi.tls }}
             - {name: certs-agent, mountPath: /etc/daos/certs, readOnly: true}
             {{- end }}
