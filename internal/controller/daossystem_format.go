@@ -112,7 +112,9 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "NoRunner", "operator started without a dmg runner")
 		return 0, nil
 	}
-	if !serverEnabled(sys) || in.rendered == 0 {
+	// an external system has no server pods here by definition; for one we run,
+	// there is nothing to ask until a server exists
+	if !external(sys) && (!serverEnabled(sys) || in.rendered == 0) {
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "NoServers", "no server workloads to query")
 		return 0, nil
 	}

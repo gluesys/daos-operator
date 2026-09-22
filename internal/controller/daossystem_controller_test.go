@@ -733,6 +733,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		}
 
 		By("membership is mirrored and Ready follows it")
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).NotTo(Equal("NoServers"), "an external system has no server pods by design")
 		Expect(sys.Status.Formatted).To(BeTrue())
 		Expect(sys.Status.RanksJoined).To(Equal(int32(2)))
 		Expect(cond(sys, daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
