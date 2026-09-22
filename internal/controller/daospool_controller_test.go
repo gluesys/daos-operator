@@ -50,7 +50,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		sys.Status.Formatted = true
 		Expect(k8sClient.Status().Update(ctx, sys)).To(Succeed())
 		pool := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: poolName},
-			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("10Gi"), Ranks: []int32{0, 1}, RedundancyFactor: 2,
+			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("10Gi"), Ranks: []int32{0, 1}, RedundancyFactor: ptr.To(int32(2)),
 				Properties: map[string]string{"ec_cell_sz": "131072"}, ACL: []string{"A::OWNER@:rw", "A:G:GROUP@:rw"}}}
 		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 	})
@@ -203,6 +203,19 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		p = getPool()
 		Expect(meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpaceLow)).To(BeNil())
 		Expect(p.Status.UsedPercent).To(Equal(int32(1)))
+	})
+
+	It("sends rd_fac:0 when the spec says 0 (single fault domain pools)", func() {
+		p := getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(0))
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Expect(getPool().Spec.RedundancyFactor).NotTo(BeNil())
+		Expect(*getPool().Spec.RedundancyFactor).To(Equal(int32(0)), "a default must not swallow an explicit 0")
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).To(ContainSubstring("rd_fac:0"))
 	})
 
 	It("does not retry a failed create until the spec changes", func() {

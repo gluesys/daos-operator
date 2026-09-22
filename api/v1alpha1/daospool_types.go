@@ -33,11 +33,12 @@ type DaosPoolSpec struct {
 	// Ranks restricts the pool to these ranks; empty = all. Appending ranks
 	// triggers `dmg pool extend`.
 	Ranks []int32 `json:"ranks,omitempty"`
-	// RedundancyFactor is rd_fac (2.8 default 3; lmcache-daos used 0..2).
+	// RedundancyFactor is rd_fac. Unset means 2; 0 is valid and means "no
+	// redundancy", which is what a pool on a single fault domain needs. It is a
+	// pointer because with a default an omitted 0 would come back as the default.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=4
-	// +kubebuilder:default=2
-	RedundancyFactor int32 `json:"redundancyFactor,omitempty"`
+	RedundancyFactor *int32 `json:"redundancyFactor,omitempty"`
 	// Properties are extra `--properties k:v` pairs (e.g. ec_cell_sz).
 	Properties map[string]string `json:"properties,omitempty"`
 	// ACL entries in DAOS ACE syntax (A::user@:rw). Declarative.

@@ -151,7 +151,11 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	case "query":
 		spec.Args = []string{"pool", "query", "--show-enabled", label}
 	case opCreate:
-		props := []string{fmt.Sprintf("rd_fac:%d", pool.Spec.RedundancyFactor)}
+		rdFac := int32(2)
+		if pool.Spec.RedundancyFactor != nil {
+			rdFac = *pool.Spec.RedundancyFactor
+		}
+		props := []string{fmt.Sprintf("rd_fac:%d", rdFac)}
 		keys := make([]string, 0, len(pool.Spec.Properties))
 		for k := range pool.Spec.Properties {
 			keys = append(keys, k)

@@ -82,9 +82,10 @@ spec:
                   type: integer
                 type: array
               redundancyFactor:
-                default: 2
-                description: RedundancyFactor is rd_fac (2.8 default 3; lmcache-daos
-                  used 0..2).
+                description: |-
+                  RedundancyFactor is rd_fac. Unset means 2; 0 is valid and means "no
+                  redundancy", which is what a pool on a single fault domain needs. It is a
+                  pointer because with a default an omitted 0 would come back as the default.
                 format: int32
                 maximum: 4
                 minimum: 0

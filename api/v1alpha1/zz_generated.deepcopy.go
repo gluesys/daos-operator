@@ -250,6 +250,11 @@ func (in *DaosPoolSpec) DeepCopyInto(out *DaosPoolSpec) {
 		*out = make([]int32, len(*in))
 		copy(*out, *in)
 	}
+	if in.RedundancyFactor != nil {
+		in, out := &in.RedundancyFactor, &out.RedundancyFactor
+		*out = new(int32)
+		**out = **in
+	}
 	if in.Properties != nil {
 		in, out := &in.Properties, &out.Properties
 		*out = make(map[string]string, len(*in))
