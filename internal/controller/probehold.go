@@ -18,6 +18,9 @@ limitations under the License.
 package controller
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 )
@@ -53,4 +56,26 @@ func clearHold(key string) {
 	probeMu.Lock()
 	delete(probeNext, key)
 	probeMu.Unlock()
+}
+
+// jobName builds a Job name that Kubernetes accepts. The name also becomes the
+// job-name label on the pod template, and labels stop at 63 characters, so a
+// long owner (a PV name is 40 characters by itself, in a namespace) is shortened
+// and made unique with a hash of the full key.
+func jobName(prefix, key, op string) string {
+	full := prefix + "-" + strings.ReplaceAll(key, "/", "-") + "-" + op
+	if len(full) <= 63 {
+		return full
+	}
+	h := sha256.Sum256([]byte(key))
+	id := hex.EncodeToString(h[:4])
+	keep := 63 - (len(prefix) + 1 + len(id) + 1 + len(op) + 1)
+	short := strings.ReplaceAll(key, "/", "-")
+	if keep < 1 {
+		return prefix + "-" + id + "-" + op
+	}
+	if len(short) > keep {
+		short = strings.TrimRight(short[:keep], "-")
+	}
+	return prefix + "-" + short + "-" + id + "-" + op
 }

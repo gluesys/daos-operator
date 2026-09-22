@@ -119,7 +119,7 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 	pl, cl := poolLabel(pool), contLabel(c)
 	hostDir := corev1.HostPathDirectory
 	spec := dmg.RunSpec{
-		Owner: pool, Namespace: ns, Name: "cont-" + c.Namespace + "-" + c.Name + "-daos-" + op,
+		Owner: pool, Namespace: ns, Name: jobName("cont", c.Namespace+"/"+c.Name, "daos-"+op),
 		Image: sys.Spec.Images.Client, ControlConfigMap: sys.Name + "-control",
 		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
 		Labels:                map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name, daosv1alpha1.LabelContainer: contJobLabel(c)},

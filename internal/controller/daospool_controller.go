@@ -140,7 +140,7 @@ func (r *DaosPoolReconciler) event(obj runtime.Object, typ, reason, msg string) 
 func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns, op string) dmg.RunSpec {
 	label := poolLabel(pool)
 	spec := dmg.RunSpec{
-		Owner: pool, Namespace: ns, Name: "pool-" + pool.Name + "-dmg-" + op,
+		Owner: pool, Namespace: ns, Name: jobName("pool", pool.Name, "dmg-"+op),
 		Image: sys.Spec.Images.Admin, ControlConfigMap: sys.Name + "-control",
 		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
 		Labels:      map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name},
