@@ -101,6 +101,25 @@ func controlPortOf(sys *daosv1alpha1.DaosSystem) int32 {
 	return defaultControlPort
 }
 
+// clientIfaces is what the agent may hand a client as its fabric interface.
+// Unset means the interfaces the engines use: on a Kubernetes node the agent's
+// own scan also finds the CNI interfaces, and a client given one of those
+// cannot reach an engine.
+func clientIfaces(sys *daosv1alpha1.DaosSystem) []string {
+	if l := sys.Spec.Client.IncludeFabricIfaces; l != nil {
+		return *l
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, e := range sys.Spec.Engines {
+		if e.FabricIface != "" && !seen[e.FabricIface] {
+			seen[e.FabricIface] = true
+			out = append(out, e.FabricIface)
+		}
+	}
+	return out
+}
+
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daossystems,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daossystems/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daossystems/finalizers,verbs=update
@@ -298,7 +317,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 
 	// 6. agent + control configs
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-agent", "", map[string]string{
-		"daos_agent.yml": render.Agent(systemName(sys), msAddrs, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
+		"daos_agent.yml": render.Agent(systemName(sys), msAddrs, controlPortOf(sys), sys.Spec.AllowInsecure, clientIfaces(sys))}); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-control", "", map[string]string{

@@ -143,7 +143,10 @@ func Server(c ServerConfig) (string, error) {
 }
 
 // Agent renders daos_agent.yml (2.8 still uses access_points here).
-func Agent(systemName string, accessPoints []string, port int32, allowInsecure bool) string {
+// includeIfaces, when non-empty, becomes include_fabric_ifaces: without it the
+// agent's fabric scan on a Kubernetes node also offers the CNI interfaces and a
+// client handed one of those cannot reach the engines.
+func Agent(systemName string, accessPoints []string, port int32, allowInsecure bool, includeIfaces []string) string {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, header, systemName)
 	fmt.Fprintf(&b, "name: %s\naccess_points:\n", systemName)
@@ -151,6 +154,12 @@ func Agent(systemName string, accessPoints []string, port int32, allowInsecure b
 		fmt.Fprintf(&b, "  - %s\n", a)
 	}
 	fmt.Fprintf(&b, "port: %d\nruntime_dir: /var/run/daos_agent\nlog_file: /var/log/daos/daos_agent.log\n", port)
+	if len(includeIfaces) > 0 {
+		b.WriteString("include_fabric_ifaces:\n")
+		for _, i := range includeIfaces {
+			fmt.Fprintf(&b, "  - %s\n", i)
+		}
+	}
 	fmt.Fprintf(&b, "transport_config:\n  allow_insecure: %t\n  ca_cert: /etc/daos/certs/daosCA.crt\n  cert: /etc/daos/certs/agent.crt\n  key: /etc/daos/certs/agent.key\n", allowInsecure)
 	return b.String()
 }

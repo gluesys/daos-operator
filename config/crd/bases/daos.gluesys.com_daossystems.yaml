@@ -62,7 +62,6 @@ spec:
           metadata:
             type: object
           spec:
-            description: DaosSystemSpec defines the desired state of a DAOS system.
             properties:
               allowInsecure:
                 description: AllowInsecure disables TLS between dmg/agent and servers.
@@ -81,6 +80,24 @@ spec:
                     format: int32
                     minimum: 1
                     type: integer
+                type: object
+              client:
+                description: |-
+                  DaosSystemSpec defines the desired state of a DAOS system.
+                  ClientSpec tunes the daos_agent config that every DAOS client uses (the CSI
+                  node plugin and the operator's own dmg/daos Jobs).
+                properties:
+                  includeFabricIfaces:
+                    description: |-
+                      IncludeFabricIfaces restricts the agent's fabric scan to these interfaces.
+                      On Kubernetes the scan also finds the CNI interfaces (cni0, flannel.1, ...)
+                      and a client handed one of those cannot reach the engines, so unset means
+                      "the fabric interfaces the engines use". An explicit empty list turns the
+                      restriction off, for clients whose interface names differ from the servers'
+                      -- which is why this is a pointer.
+                    items:
+                      type: string
+                    type: array
                 type: object
               controlPort:
                 default: 10001

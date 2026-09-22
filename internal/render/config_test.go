@@ -91,7 +91,7 @@ func TestServerRejectsIncompleteEngine(t *testing.T) {
 
 func TestAgentAndControl(t *testing.T) {
 	var a, c map[string]any
-	if err := yaml.Unmarshal([]byte(Agent("daos_server", []string{"10.0.0.1"}, 10001, false)), &a); err != nil {
+	if err := yaml.Unmarshal([]byte(Agent("daos_server", []string{"10.0.0.1"}, 10001, false, []string{"ens18"})), &a); err != nil {
 		t.Fatal(err)
 	}
 	if err := yaml.Unmarshal([]byte(Control("daos_server", []string{"n1", "n2"}, 10001, false)), &c); err != nil {
@@ -102,5 +102,16 @@ func TestAgentAndControl(t *testing.T) {
 	}
 	if len(c["hostlist"].([]any)) != 2 {
 		t.Error("control hostlist wrong")
+	}
+	// without this the agent's scan on a Kubernetes node also offers cni0/flannel.1
+	if got, ok := a["include_fabric_ifaces"].([]any); !ok || len(got) != 1 || got[0] != "ens18" {
+		t.Errorf("include_fabric_ifaces = %v, want [ens18]", a["include_fabric_ifaces"])
+	}
+	var noIfaces map[string]any
+	if err := yaml.Unmarshal([]byte(Agent("s", []string{"10.0.0.1"}, 10001, false, nil)), &noIfaces); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := noIfaces["include_fabric_ifaces"]; ok {
+		t.Error("empty iface list must not emit include_fabric_ifaces")
 	}
 }

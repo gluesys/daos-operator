@@ -88,8 +88,8 @@ func main() {
 		}
 		write(filepath.Join(*out, name), yml)
 	}
-	write(filepath.Join(*out, "agent.yml"), render.Agent("daos_server", []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, 10001, false))
-	write(filepath.Join(*out, "agent-insecure.yml"), render.Agent("daos_flexa", []string{"192.0.2.10"}, 10001, true))
+	write(filepath.Join(*out, "agent.yml"), render.Agent("daos_server", []string{"10.0.0.1", "10.0.0.2", "10.0.0.3"}, 10001, false, nil))
+	write(filepath.Join(*out, "agent-insecure.yml"), render.Agent("daos_flexa", []string{"192.0.2.10"}, 10001, true, []string{"ens18"}))
 	write(filepath.Join(*out, "control.yml"), render.Control("daos_server", []string{"10.0.0.1", "10.0.0.2"}, 10001, false))
 	write(filepath.Join(*out, "control-insecure.yml"), render.Control("daos_flexa", []string{"192.0.2.10"}, 10001, true))
 	fmt.Printf("wrote %d configurations to %s\n", len(servers)+4, *out)

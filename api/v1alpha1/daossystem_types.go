@@ -213,6 +213,18 @@ type UpgradeStatus struct {
 }
 
 // DaosSystemSpec defines the desired state of a DAOS system.
+// ClientSpec tunes the daos_agent config that every DAOS client uses (the CSI
+// node plugin and the operator's own dmg/daos Jobs).
+type ClientSpec struct {
+	// IncludeFabricIfaces restricts the agent's fabric scan to these interfaces.
+	// On Kubernetes the scan also finds the CNI interfaces (cni0, flannel.1, ...)
+	// and a client handed one of those cannot reach the engines, so unset means
+	// "the fabric interfaces the engines use". An explicit empty list turns the
+	// restriction off, for clients whose interface names differ from the servers'
+	// -- which is why this is a pointer.
+	IncludeFabricIfaces *[]string `json:"includeFabricIfaces,omitempty"`
+}
+
 type DaosSystemSpec struct {
 	// Version is the DAOS version (image tag prefix), e.g. "2.8.0".
 	Version string `json:"version"`
@@ -270,6 +282,7 @@ type DaosSystemSpec struct {
 	AllowInsecure bool             `json:"allowInsecure,omitempty"`
 	HostPrep      HostPrepSpec     `json:"hostPrep,omitempty"`
 	Server        ServerSpec       `json:"server,omitempty"`
+	Client        ClientSpec       `json:"client,omitempty"`
 	Certificates  CertificatesSpec `json:"certificates,omitempty"`
 	Telemetry     TelemetrySpec    `json:"telemetry,omitempty"`
 	Upgrade       UpgradeSpec      `json:"upgrade,omitempty"`
