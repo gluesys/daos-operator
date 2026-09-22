@@ -782,6 +782,19 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sts.Spec.Template.Spec.Containers[0].ReadinessProbe.TCPSocket.Port.IntValue()).To(Equal(10101))
 		hp := sts.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceName("hugepages-2Mi")]
 		Expect(hp.IsZero()).To(BeTrue(), "no hugepages requested when nrHugepages is 0")
+
+		By("the pod's hugetlb limit can be set independently of what DAOS allocates")
+		sys = getSys()
+		q := resource.MustParse("1Gi")
+		sys.Spec.Server.HugepagesRequest = &q
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		hp = sts.Spec.Template.Spec.Containers[0].Resources.Limits[corev1.ResourceName("hugepages-2Mi")]
+		Expect(hp.String()).To(Equal("1Gi"))
+		cm2 := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm2)).To(Succeed())
+		Expect(cm2.Data["daos_server.yml"]).To(ContainSubstring("nr_hugepages: 0"), "DAOS still must not touch the host pool")
 	})
 
 	It("removes server workloads only when spec.server.enabled is set to false", func() {

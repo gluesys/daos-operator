@@ -101,12 +101,26 @@ func serverResources(sys *daosv1alpha1.DaosSystem, engines []render.Engine) core
 	mem := resource.MustParse(fmt.Sprintf("%dGi", scm+serverMemoryOverheadGiB))
 	req := corev1.ResourceList{corev1.ResourceCPU: *resource.NewQuantity(cpu, resource.DecimalSI), corev1.ResourceMemory: mem}
 	lim := corev1.ResourceList{}
-	if hugepagesOf(sys) > 0 {
-		hp := resource.MustParse(fmt.Sprintf("%dMi", int64(hugepagesOf(sys))*2))
+	if hp, ok := hugepagesQuantity(sys); ok {
 		req["hugepages-2Mi"] = hp
 		lim["hugepages-2Mi"] = hp // hugepages request must equal limit
 	}
 	return corev1.ResourceRequirements{Requests: req, Limits: lim}
+}
+
+// hugepagesQuantity is what the pod may use: spec.server.hugepagesRequest when
+// set, otherwise nrHugepages * 2Mi. Zero means no hugetlb limit is declared.
+func hugepagesQuantity(sys *daosv1alpha1.DaosSystem) (resource.Quantity, bool) {
+	if q := sys.Spec.Server.HugepagesRequest; q != nil {
+		if q.IsZero() {
+			return resource.Quantity{}, false
+		}
+		return *q, true
+	}
+	if n := hugepagesOf(sys); n > 0 {
+		return resource.MustParse(fmt.Sprintf("%dMi", int64(n)*2)), true
+	}
+	return resource.Quantity{}, false
 }
 
 // ensureServer creates or updates the pinned StatefulSet for one node.

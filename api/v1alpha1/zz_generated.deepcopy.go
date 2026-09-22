@@ -617,6 +617,11 @@ func (in *ServerSpec) DeepCopyInto(out *ServerSpec) {
 		*out = new(bool)
 		**out = **in
 	}
+	if in.HugepagesRequest != nil {
+		in, out := &in.HugepagesRequest, &out.HugepagesRequest
+		x := (*in).DeepCopy()
+		*out = &x
+	}
 	if in.Resources != nil {
 		in, out := &in.Resources, &out.Resources
 		*out = new(corev1.ResourceRequirements)

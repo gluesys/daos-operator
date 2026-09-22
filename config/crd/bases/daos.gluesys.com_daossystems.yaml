@@ -291,6 +291,20 @@ spec:
                       Enabled creates the server StatefulSets. Default true. Set false to render
                       configuration only (e.g. manual bring-up with exastor/daos-images compose).
                     type: boolean
+                  hugepagesRequest:
+                    anyOf:
+                    - type: integer
+                    - type: string
+                    description: |-
+                      HugepagesRequest is what the server pod is allowed to use, as a quantity
+                      ("1Gi"). It is deliberately separate from spec.nrHugepages: that one tells
+                      DAOS how many hugepages to allocate on the host, while this one sets the
+                      pod's hugetlb limit. On a host whose hugepages are managed outside DAOS
+                      (nrHugepages: 0) the pod still needs this, or every SPDK call fails with
+                      "Cannot allocate memory" even though the host has free pages.
+                      Unset means nrHugepages * 2Mi.
+                    pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                    x-kubernetes-int-or-string: true
                   logHostPath:
                     description: LogHostPath is the node directory for daos_server/engine
                       logs. Default /var/log/daos/<system>.

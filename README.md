@@ -174,17 +174,23 @@ SPDK 가 요구하는 hugepages·IOMMU·전용 NVMe 가 없는 장비에서도 *
 | 필드 | 뜻 |
 |---|---|
 | `spec.engines[].bdevClass` | `nvme`(기본, 운영) / `kdev`(커널 블록 장치, `bdevList` 에 경로) / `file`(파일, `bdevSizeGiB` 로 크기) |
-| `spec.nrHugepages: 0` | SPDK 미사용. kdev·file 에서는 0 이어야 한다 |
+| `spec.nrHugepages` | DAOS 가 **호스트 hugepage 풀을 관리할 개수**. 0 = 건드리지 않음(밖에서 관리하는 호스트) |
+| `spec.server.hugepagesRequest` | **파드가 쓸 수 있는 hugepage 양**(예 `1Gi`). 미지정이면 `nrHugepages × 2Mi`. 0 이면 파드가 hugepage 를 전혀 못 쓴다 |
 | `spec.systemRamReservedGiB` | DAOS 기본 64 GiB 예약을 낮춘다. 작은 호스트는 이걸 낮추지 않으면 엔진이 뜨지 않는다 |
 | `spec.disableVFIO` | IOMMU 없는 호스트에서 uio_pci_generic 사용 |
 | `spec.controlPort` | 기본 10001. 이미 DAOS 가 도는 호스트에 두 번째 시스템을 올릴 때 바꾼다 |
+
+**중요**: `kdev`·`file` 도 DAOS 는 SPDK(AIO)로 다루므로 **hugepages 는 여전히 필요하다**(실측: 없으면 `spdk_env_init(): Cannot allocate memory`).
+이 클래스가 없애 주는 것은 전용 NVMe 와 IOMMU/VFIO 다. 호스트 hugepage 를 DAOS 밖에서 관리한다면 `nrHugepages: 0` + `server.hugepagesRequest` 로 준다.
 
 ```yaml
 spec:
   systemName: daos_k8s
   controlPort: 10101
   provider: ofi+tcp          # IB 주소가 없는 호스트
-  nrHugepages: 0
+  nrHugepages: 0             # 호스트 풀은 밖에서 관리
+  server:
+    hugepagesRequest: 1Gi    # 파드가 쓸 수 있는 양(없으면 SPDK 초기화 실패)
   systemRamReservedGiB: 2
   engines:
     - targets: 2

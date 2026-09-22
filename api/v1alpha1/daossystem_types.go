@@ -19,6 +19,7 @@ package v1alpha1
 
 import (
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -118,6 +119,14 @@ type ServerSpec struct {
 	DataHostPath string `json:"dataHostPath,omitempty"`
 	// LogHostPath is the node directory for daos_server/engine logs. Default /var/log/daos/<system>.
 	LogHostPath string `json:"logHostPath,omitempty"`
+	// HugepagesRequest is what the server pod is allowed to use, as a quantity
+	// ("1Gi"). It is deliberately separate from spec.nrHugepages: that one tells
+	// DAOS how many hugepages to allocate on the host, while this one sets the
+	// pod's hugetlb limit. On a host whose hugepages are managed outside DAOS
+	// (nrHugepages: 0) the pod still needs this, or every SPDK call fails with
+	// "Cannot allocate memory" even though the host has free pages.
+	// Unset means nrHugepages * 2Mi.
+	HugepagesRequest *resource.Quantity `json:"hugepagesRequest,omitempty"`
 	// Resources overrides the computed requests/limits of the daos-server container.
 	// By default memory request = sum(scmSizeGiB)+2Gi (tmpfs is charged to the pod),
 	// cpu request = sum(targets+helpers+1) and hugepages-2Mi = nrHugepages*2Mi.

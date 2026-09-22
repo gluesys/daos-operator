@@ -14,4 +14,10 @@ hostprep → format 승인 게이트 → 풀 → PVC 로 이어지는 흐름은 
 - 제품 문서·영업 자료의 성능 수치는 `nvme` 구성에서만 나온다. 테스트베드 수치는 기능 확인용으로만 인용한다.
 - 운영 배포 점검표에 "bdevClass=nvme 인가"를 넣는다.
 
+**실측으로 정정한 오해(2026-09-22)**: `kdev`/`file` 이면 hugepages 가 필요 없다고 적었는데 **틀렸다.** DAOS 는 세 클래스 모두 SPDK 를 통해
+다루고(`file`·`kdev` 는 SPDK 의 AIO 백엔드), DPDK 초기화에 hugepages 가 필요하다. 실제로 `nr_hugepages: 0` 인 파드에서
+`spdk_env_init(): Cannot allocate memory` 로 포맷이 실패했다. kdev/file 이 없애 주는 것은 **전용 NVMe 와 IOMMU/VFIO** 이지 hugepages 가 아니다.
+쿠버네티스에서는 한 가지가 더 있다: 파드의 hugetlb cgroup 한도가 0 이면 호스트에 여유 hugepage 가 있어도 쓸 수 없다. 그래서
+`spec.nrHugepages`(DAOS 가 호스트 풀을 관리할 개수)와 `spec.server.hugepagesRequest`(파드가 쓸 수 있는 양)를 분리했다.
+
 **재검토 조건**: 전용 장비가 확보되어 테스트도 `nvme` 로 돌릴 수 있게 되면 이 완화의 필요성이 사라진다.
