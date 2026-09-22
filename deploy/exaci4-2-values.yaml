@@ -1,0 +1,51 @@
+# exaci4-2 테스트베드: K8s 가 이미 도는 daos_flexa 시스템을 소비하는 배치(경로 1)
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: ""                                # 배포 시 CI 태그(예: c02a1f4x)로 채운다
+imagePullSecrets:
+  - name: gitlab-registry
+
+system:
+  create: true
+  name: daos-flexa
+  spec:
+    version: "2.8.0"
+    systemName: daos_flexa                 # 이 시스템 이름은 daos_server 가 아니다
+    namespace: daos-system
+    externalMsReplicas: ["127.0.0.100"]    # A 노드의 dummy0 에만 열린 MS
+    nodeSelector:
+      daos.gluesys.com/client: "true"      # = flexa-3423-1-a (MS·IB 에 닿는 유일한 노드)
+    allowInsecure: true
+    provider: "ofi+verbs;ofi_rxm"
+    msReplicas: 1
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
+      agent: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
+      admin: registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+    server:
+      enabled: false
+    hostPrep:
+      enabled: false
+    telemetry:
+      enabled: false
+
+csi:
+  enabled: true
+  system: daos-flexa
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: "0.1.0"
+  agentImage: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
+  nodeSelector:
+    daos.gluesys.com/client: "true"        # dfuse 는 A 에서만 가능
+  storageClasses:
+    - name: daos-k8s
+      reclaimPolicy: Delete
+      parameters:
+        pool: k8spool
+        oclass: SX                          # 장애 도메인 1개(모든 rank 가 A) → RP_2 불가
+        dirOclass: S1
+        chunkSize: "4194304"
+        csum: crc32
+        rdFac: "0"

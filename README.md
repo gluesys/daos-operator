@@ -332,6 +332,11 @@ agent·control 각각 TLS/insecure)을 렌더한 뒤 **실제 DAOS 2.8 바이너
 2026-09-15 결과: 7종 전부 OK(부정 대조군 2종은 기대대로 INVALID). 하드웨어 없는 검사 범위는 파싱 → fabric 인터페이스 → 호스트 메모리까지고,
 그 뒤 엔진·bdev 의미 검증은 설정에 적힌 NIC·메모리를 가진 호스트가 필요하다.
 
+## 실장비 K8s 배포 (Phase 2 종료 기준 통과)
+`doc/testbed-k8s-exaci4-2.md`: exaci4-2 테스트베드(3노드 K8s v1.31)에서 **helm install → PVC → 파드 dfuse 마운트**를 실제로 통과시킨 기록.
+DAOS 는 기존대로 VM 에 네이티브로 두고 K8s 가 소비만 하는 배치(`spec.externalMsReplicas`)다. 깨끗한 PVC→마운트 **30초**, 삭제까지 76초.
+EL8 노드 준비의 함정(cgroupfs 드라이버, crun, conntrack)과 이 과정에서 찾아 고친 결함 6건이 같은 문서에 있다.
+
 ## 실장비 검증
 `doc/testbed-2026-09-15.md`: daos_ci 에서 operator 의 dmg/daos Job 명령 전부, CSI 노드 dfuse 마운트(재시작 복구 포함), hostprep 탐색을 실장비로 확인.
 주의 두 가지 — `spec.systemName`(기본 daos_server; 테스트베드는 daos_flexa), 컨테이너 기본 oclass RP_2GX/RP_2G1 은 서버 노드 2대 이상 필요(1대면 SX/S1, rd_fac 0).
