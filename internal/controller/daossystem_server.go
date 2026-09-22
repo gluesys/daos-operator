@@ -164,6 +164,9 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			hostVol("hugepages", "/dev/hugepages", &dirCreate),
 			hostVol("dev", "/dev", &dir),
 			hostVol("sys", "/sys", &dir),
+			// daos_server puts its dRPC socket here and refuses to start if the
+			// directory is missing; it must not survive a restart either
+			{Name: "runsock", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
 		}
 		if certsSecret != "" {
 			pod.Volumes = append(pod.Volumes, certsVolume(certsSecret, serverCertFiles()))
@@ -175,6 +178,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			{Name: "hugepages", MountPath: "/dev/hugepages"},
 			{Name: "dev", MountPath: "/dev"},
 			{Name: "sys", MountPath: "/sys"},
+			{Name: "runsock", MountPath: "/var/run/daos_server"},
 		}
 		if certsSecret != "" {
 			mounts = append(mounts, corev1.VolumeMount{Name: "certs", MountPath: certsMountPath, ReadOnly: true})

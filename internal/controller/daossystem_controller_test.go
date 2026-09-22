@@ -204,7 +204,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		for _, m := range c.VolumeMounts {
 			mounts = append(mounts, m.MountPath)
 		}
-		Expect(mounts).To(ContainElements("/etc/daos/daos_server.yml", "/var/daos", "/var/log/daos", "/dev/hugepages", "/dev", "/sys"))
+		Expect(mounts).To(ContainElements("/etc/daos/daos_server.yml", "/var/daos", "/var/log/daos", "/dev/hugepages", "/dev", "/sys", "/var/run/daos_server"))
 		for _, v := range pod.Volumes {
 			switch v.Name {
 			case "config":
