@@ -38,13 +38,17 @@
 | `daos cont query` 가 `DER_TIMEDOUT` | K8s 노드에서 agent 의 패브릭 스캔이 **CNI 인터페이스(cni0, flannel.1)까지** 후보로 올린다 | agent 설정에 `include_fabric_ifaces` 렌더 — 기본값은 엔진의 `fabricIface` |
 | 마운트 안 된 스테이징 경로가 파드에 붙음 | daos-csi 결함 2건 (아래) | daos-csi `6203907` |
 
-### daos-csi 에서 드러난 결함
+### daos-csi 에서 드러난 결함 (모두 수정)
 
 - `Start` 가 타임아웃으로 dfuse 를 kill 해도 `procs` 항목은 수확 고루틴이 지울 때까지 남는다.
   그 사이의 재시도가 `Running()` 을 믿고 Start 를 건너뛰어, **DAOS 가 아닌 호스트 디렉터리**를 게시했다.
   파드는 그것을 dfuse 로 알고 64MiB 를 로컬 디스크에 썼다.
 - `unbind` 의 `IsLikelyNotMountPoint` 는 부모와 st_dev 를 비교하므로 **같은 파일시스템 안의 bind 를 못 본다**.
   umount 를 건너뛰고 rmdir 이 EBUSY → NodeUnpublish 무한 재시도(파드 삭제 불가).
+- **노드 플러그인을 재시작하면 자식이던 dfuse 가 모두 죽는다.** 남은 마운트는 stat 이 ENOTCONN 인데,
+  `unbind` 는 그 오류로 포기해 NodeUnstage 가 무한 재시도됐고, `Start` 의 `MkdirAll` 은 "file exists" 로 실패했다
+  (스테일 마운트 정리가 MkdirAll 뒤에 있었다) → 그 볼륨을 다시 스테이지할 방법이 없었다.
+  수동 복구는 노드에서 `fusermount3 -uz <스테이징 경로>`.
 
 ## 알아둘 것
 
@@ -56,3 +60,5 @@
 - 한 시스템당 클라이언트(agent) 설정이 하나이므로, 네이티브용과 파드용 CSI 스택은 **드라이버 이름을 달리해** 따로 띄운다
   (`daos.csi.gluesys.com` / `pod.daos.csi.gluesys.com`).
 - `daos_agent` 는 설정을 **기동 시에만** 읽는다. ConfigMap 을 고쳤으면 노드 플러그인 파드를 재시작해야 한다.
+- 손으로 만든 CSI 스택에는 `imagePullSecrets: [{name: gitlab-registry}]` 를 빠뜨리지 말 것(차트가 넣어주는 값이다).
+  빠지면 노드에 캐시가 없는 쪽에서만 `403 Forbidden` 으로 갈린다.
