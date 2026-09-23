@@ -52,9 +52,12 @@
 
 ## 알아둘 것
 
-- **scm `ram` 은 휘발성이다.** 서버 파드를 재시작하면 SCM 램디스크가 비어 풀 메타데이터가 사라진다.
-  이때 operator 는 풀을 다시 만들지 않고 `PoolMissing` 으로 멈춘다(데이터 손실을 조용히 덮지 않는다).
-  영속이 필요하면 PMem 이나 MD-on-SSD(`control_metadata` 를 PVC 로) 구성이 필요하다 — 이 테스트베드에는 없다.
+- **scm `ram` 이어도 풀은 재시작을 견딘다**(실측 2026-09-23). operator 가 렌더하는 설정이 이미 MD-on-SSD 이기 때문이다:
+  `control_metadata.path` 와 bdev 파일이 hostPath 에 있고 tier 에 `bdev_roles: [wal, meta, data]` 가 붙는다.
+  램디스크는 캐시라서 기동 때마다 다시 포맷되지만(로그의 `starting format of SCM (ram:...)`), 엔진은 WAL/meta 에서
+  복구한다 — 재시작 후 `rank 0 became pool service leader 2`, `pool podpool: service ranks set to 0`, PV 안 파일 3개 md5 동일.
+- 풀이 실제로 사라진 경우(예: bdev 파일까지 지운 경우) operator 는 **다시 만들지 않고** `PoolMissing` 으로 멈춘다.
+  `DaosPool` 의 `systemRef` 를 다른 시스템으로 바꿔도 같은 증상이 나온다 — 그 시스템에는 그 풀이 없기 때문이고, 원래 풀은 무사하다.
 - `DaosPool` 을 지워도 `daos.gluesys.com/destroy-approved=true` 가 없으면 DAOS 풀은 **남는다**(`PoolOrphaned` 경고).
   CR 의 `systemRef` 를 잘못 바꿔도 다른 시스템의 풀을 파괴하지 않는다는 뜻이기도 하다.
 - 한 시스템당 클라이언트(agent) 설정이 하나이므로, 네이티브용과 파드용 CSI 스택은 **드라이버 이름을 달리해** 따로 띄운다
