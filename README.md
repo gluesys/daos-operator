@@ -19,6 +19,8 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
   Service 를 만들고 `--pool`/`--system`, daos_agent 네이티브 사이드카, agent ConfigMap, 인증서를 operator 가 채운다. 데이터 경로는 libdfs
   직결이라 PV 도 dfuse 도 쓰지 않는다. 루트 키는 Secret(`accessKey`/`secretKey`)으로만 받고, 내부 IAM 이 emptyDir 이면 `IAMDurable=False`
   로 "파드가 죽으면 S3 사용자·키가 사라진다"를 명시하며 그 상태의 `replicas > 1` 은 거부한다(사용자 목록이 조용히 갈라진다).
+  차트의 `s3.services[]` 로 설치할 수 있고(루트 키는 기존 Secret 지정 또는 차트가 생성), 실장비 검증은
+  `doc/testbed-k8s-pod-servers.md` 참조.
 - **Phase 2 #7·#8 (2026-09-14): `DaosSystem` reconcile 1단계 + 호스트 준비 DaemonSet.** nodeSelector 로 노드 선택 → Node 어노테이션에서 노드별 사실
   (fabric NIC, VFIO NVMe 목록, 드라이브 DSN, NUMA) 읽기 → **같은 물리 드라이브(DSN)를 두 노드가 노출하면 그 노드들을 제외하고
   `DriveConflict=True`**(2026-09-03 손상 사고 재발 방지) → 관리 서비스 복제본 노드 선택(이름순 안정) → 노드별 `daos_server.yml`

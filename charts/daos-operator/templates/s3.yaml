@@ -1,0 +1,77 @@
+{{- /*
+SPDX-License-Identifier: Apache-2.0
+Copyright 2026 Gluesys Co., Ltd.
+
+One S3Service per entry in .Values.s3.services, plus the root-key Secret when
+the values carry one. Everything else -- Deployment, Service, daos_agent
+sidecar, certificates -- is created by the operator (ADR-004).
+*/}}
+{{- range .Values.s3.services }}
+{{- if .rootCredentials }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ .rootCredentialsSecret | default (printf "%s-root" .name) }}
+  namespace: {{ $.Values.system.spec.namespace | default "daos-system" }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+type: Opaque
+stringData:
+  accessKey: {{ required "s3.services[].rootCredentials.accessKey is required" .rootCredentials.accessKey | quote }}
+  secretKey: {{ required "s3.services[].rootCredentials.secretKey is required" .rootCredentials.secretKey | quote }}
+---
+{{- end }}
+apiVersion: daos.gluesys.com/v1alpha1
+kind: S3Service
+metadata:
+  name: {{ .name }}
+  namespace: {{ $.Values.system.spec.namespace | default "daos-system" }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+spec:
+  poolRef: {{ required "s3.services[].poolRef is required" .poolRef }}
+  image: {{ required "s3.services[].image is required" .image }}
+  rootCredentialsSecret: {{ .rootCredentialsSecret | default (printf "%s-root" .name) }}
+  {{- with .replicas }}
+  replicas: {{ . }}
+  {{- end }}
+  {{- with .port }}
+  port: {{ . }}
+  {{- end }}
+  {{- with .region }}
+  region: {{ . }}
+  {{- end }}
+  {{- with .containerCacheSize }}
+  containerCacheSize: {{ . }}
+  {{- end }}
+  {{- with .serviceType }}
+  serviceType: {{ . }}
+  {{- end }}
+  {{- with .nodePort }}
+  nodePort: {{ . }}
+  {{- end }}
+  {{- with .tlsSecretName }}
+  tlsSecretName: {{ . }}
+  {{- end }}
+  {{- with .iam }}
+  iam:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .nodeSelector }}
+  nodeSelector:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .tolerations }}
+  tolerations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .extraEnv }}
+  extraEnv:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+{{- end }}

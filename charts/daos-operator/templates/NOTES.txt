@@ -38,5 +38,15 @@ grafana_dashboard ConfigMap (needs the grafana sidecar), or import
 config/grafana/DAOS-Grafana-Dashboard.json by hand.
 {{- end }}
 
+{{- range .Values.s3.services }}
+
+S3 gateway {{ .name }}: kubectl -n {{ $.Values.system.spec.namespace | default "daos-system" }} get s3service {{ .name }}
+  The endpoint is in .status.endpoint once the pool is Ready.
+{{- if not (dig "iam" "claimName" "" .) }}
+  NOTE: no iam.claimName -- S3 users and keys live in an emptyDir and are lost when the pod
+  restarts (objects in DAOS are not affected), and replicas > 1 will be refused.
+{{- end }}
+{{- end }}
+
 CRDs live in crds/ and are installed on first install only; on chart upgrades apply them with
   kubectl apply --server-side -f charts/daos-operator/crds/

@@ -107,3 +107,32 @@ csi:
   #  - name: daos-kv
   #    reclaimPolicy: Delete
   #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
+
+# S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry.
+# The operator supplies --pool/--system, the daos_agent sidecar and the certificates;
+# see doc/adr/ADR-004-s3-gateway.md.
+s3:
+  services: []
+  #  - name: s3
+  #    poolRef: kv                    # an existing DaosPool
+  #    image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923
+  #    replicas: 1
+  #    port: 7070
+  #    region: kr-1
+  #    serviceType: ClusterIP         # or NodePort / LoadBalancer
+  #    # nodePort: 30707
+  #    # tlsSecretName: s3-tls        # kubernetes.io/tls, served by the gateway
+  #    # Root key. Either point at an existing Secret ...
+  #    rootCredentialsSecret: s3root
+  #    # ... or have the chart create it. Helm values end up in the release secret,
+  #    # so prefer an existing Secret outside a demo.
+  #    # rootCredentials:
+  #    #   accessKey: ""
+  #    #   secretKey: ""
+  #    # S3 users and keys live here. Without a claim they are lost when the pod
+  #    # restarts (the objects in DAOS are not), and replicas > 1 is refused.
+  #    # iam: {type: internal, claimName: s3-iam}
+  #    # nodeSelector: {}
+  #    # tolerations: []
+  #    # resources: {}
+  #    # extraEnv: []
