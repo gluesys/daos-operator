@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# S3 endpoint over a DAOS pool (ADR-004). One S3 bucket = one DFS container in
+# the pool; the gateway talks libdfs, so no PV and no dfuse are involved.
+#
+# The root key must exist first:
+#   kubectl create secret generic s3root \
+#     --from-literal=accessKey=... --from-literal=secretKey=...
+apiVersion: daos.gluesys.com/v1alpha1
+kind: S3Service
+metadata:
+  name: s3
+  namespace: daos-system
+spec:
+  poolRef: p0
+  image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923
+  replicas: 1
+  port: 7070
+  region: kr-1
+  rootCredentialsSecret: s3root
+  serviceType: ClusterIP
+  iam:
+    type: internal
+    # Without a claim the S3 users and keys live in an emptyDir and are lost
+    # when the pod restarts; the objects in DAOS are not affected.
+    claimName: s3-iam

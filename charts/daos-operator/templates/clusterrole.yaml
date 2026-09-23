@@ -77,6 +77,7 @@ rules:
   - apps
   resources:
   - daemonsets
+  - deployments
   - statefulsets
   verbs:
   - create
@@ -102,6 +103,7 @@ rules:
   - daoscontainers
   - daospools
   - daossystems
+  - s3services
   verbs:
   - create
   - delete
@@ -124,6 +126,7 @@ rules:
   - daoscontainers/status
   - daospools/status
   - daossystems/status
+  - s3services/status
   verbs:
   - get
   - patch

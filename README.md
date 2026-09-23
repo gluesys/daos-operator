@@ -3,7 +3,7 @@
 
 # daos-operator
 
-Kubernetes operator for DAOS: `DaosSystem`, `DaosPool`, `DaosContainer` CRD 와 reconcile 루프.
+Kubernetes operator for DAOS: `DaosSystem`, `DaosPool`, `DaosContainer`, `S3Service` CRD 와 reconcile 루프.
 HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`) 와 Enakta Platform 의
 클러스터 뷰(health/version/fabric/capacity/ranks faulty·total/job queue) 가 하는 일을 K8s 관용구로 옮긴다.
 
@@ -15,6 +15,10 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
 
 ## 상태
 - Phase 0: kubebuilder v4 뼈대, CRD 3종(kind·envtest 검증).
+- **Phase 3 #24 (2026-09-23): S3 게이트웨이 `S3Service`(ADR-004).** `spec.poolRef` 로 `DaosPool` 을 가리키면 versitygw-daos Deployment +
+  Service 를 만들고 `--pool`/`--system`, daos_agent 네이티브 사이드카, agent ConfigMap, 인증서를 operator 가 채운다. 데이터 경로는 libdfs
+  직결이라 PV 도 dfuse 도 쓰지 않는다. 루트 키는 Secret(`accessKey`/`secretKey`)으로만 받고, 내부 IAM 이 emptyDir 이면 `IAMDurable=False`
+  로 "파드가 죽으면 S3 사용자·키가 사라진다"를 명시하며 그 상태의 `replicas > 1` 은 거부한다(사용자 목록이 조용히 갈라진다).
 - **Phase 2 #7·#8 (2026-09-14): `DaosSystem` reconcile 1단계 + 호스트 준비 DaemonSet.** nodeSelector 로 노드 선택 → Node 어노테이션에서 노드별 사실
   (fabric NIC, VFIO NVMe 목록, 드라이브 DSN, NUMA) 읽기 → **같은 물리 드라이브(DSN)를 두 노드가 노출하면 그 노드들을 제외하고
   `DriveConflict=True`**(2026-09-03 손상 사고 재발 방지) → 관리 서비스 복제본 노드 선택(이름순 안정) → 노드별 `daos_server.yml`

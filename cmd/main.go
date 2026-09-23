@@ -221,6 +221,14 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "daoscontainer")
 		os.Exit(1)
 	}
+	if err := (&controller.S3ServiceReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorderFor("s3service"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "s3service")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
