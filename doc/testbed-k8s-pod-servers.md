@@ -65,3 +65,17 @@
 - `daos_agent` 는 설정을 **기동 시에만** 읽는다. ConfigMap 을 고쳤으면 노드 플러그인 파드를 재시작해야 한다.
 - 손으로 만든 CSI 스택에는 `imagePullSecrets: [{name: gitlab-registry}]` 를 빠뜨리지 말 것(차트가 넣어주는 값이다).
   빠지면 노드에 캐시가 없는 쪽에서만 `403 Forbidden` 으로 갈린다.
+
+## 추가 기록: S3 게이트웨이(2026-09-23)
+
+`S3Service`(#24) + `versitygw-daos:2.8.0-20260923`(daos-images#6) 를 이 시스템의 `podpool` 앞에 띄웠다.
+
+| 단계 | 결과 |
+|---|---|
+| S3Service 기동 | `PoolReady/Deployed/Ready=True`, 1/1, 엔드포인트 `http://s3.daos-system.svc:7070 (nodePort 30707)` |
+| 버킷 생성·목록 | **200 OK** (`PUT /testbucket` 261 ms, `GET /`) |
+| 객체 쓰기 | **실패 — DAOS 엔진 SIGSEGV**(`vos_fetch_begin` ← `ds_obj_rw_handler`), daos-operator#28 |
+
+엔진이 죽어도 서버 파드를 재시작하면 rank 가 재조인하고 **풀과 기존 PV 데이터는 무사했다**(md5 동일).
+객체 크기와 무관(8 MiB·10 byte 동일). 게이트웨이 없이 순수 DAOS API 로 같은 컨테이너에 KV put/get(없는 키 포함)을
+해보면 멀쩡하고, 같은 풀의 dfuse POSIX 쓰기도 정상이라 트리거는 게이트웨이의 객체 쓰기 시퀀스에 있다.
