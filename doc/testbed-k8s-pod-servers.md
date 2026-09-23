@@ -74,8 +74,11 @@
 |---|---|
 | S3Service 기동 | `PoolReady/Deployed/Ready=True`, 1/1, 엔드포인트 `http://s3.daos-system.svc:7070 (nodePort 30707)` |
 | 버킷 생성·목록 | **200 OK** (`PUT /testbucket` 261 ms, `GET /`) |
-| 객체 쓰기 | **실패 — DAOS 엔진 SIGSEGV**(`vos_fetch_begin` ← `ds_obj_rw_handler`), daos-operator#28 |
+| 객체 쓰기(수정 전) | 실패 — DAOS 엔진 SIGSEGV(`vos_fetch_begin` ← `ds_obj_rw_handler`), daos-operator#28 |
+| 객체 쓰기(수정 후) | **성공** — PUT 8 MiB 1.50s, GET md5 일치, 동시 PUT 24개·같은 키 6개 전부 성공, 엔진 무사 |
 
 엔진이 죽어도 서버 파드를 재시작하면 rank 가 재조인하고 **풀과 기존 PV 데이터는 무사했다**(md5 동일).
-객체 크기와 무관(8 MiB·10 byte 동일). 게이트웨이 없이 순수 DAOS API 로 같은 컨테이너에 KV put/get(없는 키 포함)을
-해보면 멀쩡하고, 같은 풀의 dfuse POSIX 쓰기도 정상이라 트리거는 게이트웨이의 객체 쓰기 시퀀스에 있다.
+**원인**: 조건부 KV 수정(`DAOS_COND_KEY_INSERT`/`_REMOVE`)을 **명시적 트랜잭션(`daos_tx_open`) 안에서** 실행하면
+엔진이 죽는다. 조건 플래그 단독도 트랜잭션 단독도 정상이고 조합만 죽는다 — 게이트웨이 없이 재현된다
+(`hack/repro/txmode.c`). 포크의 `ReleasePublicationLock` 이 그 조합을 쓰고 있었다(acquire 는 `DAOS_TX_NONE` 이라
+버킷 조작은 멀쩡했다). 트랜잭션 안에서 조건 플래그를 빼면 해결되고, 트랜잭션이 이미 원자성을 준다.
