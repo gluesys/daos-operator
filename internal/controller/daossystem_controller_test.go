@@ -208,6 +208,15 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(c).NotTo(BeNil())
 		Expect(c.Reason).To(Equal("NoNodes"), "envtest runs no DaemonSet controller, so desired stays 0")
 
+		// pod-network clients (chart-deployed pods that cannot ask for hostNetwork)
+		sys = getSys()
+		sys.Spec.ClientAgent.HostNetwork = ptr.To(false)
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeFalse())
+		Expect(ds.Spec.Template.Spec.DNSPolicy).To(Equal(corev1.DNSClusterFirst))
+
 		// switching it off removes the DaemonSet
 		sys = getSys()
 		sys.Spec.ClientAgent.Enabled = false

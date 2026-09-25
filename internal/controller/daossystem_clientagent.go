@@ -36,6 +36,11 @@ import (
 // clientAgentName is the DaemonSet (and its pods' label) for spec.clientAgent.
 func clientAgentName(sys *daosv1alpha1.DaosSystem) string { return sys.Name + "-agent" }
 
+// clientAgentHostNetwork is spec.clientAgent.hostNetwork with its default of true.
+func clientAgentHostNetwork(sys *daosv1alpha1.DaosSystem) bool {
+	return sys.Spec.ClientAgent.HostNetwork == nil || *sys.Spec.ClientAgent.HostNetwork
+}
+
 // clientAgentSocketDir is where the node-level agent publishes its socket on the host.
 func clientAgentSocketDir(sys *daosv1alpha1.DaosSystem) string {
 	if d := sys.Spec.ClientAgent.HostSocketDir; d != "" {
@@ -64,10 +69,15 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		pod := &ds.Spec.Template.Spec
 		pod.NodeSelector = sys.Spec.ClientAgent.NodeSelector
 		pod.Tolerations = sys.Spec.ClientAgent.Tolerations
-		// the agent enumerates the host's fabric, and its clients must see the
-		// same interfaces: hostNetwork on both sides
-		pod.HostNetwork = true
-		pod.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+		// the agent enumerates the fabric of the namespace it runs in, and its
+		// clients must see the same interfaces: host namespace for hostNetwork
+		// clients, pod namespace for ordinary pods (see ClientAgentSpec)
+		pod.HostNetwork = clientAgentHostNetwork(sys)
+		if pod.HostNetwork {
+			pod.DNSPolicy = corev1.DNSClusterFirstWithHostNet
+		} else {
+			pod.DNSPolicy = corev1.DNSClusterFirst
+		}
 		pod.PriorityClassName = "system-node-critical"
 		pod.Volumes = []corev1.Volume{
 			{Name: "agentcfg", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -120,7 +130,8 @@ func (r *DaosSystemReconciler) setClientAgentCondition(ctx context.Context, sys 
 		setCond(status, daosv1alpha1.ConditionClientAgent, metav1.ConditionFalse, "Starting", fmt.Sprintf("%d/%d node agent(s) ready", ready, desired))
 	default:
 		setCond(status, daosv1alpha1.ConditionClientAgent, metav1.ConditionTrue, "Ready",
-			fmt.Sprintf("%d node agent(s); clients mount hostPath %s as %s", ready, clientAgentSocketDir(sys), agentSocketDir))
+			fmt.Sprintf("%d node agent(s), %s; clients mount hostPath %s as %s", ready,
+				map[bool]string{true: "host network", false: "pod network"}[clientAgentHostNetwork(sys)], clientAgentSocketDir(sys), agentSocketDir))
 	}
 	return nil
 }

@@ -217,9 +217,15 @@ type UpgradeStatus struct {
 // its socket on the host, so any pod on that node -- a vLLM server with the
 // LMCache DAOS connector, a custom libdaos client -- can talk to the system
 // by mounting one hostPath, without carrying an agent sidecar of its own.
-// This is DAOS's own deployment model (one agent per host). The pod still
-// has to run with hostNetwork: the agent hands out the host's fabric
-// interface name, which does not exist inside a pod network namespace.
+// This is DAOS's own deployment model (one agent per host).
+//
+// The agent hands its clients the name of a fabric interface it can see, so
+// agent and client must share a network namespace: with HostNetwork (the
+// default) the clients are hostNetwork pods (CSI node plugin, S3 gateway);
+// with HostNetwork false the agent lives in the pod network and serves
+// ordinary pods (e.g. a vLLM Deployment from the production-stack chart,
+// which cannot ask for hostNetwork). In that case spec.client.includeFabricIfaces
+// has to list the pod interface as well (eth0 under flannel).
 type ClientAgentSpec struct {
 	// Enabled deploys the DaemonSet. Default false: it needs a NodeSelector
 	// that names the client nodes, or it would land on every node.
@@ -230,6 +236,9 @@ type ClientAgentSpec struct {
 	// HostSocketDir is the host directory that receives daos_agent.sock.
 	// Default /var/run/daos_agent/<system name>, so several systems can share a node.
 	HostSocketDir string `json:"hostSocketDir,omitempty"`
+	// HostNetwork runs the agent in the host network namespace (default true).
+	// Set false to serve pod-network clients; see the type comment.
+	HostNetwork *bool `json:"hostNetwork,omitempty"`
 }
 
 // ClientSpec tunes the daos_agent config that every DAOS client uses (the CSI
