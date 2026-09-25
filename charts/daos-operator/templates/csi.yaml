@@ -182,7 +182,7 @@ spec:
         - name: daos-csi
           image: {{ $img }}
           imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
-          args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--driver-name={{ .Values.csi.driverName }}", "--v=2"]
+          args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--kubelet-dir={{ .Values.csi.kubeletDir }}", "--driver-name={{ .Values.csi.driverName }}", "--v=2"]
           env:
             - name: NODE_ID
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
