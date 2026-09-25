@@ -65,6 +65,10 @@ func (r *DaosSystemReconciler) reconcileExternal(ctx context.Context, sys *daosv
 		"daos_control.yml": render.Control(systemName(sys), addrs, controlPortOf(sys), sys.Spec.AllowInsecure)}); err != nil {
 		return ctrl.Result{}, err
 	}
+	// per-node client agents for pods that bring no sidecar of their own
+	if err := r.setClientAgentCondition(ctx, sys, ns, &status); err != nil {
+		return ctrl.Result{}, err
+	}
 	setCond(&status, daosv1alpha1.ConditionConfigRendered, metav1.ConditionTrue, "ExternalClientConfig",
 		fmt.Sprintf("agent and control config for management service %s", strings.Join(addrs, ",")))
 

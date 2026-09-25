@@ -79,6 +79,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		}
 		// envtest has no GC: remove ConfigMaps ourselves
 		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-hostprep"}})
+		_ = k8sClient.Delete(ctx, &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-agent"}})
 		_ = k8sClient.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-metrics"}})
 		_ = k8sClient.Delete(ctx, &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-certs"}})
 		stss := &appsv1.StatefulSetList{}
@@ -180,6 +181,39 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(ds.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "DAOS_HOSTPREP_BIND_NVME", Value: "false"}), "discover-only by default")
 		Expect(ds.OwnerReferences).To(HaveLen(1))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "daos-hostprep"}, &corev1.ServiceAccount{})).To(Succeed())
+	})
+
+	It("runs one client agent per selected node when spec.clientAgent is on", func() {
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
+		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true, NodeSelector: map[string]string{"daos.gluesys.com/gpu": "true"}}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.NodeSelector).To(HaveKeyWithValue("daos.gluesys.com/gpu", "true"))
+		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeTrue(), "the agent hands out host interface names")
+		var sock *corev1.HostPathVolumeSource
+		for _, v := range ds.Spec.Template.Spec.Volumes {
+			if v.Name == "agentsock" {
+				sock = v.HostPath
+			}
+		}
+		Expect(sock).NotTo(BeNil())
+		Expect(sock.Path).To(Equal("/var/run/daos_agent/t1"), "one directory per system so nodes can serve several")
+		Expect(*sock.Type).To(Equal(corev1.HostPathDirectoryOrCreate))
+		Expect(ds.Spec.Template.Spec.Containers[0].Image).To(Equal(sys.Spec.Images.Agent))
+		Expect(ds.OwnerReferences).To(HaveLen(1))
+		c := cond(getSys(), daosv1alpha1.ConditionClientAgent)
+		Expect(c).NotTo(BeNil())
+		Expect(c.Reason).To(Equal("NoNodes"), "envtest runs no DaemonSet controller, so desired stays 0")
+
+		// switching it off removes the DaemonSet
+		sys = getSys()
+		sys.Spec.ClientAgent.Enabled = false
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, &appsv1.DaemonSet{})).NotTo(Succeed())
 	})
 
 	It("creates one pinned server StatefulSet per rendered node (#9)", func() {

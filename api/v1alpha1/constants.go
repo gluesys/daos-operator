@@ -95,6 +95,8 @@ const (
 	ConditionFormatted = "Formatted"
 	// ConditionTelemetry reports the metrics Service / ServiceMonitor state.
 	ConditionTelemetry = "Telemetry"
+	// ConditionClientAgent reports the per-node client agent DaemonSet.
+	ConditionClientAgent = "ClientAgent"
 	// ConditionCertificates reports the transport-certificate Secret (Generated/Valid/ExpiringSoon/Invalid/Insecure).
 	ConditionCertificates = "Certificates"
 	// ConditionUpgrading is True while the full-stop upgrade runs; False with

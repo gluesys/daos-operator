@@ -15,6 +15,10 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
 
 ## 상태
 - Phase 0: kubebuilder v4 뼈대, CRD 3종(kind·envtest 검증).
+- **Phase 3 #25 (2026-09-26): 노드 단위 클라이언트 agent `spec.clientAgent`.** 선택한 노드마다 daos_agent DaemonSet 을 띄우고 소켓을
+  hostPath(`/var/run/daos_agent/<system>`)로 공개한다. 사이드카를 못 넣는 파드(vLLM production-stack 차트 등)가 hostPath 하나로 DAOS 에
+  붙는다 — DAOS 본래의 "호스트당 agent 하나" 모델이다. agent 가 호스트 인터페이스 이름을 돌려주므로 클라이언트 파드도 hostNetwork 여야 한다.
+  조건 `ClientAgent`.
 - **Phase 3 #24 (2026-09-23): S3 게이트웨이 `S3Service`(ADR-004).** `spec.poolRef` 로 `DaosPool` 을 가리키면 versitygw-daos Deployment +
   Service 를 만들고 `--pool`/`--system`, daos_agent 네이티브 사이드카, agent ConfigMap, 인증서를 operator 가 채운다. 데이터 경로는 libdfs
   직결이라 PV 도 dfuse 도 쓰지 않는다. 루트 키는 Secret(`accessKey`/`secretKey`)으로만 받고, 내부 IAM 이 emptyDir 이면 `IAMDurable=False`
