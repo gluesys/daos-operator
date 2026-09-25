@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# LMCache configuration for the DAOS remote backend (lmcache-daos, in-process
+# connector). Mounted into the vLLM pod and selected with LMCACHE_CONFIG_FILE.
+# One S3-style URL names the pool and container; the container is the
+# DaosContainer `kvlmc` (POSIX, chunk 4 MiB) the operator created in podpool.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: lmcache-daos-config
+  namespace: daos-system
+data:
+  lmcache_daos.yaml: |
+    chunk_size: 256
+    remote_url: "plugin://daos/podpool/kvlmc?sys=daos_k8s"
+    remote_serde: "naive"
+    remote_storage_plugins: ["daos"]
+    extra_config:
+      remote_storage_plugin.daos.module_path: lmcache_daos.connector
+      remote_storage_plugin.daos.class_name: DaosConnector

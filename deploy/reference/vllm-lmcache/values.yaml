@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# vLLM production-stack values: one vLLM server whose LMCache remote backend is
+# a DAOS container (daos-operator #25). Everything DAOS-specific is three
+# things the chart already lets us set: the image, a hostPath to the node's
+# daos_agent socket (spec.clientAgent, pod-network mode) and the LMCache config
+# ConfigMap. The chart's own lmcacheConfig stays off: it would add its own
+# --kv-transfer-config and LMCACHE_* env; we pass ours explicitly instead.
+#
+#   helm repo add vllm https://vllm-project.github.io/production-stack
+#   helm install vllm-daos vllm/vllm-stack -n daos-system -f values.yaml
+servingEngineSpec:
+  runtimeClassName: ""
+  modelSpec:
+    - name: "llama31-8b-daos"
+      repository: "registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos"
+      tag: "0.30.0-0.5.5-20260926"
+      # a local snapshot on the GPU node (cxl2:/mnt/nvme1/hf_cache); the pod
+      # sees it through the hostPath below, offline
+      modelURL: "meta-llama/Llama-3.1-8B-Instruct"
+      replicaCount: 1
+      requestCPU: 8
+      requestMemory: "32Gi"
+      requestGPU: 1
+      vllmConfig:
+        dtype: "bfloat16"
+        maxModelLen: 16384
+        gpuMemoryUtilization: "0.45"     # the node also serves a demo (22 GB); 48 GB card
+        extraArgs:
+          - "--kv-transfer-config"
+          - '{"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}'
+      env:
+        - name: LMCACHE_CONFIG_FILE
+          value: /etc/lmcache/lmcache_daos.yaml
+        - name: DAOS_AGENT_DRPC_DIR
+          value: /var/run/daos_agent
+        - name: PYTHONHASHSEED          # lmcache-daos: stable hashes across processes
+          value: "0"
+        - name: HF_HOME
+          value: /data/hf_cache
+        - name: HF_HUB_OFFLINE
+          value: "1"
+      extraVolumes:
+        - name: daos-agent-sock
+          hostPath:
+            path: /var/run/daos_agent/daos-k8s   # spec.clientAgent.hostSocketDir default
+            type: Directory
+        - name: lmcache-config
+          configMap:
+            name: lmcache-daos-config
+        - name: hf-cache
+          hostPath:
+            path: /mnt/nvme1/hf_cache
+            type: Directory
+      extraVolumeMounts:
+        - name: daos-agent-sock
+          mountPath: /var/run/daos_agent
+        - name: lmcache-config
+          mountPath: /etc/lmcache
+          readOnly: true
+        - name: hf-cache
+          mountPath: /data/hf_cache
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: daos.gluesys.com/gpu
+              operator: In
+              values: ["true"]
+      lmcacheConfig:
+        enabled: false
+routerSpec:
+  enabled: false
