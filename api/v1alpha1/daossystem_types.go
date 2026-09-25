@@ -225,7 +225,7 @@ type ClientAgentSpec struct {
 	// that names the client nodes, or it would land on every node.
 	Enabled bool `json:"enabled,omitempty"`
 	// NodeSelector picks the client nodes (e.g. daos.gluesys.com/client-agent: "true").
-	NodeSelector map[string]string  `json:"nodeSelector,omitempty"`
+	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
 	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
 	// HostSocketDir is the host directory that receives daos_agent.sock.
 	// Default /var/run/daos_agent/<system name>, so several systems can share a node.
