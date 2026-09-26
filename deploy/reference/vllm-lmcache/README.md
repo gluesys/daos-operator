@@ -22,6 +22,32 @@ production-stack 차트에는 hostNetwork 도, 재시작되는(native) 사이드
 네트워크에 있어야 한다(`eth0`). 그래서 `spec.client.includeFabricIfaces` 에 `eth0` 를 넣고
 `spec.clientAgent.hostNetwork: false` 로 둔다. 엔진(hostNetwork)은 flannel 을 통해 파드 IP 에 닿는다.
 
+## 노드 선행 조건 (실측으로 드러난 것)
+
+GPU 노드(현재 cxl2)에서 **호스트 설정 두 가지**가 먼저다. 둘 다 컨테이너 재시작을 동반하므로 장비 소유자와 맞춘다.
+
+1. **GPU 를 CRI-O 에 알리기.** CRI-O 1.31 은 `cdi.k8s.io/*` 애너테이션을 **무시한다**(실측: 애너테이션을 단 파드에
+   `/dev/nvidia*` 도 NVML 도 들어오지 않았고 crio 로그에 CDI 처리 흔적이 없다). CDI 스펙(`/etc/cdi/nvidia.yaml`)이
+   등록돼 있어도 마찬가지다. 문서화된 경로인 nvidia 런타임 핸들러를 쓴다:
+   ```bash
+   nvidia-ctk runtime configure --runtime=crio      # /etc/crio/crio.conf.d 에 nvidia 핸들러 추가
+   systemctl restart crio
+   ```
+   클러스터 쪽 `RuntimeClass nvidia` 와 `servingEngineSpec.runtimeClassName: nvidia` 는 이미 준비돼 있다.
+   nvidia device plugin DaemonSet 도 같은 RuntimeClass 를 쓴다(이것이 없으면 NVML 을 못 봐 CrashLoop 한다).
+
+2. **컨테이너 저장소에 여유.** 서빙 이미지는 on-disk 약 10 GB 다. cxl2 루트는 70 GB 라 podman/CRI-O 가 공유하는
+   `/var/lib/containers`(18 GB)와 함께 두면 풀 도중 `disk-pressure` taint 가 걸려 아무 것도 스케줄되지 않는다.
+   `/mnt/nvme1`(1.3 TB)로 옮긴다:
+   ```bash
+   systemctl stop kubelet crio; podman stop --all
+   rsync -aHAX /var/lib/containers/ /mnt/nvme1/containers/
+   sed -i 's|graphroot = "/var/lib/containers/storage"|graphroot = "/mnt/nvme1/containers/storage"|' /etc/containers/storage.conf
+   mv /var/lib/containers /var/lib/containers.old && mkdir /var/lib/containers
+   systemctl start crio kubelet; podman start <원래 컨테이너들>
+   # 확인 후 rm -rf /var/lib/containers.old
+   ```
+
 ## 순서
 
 1. GPU 노드를 클러스터에 넣고 라벨: `kubectl label node <gpu-node> daos.gluesys.com/gpu=true`

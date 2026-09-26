@@ -11,7 +11,10 @@
 #   helm repo add vllm https://vllm-project.github.io/production-stack
 #   helm install vllm-daos vllm/vllm-stack -n daos-system -f values.yaml
 servingEngineSpec:
-  runtimeClassName: ""
+  # CRI-O 는 cdi.k8s.io/* 애너테이션을 무시한다(실측). GPU 는 nvidia 런타임
+  # 핸들러로 준다: 노드에 `nvidia-ctk runtime configure --runtime=crio` +
+  # crio 재시작, 클러스터에 RuntimeClass "nvidia".
+  runtimeClassName: "nvidia"
   modelSpec:
     - name: "llama31-8b-daos"
       repository: "registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos"
