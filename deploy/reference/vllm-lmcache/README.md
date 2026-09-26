@@ -44,9 +44,22 @@ GPU 노드(현재 cxl2)에서 **호스트 설정 두 가지**가 먼저다. 둘 
    rsync -aHAX /var/lib/containers/ /mnt/nvme1/containers/
    sed -i 's|graphroot = "/var/lib/containers/storage"|graphroot = "/mnt/nvme1/containers/storage"|' /etc/containers/storage.conf
    mv /var/lib/containers /var/lib/containers.old && mkdir /var/lib/containers
-   systemctl start crio kubelet; podman start <원래 컨테이너들>
+
+   # podman 은 DB 에 static_dir 경로를 박아두고 기동 때 대조한다. graphroot 만
+   # 옮기면 "database configuration mismatch" 로 컨테이너를 못 띄운다(실측).
+   # 옛 경로를 그대로 쓰도록 고정하고, 원본 DB 를 그 자리에 둔다.
+   mkdir -p /var/lib/containers/storage/libpod /etc/containers/containers.conf.d
+   printf '[engine]\nstatic_dir = "/var/lib/containers/storage/libpod"\n' \
+     > /etc/containers/containers.conf.d/99-static-dir.conf
+   cp -a /mnt/nvme1/containers/storage/db.sql /var/lib/containers/storage/libpod/db.sql
+
+   systemctl start crio kubelet
+   podman ps -a                       # 원래 컨테이너들이 보여야 한다
+   podman start <원래 컨테이너들>
    # 확인 후 rm -rf /var/lib/containers.old
    ```
+   CRI-O 는 이 문제가 없다(자체 DB 를 쓰지 않는다). 이미지와 레이어는 양쪽이 공유하므로
+   한 번만 옮기면 된다.
 
 ## 순서
 
