@@ -15,6 +15,9 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
 
 ## 상태
 - Phase 0: kubebuilder v4 뼈대, CRD 3종(kind·envtest 검증).
+- **Phase 3 #25 (2026-09-27): vLLM KV 캐시를 DAOS 로.** 차트의 `vllm.services[]` 로 vLLM+LMCache 서빙 파드와 LMCache 설정을
+  함께 올린다. 파드 재시작으로 로컬 캐시를 버린 뒤에도 DAOS 에서 KV 를 복원하는 것을 실장비에서 확인했다.
+  **GPU 환경별 배포 가이드는 `doc/deploy-gpu-k8s.md`**(GPU Operator / device plugin 단독 / 관리형 쿠버네티스, 함정과 검증 절차).
 - **Phase 3 #25 (2026-09-26): 노드 단위 클라이언트 agent `spec.clientAgent`.** 선택한 노드마다 daos_agent DaemonSet 을 띄우고 소켓을
   hostPath(`/var/run/daos_agent/<system>`)로 공개한다. 사이드카를 못 넣는 파드(vLLM production-stack 차트 등)가 hostPath 하나로 DAOS 에
   붙는다 — DAOS 본래의 "호스트당 agent 하나" 모델이다. agent 가 호스트 인터페이스 이름을 돌려주므로 클라이언트 파드도 hostNetwork 여야 한다.

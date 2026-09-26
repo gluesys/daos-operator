@@ -48,5 +48,12 @@ S3 gateway {{ .name }}: kubectl -n {{ $.Values.system.spec.namespace | default "
 {{- end }}
 {{- end }}
 
+{{- range .Values.vllm.services }}
+
+vLLM {{ .name }}: kubectl -n {{ $.Values.system.spec.namespace | default "daos-system" }} logs -l app={{ .name }} | grep -E "Creating connector|Stored|hit tokens"
+  hostNetwork 라 노드의 {{ .port | default 8100 }} 포트로 열린다. 배포·검증 절차는 doc/deploy-gpu-k8s.md.
+  GPU 노드에 DaosSystem spec.clientAgent 가 켜져 있어야 한다(agent 소켓 {{ .agentSocketHostPath | default "/var/run/daos_agent" }}).
+{{- end }}
+
 CRDs live in crds/ and are installed on first install only; on chart upgrades apply them with
   kubectl apply --server-side -f charts/daos-operator/crds/

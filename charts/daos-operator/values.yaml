@@ -108,6 +108,39 @@ csi:
   #    reclaimPolicy: Delete
   #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
 
+# vLLM serving with LMCache writing its KV cache to a DAOS container.
+# This is a reference workload, not part of the storage layer: it is here so a
+# GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md.
+#
+# The pod runs with hostNetwork because a DAOS client must be reachable at the
+# address it advertises; a pod-network client behind the CNI's masquerade is
+# not (that is also why spec.clientAgent must be enabled on the GPU nodes).
+vllm:
+  services: []
+  #  - name: vllm-daos
+  #    image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20260927
+  #    # KV cache target: an existing DaosPool and DaosContainer (POSIX, chunk 4 MiB)
+  #    poolRef: podpool
+  #    containerRef: kvlmc
+  #    systemName: daos_k8s          # DaosSystem spec.systemName; omit for the client default
+  #    agentSocketHostPath: /var/run/daos_agent/daos-k8s   # spec.clientAgent's socket dir
+  #    model:
+  #      path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f2
+  #      servedName: llama31-8b-daos
+  #      cacheHostPath: /mnt/nvme1/hf_cache    # mounted at /data/hf_cache
+  #    port: 8100                    # host port: hostNetwork, so it must be free on the node
+  #    gpus: 1
+  #    gpuMemoryUtilization: "0.90"  # lower it when something else shares the GPU
+  #    maxModelLen: 16384
+  #    dtype: bfloat16
+  #    runtimeClassName: nvidia      # GPU Operator / nvidia-container-toolkit on CRI-O
+  #    nodeSelector: {"nvidia.com/gpu.present": "true"}
+  #    # tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
+  #    imagePullSecret: ""
+  #    resources: {requests: {cpu: "8", memory: 32Gi}}
+  #    extraArgs: []                 # more vllm serve flags
+  #    extraEnv: []
+
 # S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry.
 # The operator supplies --pool/--system, the daos_agent sidecar and the certificates;
 # see doc/adr/ADR-004-s3-gateway.md.

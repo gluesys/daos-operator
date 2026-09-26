@@ -1,0 +1,151 @@
+{{- /*
+SPDX-License-Identifier: Apache-2.0
+Copyright 2026 Gluesys Co., Ltd.
+
+Reference serving workload: vLLM + LMCache with a DAOS container as the KV
+cache (doc/deploy-gpu-k8s.md). One Deployment + Service + LMCache ConfigMap per
+entry in .Values.vllm.services.
+
+hostNetwork is not optional: daos_agent hands the client an interface name and
+the servers must be able to reach the client at the address it advertises. A
+pod-network client sits behind the CNI's masquerade, so its advertised address
+does not match its source address and every RPC ends in DER_TIMEDOUT.
+*/}}
+{{- range .Values.vllm.services }}
+{{- $ns := $.Values.system.spec.namespace | default "daos-system" }}
+{{- $port := .port | default 8100 }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .name }}-lmcache
+  namespace: {{ $ns }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+data:
+  lmcache_daos.yaml: |
+    chunk_size: 256
+    remote_url: "plugin://daos/{{ required "vllm.services[].poolRef is required" .poolRef }}/{{ required "vllm.services[].containerRef is required" .containerRef }}{{ if .systemName }}?sys={{ .systemName }}{{ end }}"
+    remote_serde: "naive"
+    remote_storage_plugins: ["daos"]
+    extra_config:
+      remote_storage_plugin.daos.module_path: lmcache_daos.connector
+      remote_storage_plugin.daos.class_name: DaosConnector
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+    app: {{ .name }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app: {{ .name }}}
+  template:
+    metadata:
+      labels:
+        {{- include "daos-operator.labels" $ | nindent 8 }}
+        app: {{ .name }}
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .imagePullSecret }}
+      imagePullSecrets:
+        - name: {{ . }}
+      {{- end }}
+      containers:
+        - name: vllm
+          image: {{ required "vllm.services[].image is required" .image }}
+          command: ["python3.12", "-m", "vllm.entrypoints.openai.api_server"]
+          args:
+            - --model={{ required "vllm.services[].model.path is required" .model.path }}
+            {{- with .model.servedName }}
+            - --served-model-name={{ . }}
+            {{- end }}
+            - --host=0.0.0.0
+            - --port={{ $port }}
+            - --dtype={{ .dtype | default "bfloat16" }}
+            - --max-model-len={{ .maxModelLen | default 16384 }}
+            - --gpu-memory-utilization={{ .gpuMemoryUtilization | default "0.90" }}
+            - --kv-transfer-config={"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}
+            {{- range .extraArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - {name: LMCACHE_CONFIG_FILE, value: /etc/lmcache/lmcache_daos.yaml}
+            - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
+            # lmcache-daos keys are hashed per process; they must match across restarts
+            - {name: PYTHONHASHSEED, value: "0"}
+            # no CUDA toolchain in the image: the flashinfer sampler would try to JIT-compile
+            - {name: VLLM_USE_FLASHINFER_SAMPLER, value: "0"}
+            {{- if .model.cacheHostPath }}
+            - {name: HF_HOME, value: /data/hf_cache}
+            - {name: HF_HUB_OFFLINE, value: "1"}
+            {{- end }}
+            {{- with .extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - {name: http, containerPort: {{ $port }}}
+          resources:
+            limits:
+              nvidia.com/gpu: {{ .gpus | default 1 }}
+            {{- with .resources }}
+            {{- if .requests }}
+            requests:
+              {{- toYaml .requests | nindent 14 }}
+            {{- end }}
+            {{- end }}
+          volumeMounts:
+            - {name: agent-sock, mountPath: /var/run/daos_agent}
+            - {name: lmcache-config, mountPath: /etc/lmcache, readOnly: true}
+            {{- if .model.cacheHostPath }}
+            - {name: hf-cache, mountPath: /data/hf_cache}
+            {{- end }}
+            - {name: shm, mountPath: /dev/shm}
+          readinessProbe:
+            httpGet: {path: /health, port: {{ $port }}}
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 60
+      volumes:
+        - name: agent-sock
+          hostPath:
+            path: {{ .agentSocketHostPath | default "/var/run/daos_agent" }}
+            type: Directory
+        - name: lmcache-config
+          configMap: {name: {{ .name }}-lmcache}
+        {{- if .model.cacheHostPath }}
+        - name: hf-cache
+          hostPath: {path: {{ .model.cacheHostPath }}, type: Directory}
+        {{- end }}
+        - name: shm
+          emptyDir: {medium: Memory, sizeLimit: 8Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+spec:
+  selector: {app: {{ .name }}}
+  ports:
+    - {name: http, port: {{ $port }}, targetPort: {{ $port }}}
+---
+{{- end }}

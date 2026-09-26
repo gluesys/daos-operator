@@ -1,6 +1,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
+> **먼저 읽을 것: [`doc/deploy-gpu-k8s.md`](../../../doc/deploy-gpu-k8s.md)** — GPU 환경별 배포 가이드다.
+> 차트로 설치하려면 `vllm.services[]` 를 쓰면 되고, 이 디렉터리의 매니페스트는 차트를 쓰지 않을 때의 원본이다.
+
 # 참조 배포: vLLM production-stack + LMCache + DAOS (#25)
 
 vLLM 이 생성한 KV 캐시를 LMCache 가 DAOS 컨테이너에 내리는 구성이다. 데이터 경로는
