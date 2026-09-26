@@ -203,6 +203,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sock.Path).To(Equal("/var/run/daos_agent/t1"), "one directory per system so nodes can serve several")
 		Expect(*sock.Type).To(Equal(corev1.HostPathDirectoryOrCreate))
 		Expect(ds.Spec.Template.Spec.Containers[0].Image).To(Equal(sys.Spec.Images.Agent))
+		// a socket file left on the hostPath by a previous agent blocks the new
+		// one for good ("dRPC socket file is already in use")
+		Expect(ds.Spec.Template.Spec.InitContainers).To(HaveLen(1))
+		Expect(strings.Join(ds.Spec.Template.Spec.InitContainers[0].Command, " ")).To(ContainSubstring("rm -f /var/run/daos_agent/daos_agent.sock"))
 		Expect(ds.OwnerReferences).To(HaveLen(1))
 		c := cond(getSys(), daosv1alpha1.ConditionClientAgent)
 		Expect(c).NotTo(BeNil())

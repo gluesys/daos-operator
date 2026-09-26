@@ -106,6 +106,18 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 				Secret: &corev1.SecretVolumeSource{SecretName: s, DefaultMode: ptr.To(int32(0o400))}}})
 			c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "certs", MountPath: "/etc/daos/certs", ReadOnly: true})
 		}
+		// The socket lives on a hostPath, so a socket file from a previous agent
+		// survives the pod and daos_agent then refuses to start with "Configured
+		// dRPC socket file is already in use" -- permanently, after any node or
+		// runtime restart (cxl2, 2026-09-27). Remove a stale one first; a live
+		// agent on the same directory would already be a misconfiguration.
+		pod.InitContainers = []corev1.Container{{
+			Name:            "clean-socket",
+			Image:           sys.Spec.Images.Agent,
+			ImagePullPolicy: corev1.PullIfNotPresent,
+			Command:         []string{"sh", "-c", "rm -f " + agentSocketDir + "/daos_agent.sock"},
+			VolumeMounts:    []corev1.VolumeMount{{Name: "agentsock", MountPath: agentSocketDir}},
+		}}
 		pod.Containers = []corev1.Container{c}
 		return controllerutil.SetControllerReference(sys, ds, r.Scheme)
 	})
