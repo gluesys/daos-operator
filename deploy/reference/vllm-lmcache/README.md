@@ -13,9 +13,36 @@ vLLM 이 생성한 KV 캐시를 LMCache 가 DAOS 컨테이너에 내리는 구�
 | 노드 단위 agent | `daos-k8s-agent` DaemonSet, **파드 네트워크**, 소켓 hostPath `/var/run/daos_agent/daos-k8s` | `spec.clientAgent{enabled, hostNetwork: false, nodeSelector: daos.gluesys.com/gpu=true}` |
 | 서빙 이미지 | `vllm-lmcache-daos:0.30.0-0.5.5-20260926` (daos-client + vllm 0.30.0 + lmcache 0.5.5 + lmcache-daos) | exastor/daos-images |
 | LMCache 설정 | `lmcache-config.yaml` (ConfigMap) | 이 디렉터리 |
-| vLLM 파드 | production-stack 차트 + `values.yaml` | 이 디렉터리 |
+| vLLM 파드 | `vllm-daos-deployment.yaml` (hostNetwork) | 이 디렉터리 |
+| (참고) production-stack 차트 | `values.yaml` — **현재는 못 쓴다**, 아래 참조 | 이 디렉터리 |
 
-## 왜 agent 가 파드 네트워크인가
+## 검증 결과 (2026-09-27, cxl2 + daos_k8s)
+
+| 단계 | 결과 |
+|---|---|
+| 1회차(콜드) | `Stored 1024 of 1024 tokens, 0.125 GB` — DAOS 풀 사용량 2% → 9% |
+| **파드 재시작 후 2회차** | **`LMCache hit tokens: 1024`, `Retrieved 1024 of 1024`** — 로컬 캐시가 없는 상태에서 DAOS 에서 복원 |
+
+## 왜 hostNetwork 인가 (파드 네트워크는 안 된다)
+
+daos_agent 는 자기가 보는 인터페이스 이름을 클라이언트에 건네고, 클라이언트는 **자기가 알린 주소로 서버가 닿을 수
+있어야** 한다. 파드 네트워크에서는 flannel 이 `-s 10.244.0.0/16 -j MASQUERADE` 로 노드 IP 마스커레이드를 하므로
+알린 주소와 실제 출발지가 어긋나고, 클라이언트는 `crt_proto_query()` 에서 `DER_TIMEDOUT` 으로 끝난다(실측).
+같은 시스템에 **hostNetwork 로는 교차 노드 접속이 정상 동작한다**. CSI 노드 플러그인과 S3 게이트웨이가
+hostNetwork 인 것도 같은 이유다.
+
+그래서 `spec.clientAgent.hostNetwork` 는 기본값(true) 그대로 두고, vLLM 파드도 hostNetwork 로 띄운다.
+**vLLM production-stack 차트는 hostNetwork 를 지원하지 않아 현재 이 조합에 쓸 수 없다**(`values.yaml` 은
+차트가 hostNetwork 를 지원하게 되면 쓸 수 있도록 남겨둔다). 상류에 옵션 추가를 제안할 만하다.
+
+## 이미지에서 걸린 것
+
+- **`which` 가 없어** flashinfer 의 CUDA 경로 탐색이 `FileNotFoundError` 로 엔진을 죽인다 → 이미지에 추가(`0.30.0-0.5.5-20260927`).
+- 이미지에 **CUDA 툴체인(nvcc)이 없어** flashinfer 샘플러가 커널 JIT 컴파일에 실패한다 →
+  `VLLM_USE_FLASHINFER_SAMPLER=0`. (sm_86 에서 성능 영향은 없다. 샘플링만 PyTorch 경로를 쓴다.)
+- 노드의 8000 포트는 다른 서비스가 쓴다 → 8100 사용. hostNetwork 라 포트가 호스트와 공유된다는 점에 주의.
+
+## (구) 왜 agent 가 파드 네트워크인가
 
 production-stack 차트에는 hostNetwork 도, 재시작되는(native) 사이드카도 넣을 자리가 없다. daos_agent 는
 자기가 보는 인터페이스 이름을 클라이언트에 건네므로, 파드 네트워크의 vLLM 을 섬기려면 agent 도 파드
