@@ -110,3 +110,21 @@
 클러스터 배포본과 동시에 같은 CR 을 재조정하고 있었다. 옛 코드가 상태를 계속 되돌려 진단을 흐렸다.
 `kubectl -n daos-system scale deploy/daos-operator --replicas=0` 으로도 재조정이 멈추지 않으면
 로컬 프로세스를 먼저 의심한다(`pgrep -af 'exe/main --metrics-bind-address'`).
+
+### 결과 (2026-09-27, 수용 기준 4/4)
+
+| 기준 | 결과 |
+|---|---|
+| 전 rank Joined | ✅ `2/2` — rank0 flexa-3423-1-b(192.168.34.22), rank1 cxl2(192.168.0.193). 두 호스트, 서로 다른 서브넷, `ofi+tcp` |
+| dfuse 왕복 | ✅ `duopool`(4 GiB, rd_fac 1, ranks 0·1) → PVC `duo-pvc`(`RP_2G1`) 에 cxl2 에서 64 MiB 쓰고 flexa-3423-1-b 에서 md5 일치 확인 (마운트 ~10초) |
+| 서버 재시작 후 풀 생존 | ✅ rank1 파드 삭제 → 재조인 `2/2`, 같은 파일 md5 일치 |
+| 타인 재현 | ✅ `DaosSystem`/`DaosPool`/`StorageClass` CR + 이 문서 |
+
+기존 워크로드(vLLM KV 캐시, S3, CSI PV 3개)는 작업 내내 유지됐다. MS 복제본은 1개(비 HA)
+그대로이며, rd_fac 1 풀은 fault domain 2개(호스트 2개)로 처음 성립했다.
+
+복구 사례 하나: 결함 2 를 고치기 전 cxl2 가 옛 슈퍼블록으로 **rank 0 을 주장하며 진짜 MS 에
+join** 을 시도하자, MS 는 그 실패를 자기 rank 0 의 사망으로 해석해 `Joined→Errored` 로 내렸고
+`podpool` 이 service rank 를 잃었다. 엔진 프로세스는 살아 있었고 `dmg system start --ranks=0`
+으로는 풀리지 않았다(컨트롤 플레인 입장에선 시작할 게 없다). **서버 파드 재시작**으로 재조인해
+복구했다 — 데이터 손실 없음. 남의 슈퍼블록을 들고 온 노드는 붙이기 전에 반드시 비울 것.
