@@ -82,3 +82,31 @@
 엔진이 죽는다. 조건 플래그 단독도 트랜잭션 단독도 정상이고 조합만 죽는다 — 게이트웨이 없이 재현된다
 (`hack/repro/txmode.c`). 포크의 `ReleasePublicationLock` 이 그 조합을 쓰고 있었다(acquire 는 `DAOS_TX_NONE` 이라
 버킷 조작은 멀쩡했다). 트랜잭션 안에서 조건 플래그를 빼면 해결되고, 트랜잭션이 이미 원자성을 준다.
+
+## 추가 기록: 2호스트 확장 시도 (2026-09-27)
+
+테스트베드 VM 두 대는 메모리가 없어 2번째 rank 를 못 띄웠다(daos-images #1). 같은 클러스터의
+워커 `cxl2`(62 GB, 192.168.0.193)를 서버 노드로 넣어 2호스트를 만들려다 operator 결함 두 개가 드러났다.
+
+준비(호스트별로 다른 것):
+- NIC 이름이 다르다 → `spec.engines[].fabricIface` 를 비우고 노드 주석 `daos.gluesys.com/fabric-iface`
+  로 내린다(`ens18` / `enp1s0f0np0`). 기존 노드는 렌더 결과가 같아 재시작하지 않는다.
+- 루트 파일시스템이 작다 → `/var/daos/<system>` 과 `/var/log/daos/<system>` 을 `/mnt/nvme1` 로
+  bind mount(fstab 등록). `dataHostPath` 는 시스템 단위라 노드별로 다르게 줄 수 없다.
+- `vm.nr_hugepages` 를 올린 뒤 **kubelet 을 재시작**해야 `hugepages-2Mi` 용량이 광고된다.
+
+결함 1 — 포맷 전 노드는 멤버 목록에 없다. `dmg system query` 는 rank 가 있는 멤버만 보여준다.
+추가된 노드는 `awaitformat` 도 아니고 아예 없으므로 `pendingFormat` 이 서지 않았고, 서더라도
+포맷 경로가 `!status.Formatted` 에 막혀 있었다. → 렌더된 노드와 멤버의 차집합으로 감지하고,
+이미 뜬 시스템이면 `dmg -l <주소> storage format` 으로 그 노드만 포맷한다.
+
+결함 2 — MS 복제본을 이름순으로 매번 다시 뽑았다. `cxl2` 가 들어오자 `mgmt_svc_replicas` 가
+`192.168.34.22` → `192.168.0.193` 으로 바뀌었고, 포맷된 cxl2 는 자기 자신을 MS 로 보고 합류 대신
+**별도 시스템을 부트스트랩**했다(로그: `MS leader running on memfs...`, `rank 0`). 동시에 데이터를
+쥔 기존 rank 의 설정도 남의 MS 를 가리키게 다시 쓰였다 — 그 파드가 재시작했다면 그대로 깨진다.
+→ `status.msReplicaNodes` 에 기록된 노드가 역할을 유지한다.
+
+운영에서 같이 배운 것: **operator 를 두 개 돌리지 말 것.** 9/22 에 띄워둔 로컬 `make run` 프로세스가
+클러스터 배포본과 동시에 같은 CR 을 재조정하고 있었다. 옛 코드가 상태를 계속 되돌려 진단을 흐렸다.
+`kubectl -n daos-system scale deploy/daos-operator --replicas=0` 으로도 재조정이 멈추지 않으면
+로컬 프로세스를 먼저 의심한다(`pgrep -af 'exe/main --metrics-bind-address'`).
