@@ -383,6 +383,31 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).To(Equal("ManagementUnreachable"))
 	})
 
+	It("keeps the management service on the node already running it when a node is added (daos-images #1)", func() {
+		reconcileOnce()
+		sys := getSys()
+		Expect(sys.Status.MsReplicaNodes).To(Equal([]string{"n1"}))
+
+		By("a node whose name sorts before the MS replica joins later")
+		mkNode(ctx, "a0", "10.0.0.9", map[string]string{
+			daosv1alpha1.AnnotationFabricIface: "eth0",
+			daosv1alpha1.AnnotationBdevList:    "0000:06:00.0",
+			daosv1alpha1.AnnotationBdevDSN:     "0000:06:00.0=DSN7"})
+		defer func() { _ = k8sClient.Delete(ctx, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "a0"}}) }()
+		reconcileOnce()
+		sys = getSys()
+		Expect(sys.Status.MsReplicaNodes).To(Equal([]string{"n1"}), "the role does not move to a node added later")
+
+		cm := &corev1.ConfigMap{}
+		for _, n := range []string{"n1", "n2", "a0"} {
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-" + n}, cm)).To(Succeed())
+			Expect(cm.Data["daos_server.yml"]).To(ContainSubstring("mgmt_svc_replicas:\n  - 10.0.0.1"),
+				n+" must point at the running MS, not at itself")
+		}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.0.0.1"))
+	})
+
 	It("formats only the node added to a system that already carries data (daos-images #1)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
 		By("a healthy two-rank system")

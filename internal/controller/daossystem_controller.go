@@ -217,15 +217,36 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		setCond(&status, daosv1alpha1.ConditionDriveConflict, metav1.ConditionFalse, "None", "no shared drives detected")
 	}
 
-	// 3. management-service replicas: first msWant healthy nodes by name (stable across reconciles)
+	// 3. management-service replicas: the ones already recorded keep the role,
+	// then the first healthy nodes by name fill the rest. Picking purely by name
+	// would hand the role to a node added later that happens to sort earlier --
+	// it would find itself in its own mgmt_svc_replicas and bootstrap a second
+	// system instead of joining, and the running ranks would be pointed at an
+	// MS that holds none of their data.
 	var msAddrs []string
+	addrOf := map[string]string{}
 	for _, f := range facts {
 		if _, bad := conflicted[f.Name]; bad {
 			continue
 		}
-		if len(msAddrs) < msWant {
+		addrOf[f.Name] = f.ControlAddr
+	}
+	taken := map[string]bool{}
+	for _, n := range sys.Status.MsReplicaNodes {
+		if a, ok := addrOf[n]; ok && !taken[n] && len(msAddrs) < msWant {
+			status.MsReplicaNodes = append(status.MsReplicaNodes, n)
+			msAddrs = append(msAddrs, a)
+			taken[n] = true
+		}
+	}
+	for _, f := range facts {
+		if taken[f.Name] || len(msAddrs) >= msWant {
+			continue
+		}
+		if a, ok := addrOf[f.Name]; ok {
 			status.MsReplicaNodes = append(status.MsReplicaNodes, f.Name)
-			msAddrs = append(msAddrs, f.ControlAddr)
+			msAddrs = append(msAddrs, a)
+			taken[f.Name] = true
 		}
 	}
 	if len(msAddrs) < msWant {
