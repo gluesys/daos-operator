@@ -349,19 +349,30 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cond(sys, daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
 		Expect(res.RequeueAfter).To(Equal(requeueMembership))
 
-		By("a rank in awaitformat (expansion) re-opens the gate; a stale approval is dropped when nothing is pending")
+		By("a rank in awaitformat (expansion) re-opens the gate and formats that rank alone")
 		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembersAwait})
 		reconcileWith(f)
 		sys = getSys()
 		Expect(sys.Status.PendingFormat).To(BeTrue())
 		Expect(sys.Status.RanksJoined).To(Equal(int32(1)))
 		Expect(cond(sys, daosv1alpha1.ConditionReady).Reason).To(Equal("RanksNotJoined"))
+		f.set("-l 10.0.0.2 storage format", &dmg.Result{Done: true, ExitCode: 0, Output: dmgFormatOK})
+		approve()
+		reconcileWith(f)
+		Expect(f.count("-l 10.0.0.2 storage format")).To(Equal(1), "only the rank awaiting format")
+		Expect(f.count("storage format")).To(Equal(1), "the first, system-wide format and no other")
+		Expect(getSys().Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved))
+
+		By("a stale approval is dropped when nothing is pending")
 		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		reconcileWith(f)
 		approve()
 		reconcileWith(f)
 		sys = getSys()
+		Expect(sys.Status.PendingFormat).To(BeFalse())
 		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved))
 		Expect(f.count("storage format")).To(Equal(1))
+		Expect(f.count("-l 10.0.0.2 storage format")).To(Equal(1))
 
 		By("an unreachable management service leaves the last known state and says Unknown")
 		f.set("system query -v", &dmg.Result{Done: true, ExitCode: 1, Output: dmgUnreachable})
@@ -370,6 +381,59 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sys.Status.Formatted).To(BeTrue())
 		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Status).To(Equal(metav1.ConditionUnknown))
 		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).To(Equal("ManagementUnreachable"))
+	})
+
+	It("formats only the node added to a system that already carries data (daos-images #1)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		By("a healthy two-rank system")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		sys := getSys()
+		Expect(sys.Status.Formatted).To(BeTrue())
+		Expect(sys.Status.PendingFormat).To(BeFalse())
+		Expect(sys.Status.RanksJoined).To(Equal(int32(2)))
+
+		By("n3 gets its facts: we render a server for it, but dmg cannot see it -- it has no rank yet")
+		n3 := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "n3"}, n3)).To(Succeed())
+		n3.Annotations = map[string]string{
+			daosv1alpha1.AnnotationFabricIface: "eth0",
+			daosv1alpha1.AnnotationBdevList:    "0000:05:00.0",
+			daosv1alpha1.AnnotationBdevDSN:     "0000:05:00.0=DSN9"}
+		Expect(k8sClient.Update(ctx, n3)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n1", "n2", "n3")
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.RanksTotal).To(Equal(int32(2)), "membership stays dmg's answer")
+		Expect(sys.Status.PendingFormat).To(BeTrue(), "a rendered node with no rank still needs a format")
+		c := cond(sys, daosv1alpha1.ConditionFormatted)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Message).To(ContainSubstring("not formatted yet: 10.0.0.3"))
+		Expect(c.Message).To(ContainSubstring("kubectl annotate daossystem t1"))
+		Expect(f.count("storage format")).To(BeZero(), "nothing happens without approval")
+
+		By("approval formats that address alone: the drives holding data are never in the host list")
+		f.set("-l 10.0.0.3 storage format", &dmg.Result{Done: true, ExitCode: 0, Output: dmgFormatOK})
+		approve()
+		reconcileWith(f)
+		Expect(f.count("storage format")).To(BeZero(), "never a system-wide format on a live system")
+		Expect(f.count("-l 10.0.0.3 storage format")).To(Equal(1))
+		sys = getSys()
+		Expect(sys.Status.Formatted).To(BeTrue())
+		Expect(sys.Status.PendingFormat).To(BeFalse())
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationFormatApproved), "one-shot")
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Message).To(ContainSubstring("10.0.0.3"))
+
+		By("the new rank joins and the gate closes")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers3})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.RanksJoined).To(Equal(int32(3)))
+		Expect(sys.Status.PendingFormat).To(BeFalse())
+		Expect(f.count("-l 10.0.0.3 storage format")).To(Equal(1), "no second format")
 	})
 
 	It("holds the query cadence so a finished Job does not immediately spawn the next one", func() {

@@ -129,14 +129,28 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		}
 	}
 
-	// --- format path: only after pendingFormat was observed and a human approved
-	if approved && status.PendingFormat && !status.Formatted {
+	// --- format path: only after pendingFormat was observed and a human approved.
+	// A system that is already formatted reaches here when a node was added to
+	// it: the drives of the ranks already carrying data must not be touched, so
+	// the format is restricted to the addresses that still need one.
+	needFormat := approved && status.PendingFormat
+	var only []string
+	if needFormat && status.Formatted {
+		if only = formatHosts(status); len(only) == 0 {
+			needFormat = false
+		}
+	}
+	if needFormat {
 		if !in.serversAllReady {
 			setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionFalse, "AwaitingServers",
 				"format approved but not every server pod is ready; refusing to format a partial system")
 			return requeueSlow, nil
 		}
-		res, err := r.runDmg(ctx, sys, in.ns, jobFormatSuffix, "storage", "format")
+		args := []string{"storage", "format"}
+		if len(only) > 0 {
+			args = append([]string{"-l", strings.Join(only, ",")}, args...)
+		}
+		res, err := r.runDmg(ctx, sys, in.ns, jobFormatSuffix, args...)
 		if err != nil {
 			return 0, fmt.Errorf("format job: %w", err)
 		}
@@ -155,8 +169,12 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		}
 		now := metav1.Now()
 		status.Formatted, status.PendingFormat, status.FormatTime = true, false, &now
-		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionTrue, "Formatted", "dmg storage format succeeded; querying membership")
-		r.event(sys, corev1.EventTypeNormal, "Formatted", "dmg storage format succeeded")
+		done := "dmg storage format succeeded"
+		if len(only) > 0 {
+			done += " on " + strings.Join(only, ",")
+		}
+		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionTrue, "Formatted", done+"; querying membership")
+		r.event(sys, corev1.EventTypeNormal, "Formatted", done)
 		clearProbeHold(sys.Name) // learn the membership right away
 		return requeueProbe, nil
 	}
@@ -235,9 +253,19 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		}
 	}
 	status.RanksJoined, status.RanksTotal = int32(joined), int32(len(members))
-	// ranks in awaitformat (a node added to a formatted system) need the same human gate
-	status.PendingFormat = awaiting > 0
-	setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionTrue, "Formatted", fmt.Sprintf("%d/%d ranks joined%s", joined, len(members), awaitSuffix(awaiting)))
+	// A node added to a running system needs the same human gate. It sits in
+	// awaitformat when it once had a rank; a node that never joined is absent
+	// from the member list altogether, so the member list alone cannot see it.
+	unformatted := formatHosts(status)
+	status.PendingFormat = awaiting > 0 || len(unformatted) > 0
+	msg := fmt.Sprintf("%d/%d ranks joined%s", joined, len(members), awaitSuffix(awaiting))
+	if len(unformatted) > 0 {
+		msg += "; not formatted yet: " + strings.Join(unformatted, ",")
+		if !approved {
+			msg += fmt.Sprintf(" (a human must approve: kubectl annotate daossystem %s %s=true)", sys.Name, daosv1alpha1.AnnotationFormatApproved)
+		}
+	}
+	setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionTrue, "Formatted", msg)
 	if approved && !status.PendingFormat {
 		// stale approval on a formatted system: drop it so it cannot fire later
 		if err := r.clearApproval(ctx, sys); err != nil {
@@ -270,6 +298,33 @@ func (r *DaosSystemReconciler) setProbeHold(name string, st *daosv1alpha1.DaosSy
 }
 
 func clearProbeHold(name string) { clearHold(name) }
+
+// formatHosts returns the control addresses of nodes this operator renders a
+// server for that the management service is not counting as a healthy rank:
+// members in awaitformat, and nodes that never joined (no rank, so no member
+// entry). Only these may be handed to `dmg storage format` on a system that is
+// already carrying data. Nodes whose server pod is not ready are left out --
+// formatting one that cannot answer only produces a host error.
+func formatHosts(status *daosv1alpha1.DaosSystemStatus) []string {
+	member, await := map[string]bool{}, map[string]bool{}
+	for _, r := range status.Ranks {
+		member[r.Node] = true
+		if r.State == memberAwaitFormat {
+			await[r.Node] = true
+		}
+	}
+	var out []string
+	for _, nc := range status.NodeConfigs {
+		if !nc.Ready || !nc.ServerReady || nc.ControlAddr == "" {
+			continue
+		}
+		if !member[nc.Node] || await[nc.Node] {
+			out = append(out, nc.ControlAddr)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 func awaitSuffix(n int) string {
 	if n == 0 {
