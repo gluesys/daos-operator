@@ -218,6 +218,28 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(strings.Join(f.last("-dmg-create").Command, " ")).To(ContainSubstring("rd_fac:0"))
 	})
 
+	It("passes spec.memRatioPercent to dmg so RAM stops being the ceiling on pool size (#29)", func() {
+		p := getPool()
+		p.Spec.MemRatioPercent = ptr.To(int32(10))
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).To(ContainSubstring("--mem-ratio=10%"))
+	})
+
+	It("leaves --mem-ratio off when the spec does not set it (DAOS keeps its own default)", func() {
+		p := getPool()
+		p.Spec.MemRatioPercent = nil
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("mem-ratio"))
+	})
+
 	It("does not retry a failed create until the spec changes", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
 		poolRec(f)

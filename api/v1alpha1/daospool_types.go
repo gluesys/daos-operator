@@ -50,6 +50,16 @@ type DaosPoolSpec struct {
 	// +kubebuilder:validation:Maximum=100
 	// +kubebuilder:validation:Minimum=0
 	SpaceWarningPercent *int32 `json:"spaceWarningPercent,omitempty"`
+	// MemRatioPercent is `dmg pool create --mem-ratio`: how much of the pool's
+	// metadata (which lives on SSD under MD-on-SSD) is kept in the engine's
+	// memory file (RAM). The DAOS default is 100, which makes the RAM the hard
+	// ceiling on pool size -- on a box with 34 GiB of memory file per engine
+	// that caps the pool near 1 TiB no matter how much data-tier capacity the
+	// HDDs have (2026-09-28, da1~3). Lowering it trades metadata cache for
+	// addressable capacity. Only meaningful on MD-on-SSD systems.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=100
+	MemRatioPercent *int32 `json:"memRatioPercent,omitempty"`
 }
 
 // DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of

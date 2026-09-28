@@ -166,6 +166,9 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		}
 		// dmg parses sizes with humanize; plain bytes avoid Gi/GiB ambiguity
 		args := []string{"pool", "create", "-z", fmt.Sprintf("%dB", pool.Spec.Size.Value()), "-P", strings.Join(props, ",")}
+		if r := pool.Spec.MemRatioPercent; r != nil {
+			args = append(args, fmt.Sprintf("--mem-ratio=%d%%", *r))
+		}
 		if len(pool.Spec.Ranks) > 0 {
 			args = append(args, "-r", ranksCSV(pool.Spec.Ranks))
 		}
