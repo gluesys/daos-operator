@@ -115,6 +115,8 @@ csi:
 # The pod runs with hostNetwork because a DAOS client must be reachable at the
 # address it advertises; a pod-network client behind the CNI's masquerade is
 # not (that is also why spec.clientAgent must be enabled on the GPU nodes).
+# rdma: true 는 DAOS 가 RDMA 프로바이더(ofi+verbs 등)일 때 필요하다.
+# 클라이언트 파드가 /dev/infiniband 를 보지 못하면 libfabric verbs 초기화가 실패한다.
 vllm:
   services: []
   #  - name: vllm-daos

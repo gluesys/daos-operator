@@ -10,6 +10,11 @@ hostNetwork is not optional: daos_agent hands the client an interface name and
 the servers must be able to reach the client at the address it advertises. A
 pod-network client sits behind the CNI's masquerade, so its advertised address
 does not match its source address and every RPC ends in DER_TIMEDOUT.
+
+Set rdma: true when the DAOS system runs on an RDMA provider (ofi+verbs, ucx).
+The client then needs the verbs devices themselves: without /dev/infiniband the
+libfabric verbs provider fails to initialise (na_ofi_provider_check) and the
+connector never comes up. A tcp system does not need any of this.
 */}}
 {{- range .Values.vllm.services }}
 {{- $ns := $.Values.system.spec.namespace | default "daos-system" }}
@@ -99,6 +104,10 @@ spec:
             {{- with .extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
+          {{- if .rdma }}
+          securityContext:
+            privileged: true
+          {{- end }}
           ports:
             - {name: http, containerPort: {{ $port }}}
           resources:
@@ -117,6 +126,9 @@ spec:
             - {name: hf-cache, mountPath: /data/hf_cache}
             {{- end }}
             - {name: shm, mountPath: /dev/shm}
+            {{- if .rdma }}
+            - {name: ib-dev, mountPath: /dev/infiniband}
+            {{- end }}
           readinessProbe:
             httpGet: {path: /health, port: {{ $port }}}
             initialDelaySeconds: 60
@@ -135,6 +147,10 @@ spec:
         {{- end }}
         - name: shm
           emptyDir: {medium: Memory, sizeLimit: 8Gi}
+        {{- if .rdma }}
+        - name: ib-dev
+          hostPath: {path: /dev/infiniband, type: Directory}
+        {{- end }}
 ---
 apiVersion: v1
 kind: Service

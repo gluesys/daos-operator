@@ -295,3 +295,33 @@ kubectl -n daos-system logs $POD | grep -E "hit tokens|Retrieved"
 | 모델 | Llama-3.1-8B-Instruct, bf16, max-model-len 16384 |
 
 GPU Operator·containerd·관리형 쿠버네티스 조합은 **이 문서 기준으로 미검증**이다(구성 방법만 적었다).
+
+## RDMA 패브릭(ofi+verbs, ucx)을 쓸 때
+
+DAOS 시스템이 RDMA 프로바이더면 **클라이언트 파드가 verbs 장치를 직접 봐야 한다.** `/dev/infiniband`
+가 없으면 libfabric 의 verbs 프로바이더 초기화가 실패하고(`na_ofi_provider_check` 치명 오류) 커넥터가
+아예 올라오지 않는다. tcp 로 붙을 때는 드러나지 않는 요구사항이라, 패브릭을 바꾸는 순간 처음 만난다.
+
+차트에서는 워크로드에 `rdma: true` 를 준다:
+
+```yaml
+vllm:
+  services:
+    - name: vllm-daos
+      rdma: true          # /dev/infiniband 마운트 + privileged
+      ...
+```
+
+CSI 노드 플러그인과 S3 게이트웨이도 같은 조건이다(둘 다 이미 `/dev` 를 마운트하고 privileged 로 뜬다).
+RDMA device plugin 을 쓰는 클러스터라면 hostPath 대신 그쪽 자원 요청으로 바꾸면 된다.
+
+실측(2026-09-28, 100 Gb IB, da1~3 3 rank + GPU 노드 1대):
+
+| 경로 | 1 GbE 관리망 | IB/verbs |
+|---|---|---|
+| dfuse 쓰기 / 읽기 (1 GiB) | 5.2 / 10.5 MiB/s | **587 / 914 MB/s** |
+| CSI PVC 쓰기 (1 GiB) | 26 MB/s | **744 MB/s** |
+| vLLM 3840 토큰 KV 캐시 | 실패 | **`Retrieved 3840/3840`** |
+
+**LMCache 커넥터 주의**: DAOS 첫 연결이 3초를 넘기면 health monitor 가 degraded 로 들어가 lookup·store 를
+통째로 건너뛴다. 느린 경로나 rank 가 많은 시스템에서는 `DAOS_PING_TIMEOUT` 을 15 초 정도로 올린다.
