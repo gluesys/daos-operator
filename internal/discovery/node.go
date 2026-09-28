@@ -21,6 +21,7 @@ limitations under the License.
 package discovery
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -34,6 +35,7 @@ type NodeFacts struct {
 	Name        string
 	ControlAddr string            // InternalIP unless overridden
 	FabricIface string            // may be empty
+	Ann         map[string]string // raw node annotations (tier lists are read per tier)
 	Bdevs       []string          // PCI addresses, may be empty
 	DSN         map[string]string // pci -> serial, may be empty
 	NumaNode    *int32
@@ -53,6 +55,7 @@ func splitList(s string) []string {
 func FromNode(n *corev1.Node) NodeFacts {
 	f := NodeFacts{Name: n.Name, DSN: map[string]string{}}
 	ann := n.Annotations
+	f.Ann = ann
 	f.FabricIface = strings.TrimSpace(ann[daosv1alpha1.AnnotationFabricIface])
 	f.Bdevs = splitList(ann[daosv1alpha1.AnnotationBdevList])
 	for _, kv := range splitList(ann[daosv1alpha1.AnnotationBdevDSN]) {
@@ -109,6 +112,23 @@ func DriveConflicts(facts []NodeFacts) map[string][]string {
 		}
 	}
 	return out
+}
+
+// ResolveTier returns the devices for one bdev tier: the spec's list when set,
+// otherwise the node annotation daos.gluesys.com/bdev-list-<index>. Tier 0 falls
+// back to the plain bdev-list annotation so a node annotated for the single-tier
+// shape still works when the spec grows a first tier.
+func ResolveTier(tier daosv1alpha1.BdevTierSpec, index int, ann map[string]string) []string {
+	if len(tier.BdevList) > 0 {
+		return tier.BdevList
+	}
+	if v := splitList(ann[fmt.Sprintf("%s%d", daosv1alpha1.AnnotationBdevListTierPrefix, index)]); len(v) > 0 {
+		return v
+	}
+	if index == 0 {
+		return splitList(ann[daosv1alpha1.AnnotationBdevList])
+	}
+	return nil
 }
 
 // Resolve merges the engine spec with node facts. Spec values win when set;

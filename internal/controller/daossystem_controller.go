@@ -291,15 +291,31 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		var missing []string
 		for i, e := range sys.Spec.Engines {
 			fabric, bdevs, numa, miss := discovery.Resolve(e, f)
-			missing = append(missing, miss...)
 			port := e.FabricPort
 			if port == 0 {
 				port = 31316
 			}
-			cfg.Engines = append(cfg.Engines, render.Engine{Index: i, Targets: e.Targets, Helpers: helpersOf(e),
+			eng := render.Engine{Index: i, Targets: e.Targets, Helpers: helpersOf(e),
 				FabricIface: fabric, FabricPort: port + int32(i)*100, PinnedNuma: numa, ScmSizeGiB: e.ScmSizeGiB, Bdevs: bdevs,
-				BdevClass: e.BdevClass, BdevSizeGiB: e.BdevSizeGiB})
-			ncs.FabricIface, ncs.BdevCount = fabric, int32(len(bdevs))
+				BdevClass: e.BdevClass, BdevSizeGiB: e.BdevSizeGiB}
+			count := len(bdevs)
+			if len(e.BdevTiers) > 0 {
+				// the tiers carry the devices now: the single-tier annotation is
+				// not what this engine is missing
+				miss = withoutBdevList(miss)
+				count = 0
+				for ti, t := range e.BdevTiers {
+					devs := discovery.ResolveTier(t, ti, f.Ann)
+					if len(devs) == 0 {
+						miss = append(miss, fmt.Sprintf("%s%d", daosv1alpha1.AnnotationBdevListTierPrefix, ti))
+					}
+					eng.Tiers = append(eng.Tiers, render.Tier{Class: t.Class, Roles: t.Roles, Bdevs: devs, SizeGiB: t.BdevSizeGiB})
+					count += len(devs)
+				}
+			}
+			missing = append(missing, miss...)
+			cfg.Engines = append(cfg.Engines, eng)
+			ncs.FabricIface, ncs.BdevCount = fabric, int32(count)
 		}
 		if len(missing) > 0 {
 			ncs.Message = "waiting for node facts: " + strings.Join(uniq(missing), ", ")
@@ -454,6 +470,18 @@ func minRequeue(a, b time.Duration) time.Duration {
 		return a
 	}
 	return b
+}
+
+// withoutBdevList drops the single-tier bdev-list entry: an engine that
+// declares tiers is not waiting for that annotation.
+func withoutBdevList(miss []string) []string {
+	out := miss[:0]
+	for _, m := range miss {
+		if m != daosv1alpha1.AnnotationBdevList {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func uniq(in []string) []string {

@@ -115,3 +115,68 @@ func TestAgentAndControl(t *testing.T) {
 		t.Error("empty iface list must not emit include_fabric_ifaces")
 	}
 }
+
+func TestServerRendersBdevTiersWithTheirOwnRoles(t *testing.T) {
+	yml, err := Server(ServerConfig{SystemName: "s", MsReplicas: []string{"10.0.0.1"}, Port: 10001,
+		Engines: []Engine{{Index: 0, Targets: 8, FabricIface: "ib0", FabricPort: 31316, ScmSizeGiB: 34,
+			Tiers: []Tier{
+				{Class: "kdev", Roles: []string{"wal", "meta"}, Bdevs: []string{"/dev/disk/by-id/nvme-X"}},
+				{Class: "kdev", Roles: []string{"data"}, Bdevs: []string{"/dev/disk/by-id/wwn-1", "/dev/disk/by-id/wwn-2"}},
+			}}}})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	for _, want := range []string{
+		"bdev_roles: [wal, meta]",
+		"bdev_roles: [data]",
+		`- "/dev/disk/by-id/nvme-X"`,
+		`- "/dev/disk/by-id/wwn-2"`,
+	} {
+		if !strings.Contains(yml, want) {
+			t.Errorf("rendered config is missing %q:\n%s", want, yml)
+		}
+	}
+	if strings.Contains(yml, "bdev_roles: [wal, meta, data]") {
+		t.Error("tiers must replace the single all-roles tier")
+	}
+}
+
+func TestServerRefusesTierConfigsDaosWouldOnlyRejectAtFormat(t *testing.T) {
+	base := func(tiers []Tier) ServerConfig {
+		return ServerConfig{SystemName: "s", MsReplicas: []string{"10.0.0.1"}, Port: 10001,
+			Engines: []Engine{{Index: 0, FabricIface: "ib0", ScmSizeGiB: 34, Tiers: tiers}}}
+	}
+	cases := map[string][]Tier{
+		"role in two tiers": {
+			{Class: "kdev", Roles: []string{"wal", "meta"}, Bdevs: []string{"a"}},
+			{Class: "kdev", Roles: []string{"meta", "data"}, Bdevs: []string{"b"}},
+		},
+		"no tier carries data": {
+			{Class: "kdev", Roles: []string{"wal", "meta"}, Bdevs: []string{"a"}},
+		},
+		"unknown role": {
+			{Class: "kdev", Roles: []string{"wal", "meta", "data"}, Bdevs: []string{"a"}},
+			{Class: "kdev", Roles: []string{"cache"}, Bdevs: []string{"b"}},
+		},
+		"tier without devices": {
+			{Class: "kdev", Roles: []string{"wal", "meta"}, Bdevs: []string{"a"}},
+			{Class: "kdev", Roles: []string{"data"}},
+		},
+	}
+	for name, tiers := range cases {
+		if _, err := Server(base(tiers)); err == nil {
+			t.Errorf("%s: expected an error", name)
+		}
+	}
+}
+
+func TestServerKeepsTheSingleTierShapeWhenNoTiersAreGiven(t *testing.T) {
+	yml, err := Server(ServerConfig{SystemName: "s", MsReplicas: []string{"10.0.0.1"}, Port: 10001,
+		Engines: []Engine{{Index: 0, FabricIface: "ens2", ScmSizeGiB: 32, Bdevs: []string{"0000:03:00.0"}}}})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+	if !strings.Contains(yml, "bdev_roles: [wal, meta, data]") || !strings.Contains(yml, "class: nvme") {
+		t.Errorf("single-tier default changed:\n%s", yml)
+	}
+}

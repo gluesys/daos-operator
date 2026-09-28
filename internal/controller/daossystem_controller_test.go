@@ -383,6 +383,48 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).To(Equal("ManagementUnreachable"))
 	})
 
+	It("renders one bdev tier per spec tier, taking each tier's devices from its own node annotation (#29)", func() {
+		sys := getSys()
+		sys.Spec.Engines[0].BdevTiers = []daosv1alpha1.BdevTierSpec{
+			{Class: "kdev", Roles: []string{"wal", "meta"}},
+			{Class: "kdev", Roles: []string{"data"}},
+		}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+
+		By("a node annotated for only the first tier is reported as waiting, not rendered")
+		reconcileOnce()
+		for _, nc := range getSys().Status.NodeConfigs {
+			if nc.Node == "n1" {
+				Expect(nc.Ready).To(BeFalse())
+				Expect(nc.Message).To(ContainSubstring("bdev-list-1"))
+			}
+		}
+
+		By("annotating both tiers renders both, each with its own roles")
+		n1 := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "n1"}, n1)).To(Succeed())
+		n1.Annotations[daosv1alpha1.AnnotationBdevListTierPrefix+"0"] = "/dev/disk/by-id/nvme-WAL"
+		n1.Annotations[daosv1alpha1.AnnotationBdevListTierPrefix+"1"] = "/dev/disk/by-id/wwn-1,/dev/disk/by-id/wwn-2"
+		Expect(k8sClient.Update(ctx, n1)).To(Succeed())
+		reconcileOnce()
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, cm)).To(Succeed())
+		yml := cm.Data["daos_server.yml"]
+		Expect(yml).To(ContainSubstring("bdev_roles: [wal, meta]"))
+		Expect(yml).To(ContainSubstring("bdev_roles: [data]"))
+		Expect(yml).To(ContainSubstring(`- "/dev/disk/by-id/nvme-WAL"`))
+		Expect(yml).To(ContainSubstring(`- "/dev/disk/by-id/wwn-2"`))
+		Expect(yml).NotTo(ContainSubstring("bdev_roles: [wal, meta, data]"), "tiers replace the single all-roles tier")
+
+		for _, nc := range getSys().Status.NodeConfigs {
+			if nc.Node == "n1" {
+				Expect(nc.Ready).To(BeTrue())
+				Expect(nc.BdevCount).To(Equal(int32(3)), "devices are counted across tiers")
+			}
+		}
+	})
+
 	It("keeps the management service on the node already running it when a node is added (daos-images #1)", func() {
 		reconcileOnce()
 		sys := getSys()

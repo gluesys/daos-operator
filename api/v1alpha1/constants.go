@@ -29,6 +29,11 @@ const (
 	AnnotationFabricIface = "daos.gluesys.com/fabric-iface"
 	// AnnotationBdevList is the comma-separated list of VFIO-bound NVMe PCI addresses.
 	AnnotationBdevList = "daos.gluesys.com/bdev-list"
+
+	// AnnotationBdevListTierPrefix + tier index holds one tier's devices when
+	// spec.engines[].bdevTiers is used (device paths differ per host). Tier 0
+	// falls back to AnnotationBdevList so single-tier nodes keep working.
+	AnnotationBdevListTierPrefix = "daos.gluesys.com/bdev-list-"
 	// AnnotationBdevDSN maps PCI address to the drive's PCI Device Serial Number:
 	// "<pci>=<dsn>,...". Two nodes exposing the same DSN share one physical drive
 	// (dual-port chassis); the operator refuses to render those nodes (2026-09-03 incident).

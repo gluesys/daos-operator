@@ -64,9 +64,11 @@ type EngineSpec struct {
 	//   nvme  SPDK-owned NVMe. The only class supported in production (ADR-002).
 	//   kdev  kernel block devices (bdevList holds device paths). Test beds only.
 	//   file  files on a filesystem, sized by BdevSizeGiB. Test beds only.
-	// kdev and file need no hugepages, no VFIO and no IOMMU, which is what makes
-	// a small VM able to run an engine at all; they are not a performance
-	// configuration and must not be used to measure anything.
+	// kdev and file need no VFIO and no IOMMU, which is what makes a small VM
+	// able to run an engine at all. They still go through SPDK and still need
+	// hugepages -- an engine with too few starts and then dies with DER_NOMEM
+	// (2026-09-22, exaci4). They are not a performance configuration and must
+	// not be used to measure anything.
 	// +kubebuilder:validation:Enum=nvme;kdev;file
 	// +kubebuilder:default=nvme
 	BdevClass string `json:"bdevClass,omitempty"`
@@ -74,6 +76,32 @@ type EngineSpec struct {
 	BdevSizeGiB int32 `json:"bdevSizeGiB,omitempty"`
 	// PinnedNumaNode pins the engine; nil lets DAOS choose.
 	PinnedNumaNode *int32 `json:"pinnedNumaNode,omitempty"`
+	// BdevTiers describes the bdev stack when one tier cannot express it: the
+	// shape this hardware ships in is a small NVMe carrying [wal, meta] in
+	// front of HDDs carrying [data]. Empty keeps the single-tier behaviour
+	// (BdevClass/BdevList/BdevSizeGiB with roles [wal, meta, data]), which is
+	// what every DaosSystem written so far uses.
+	// +kubebuilder:validation:MaxItems=3
+	BdevTiers []BdevTierSpec `json:"bdevTiers,omitempty"`
+}
+
+// BdevTierSpec is one bdev tier of an engine. Every role (wal, meta, data)
+// must appear in exactly one tier of the engine.
+type BdevTierSpec struct {
+	// Class is the DAOS storage class of this tier: nvme, kdev or file.
+	// +kubebuilder:validation:Enum=nvme;kdev;file
+	// +kubebuilder:default=nvme
+	Class string `json:"class,omitempty"`
+	// Roles are the DAOS bdev roles this tier carries.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:items:Enum=wal;meta;data
+	Roles []string `json:"roles"`
+	// BdevList holds this tier's devices. Empty means the operator reads them
+	// from the node annotation daos.gluesys.com/bdev-list-<tier index>, because
+	// device paths differ per host.
+	BdevList []string `json:"bdevList,omitempty"`
+	// BdevSizeGiB is the size of each backing file (class file only).
+	BdevSizeGiB int32 `json:"bdevSizeGiB,omitempty"`
 }
 
 // ImagesSpec pins the container images from exastor/daos-images.
