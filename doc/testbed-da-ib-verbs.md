@@ -89,9 +89,33 @@ operator#29 를 구현해 원래 네이티브 구성과 같은 2티어로 다시
 | 16 | 600 GiB 성공, **1 TiB 실패**(`DER_NOSPACE`) |
 | 34 (네이티브 구성과 같은 값) | **1 TiB 성공**(실측 1.00 TiB), 2 TiB 실패 |
 
-노드당 SAS 는 21 TB, 3노드 63 TB 인데 쓸 수 있는 풀은 1 TiB 수준이다. md-on-SSD 에서 풀 메타데이터가
-RAM 메모리 파일에 상주하고 operator 가 `dmg pool create --mem-ratio` 를 노출하지 않아, **HDD 용량이
-RAM 에 묶인다.** 2티어 렌더만으로는 HDD 를 다 쓸 수 없고 mem-ratio 노출이 필요하다.
+노드당 SAS 는 21 TB 인데 쓸 수 있는 풀은 1 TiB 수준이었다. md-on-SSD 에서 풀 메타데이터의 일부가
+RAM 메모리 파일에 상주하고, 그 비율(`--mem-ratio`)의 DAOS 기본값이 100% 라 **RAM 이 그대로 상한**이
+되기 때문이다.
+
+### mem-ratio 노출로 풀린다 (2026-09-28)
+
+`dmg storage query usage` 로 본 실제 용량 — 모든 장치가 비-PCI(AIO)라 알려진 혼합 구성 panic 조건은
+아니었고, 명령은 정상 동작했다:
+
+```
+Tier Roles       Rank  T1-Total T1-Free  T2-Total T2-Free
+T1   meta,wal    0~2   1.0 TB   1.0 TB   24 TB    24 TB     <- 데이터 티어 총 72 TB
+T2   data
+```
+
+`DaosPoolSpec.memRatioPercent` 를 추가해(`--mem-ratio`) 다시 재면:
+
+| 설정 | 결과 |
+|---|---|
+| mem-ratio 미설정(=DAOS 기본 100%), scm 34 | 1 TiB 성공, 2 TiB 실패 |
+| **mem-ratio 10%**, scm 34 | **10 TiB 성공**(실측 10.00 TiB, `df` 11T), 4 GiB 쓰기 155 MB/s |
+
+즉 2티어 렌더 + mem-ratio 두 가지가 같이 있어야 HDD 용량이 실제로 쓰인다.
+
+**주의**: 메모리 파일은 시스템 전체에서 공유된다. 이미 만든 풀이 쓰고 있으면 새 풀이 `DER_NOSPACE` 로
+거부된다 — 용량이 남아 있어도 그렇다. 한계를 잴 때는 기존 풀을 먼저 비우고 재야 한다(이 함정 때문에
+mem-ratio 가 안 듣는 것처럼 보였다).
 
 ### 주의: 같은 이름 풀을 지웠다 다시 만들면 예전 풀을 물 수 있다
 
