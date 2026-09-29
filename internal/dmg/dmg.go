@@ -53,6 +53,11 @@ type RunSpec struct {
 	ControlConfigMap string
 	// Args follow `dmg -j`; the admin entrypoint adds `-o /etc/daos/daos_control.yml`.
 	Args []string
+	// Then is a second dmg command run in the same pod, right after Args. One pod
+	// answers two questions and the output carries both envelopes (see ParseAll).
+	// It bypasses the admin entrypoint, so dmg reads its default config path --
+	// which is the path the control ConfigMap is mounted at anyway.
+	Then []string
 	// Command replaces the default `dmg -j <Args>` entirely (e.g. a bash -c wrapper
 	// that writes an ACL file first, or a `daos` client invocation).
 	Command      []string
@@ -187,6 +192,9 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 	if len(command) == 0 {
 		// admin entrypoint: "dmg ..." -> exec dmg -o /etc/daos/daos_control.yml ...
 		command = append([]string{"dmg", "-j"}, s.Args...)
+		if len(s.Then) > 0 {
+			command = []string{"sh", "-c", dmgLine(s.Args) + "; " + dmgLine(s.Then)}
+		}
 	}
 	volumes := append([]corev1.Volume{{Name: "control", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
 		LocalObjectReference: corev1.LocalObjectReference{Name: s.ControlConfigMap}}}}}, s.Volumes...)
@@ -288,6 +296,62 @@ func Parse(out string) (*Envelope, error) {
 		return nil, fmt.Errorf("dmg output is not JSON: %w", err)
 	}
 	return &e, nil
+}
+
+// dmgLine renders one `dmg -j ...` shell command.
+func dmgLine(args []string) string {
+	out := "dmg -j"
+	for _, a := range args {
+		out += " " + ShellQuote(a)
+	}
+	return out
+}
+
+// ParseAll extracts every JSON envelope from the output, in order. A pod running
+// two dmg commands (RunSpec.Then) prints two, and either may be followed on the
+// merged stream by the tool's own "ERROR: dmg: ..." lines -- so this skips what
+// does not decode instead of stopping at the first one.
+func ParseAll(out string) ([]*Envelope, error) {
+	var envs []*Envelope
+	for rest := out; ; {
+		i := strings.Index(rest, "{")
+		if i < 0 {
+			break
+		}
+		dec := json.NewDecoder(strings.NewReader(rest[i:]))
+		var e Envelope
+		if err := dec.Decode(&e); err != nil {
+			rest = rest[i+1:] // a brace that starts no envelope (a log line)
+			continue
+		}
+		envs = append(envs, &e)
+		rest = rest[i+int(dec.InputOffset()):]
+	}
+	if len(envs) == 0 {
+		return nil, fmt.Errorf("no JSON in dmg output: %q", strings.TrimSpace(firstLine(out)))
+	}
+	return envs, nil
+}
+
+// LeaderInfo is the response of `dmg -j system leader-query`.
+type LeaderInfo struct {
+	CurrentLeader string   `json:"current_leader"`
+	Replicas      []string `json:"replicas"`
+	DownReplicas  []string `json:"down_replicas"`
+}
+
+// LeaderQuery parses `dmg -j system leader-query`. An empty CurrentLeader means
+// the management service has no quorum: it still answers reads from a replica's
+// local copy, but elects nobody and accepts no writes.
+func LeaderQuery(e *Envelope) (*LeaderInfo, error) {
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, nil
+	}
+	var info LeaderInfo
+	if err := json.Unmarshal(e.Response, &info); err != nil {
+		return nil, fmt.Errorf("leader query response: %w", err)
+	}
+	return &info, nil
 }
 
 func firstLine(s string) string {

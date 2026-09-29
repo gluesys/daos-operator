@@ -84,11 +84,17 @@ func (r *DaosSystemReconciler) clearApproval(ctx context.Context, sys *daosv1alp
 }
 
 func (r *DaosSystemReconciler) runDmg(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, suffix string, args ...string) (*dmg.Result, error) {
+	return r.runDmgThen(ctx, sys, ns, suffix, nil, args...)
+}
+
+// runDmgThen is runDmg with a second command in the same pod (dmg.RunSpec.Then).
+func (r *DaosSystemReconciler) runDmgThen(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, suffix string, then []string, args ...string) (*dmg.Result, error) {
 	return r.Dmg.Run(ctx, dmg.RunSpec{
 		Owner: sys, Namespace: ns, Name: sys.Name + suffix,
 		Image:            sys.Spec.Images.Admin,
 		ControlConfigMap: sys.Name + "-control",
 		Args:             args,
+		Then:             then,
 		NodeSelector:     sys.Spec.NodeSelector,
 		Tolerations:      sys.Spec.Tolerations,
 		Labels:           map[string]string{daosv1alpha1.LabelSystem: sys.Name},
@@ -188,7 +194,10 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 	if wait := r.probeHold(sys.Name); wait > 0 {
 		return wait, nil
 	}
-	res, err := r.runDmg(ctx, sys, in.ns, jobQuerySuffix, "system", "query", "-v")
+	// the same pod also asks who leads: a membership answer alone cannot tell a
+	// healthy system from one whose management service lost quorum (#34)
+	res, err := r.runDmgThen(ctx, sys, in.ns, jobQuerySuffix,
+		[]string{"system", "leader-query"}, "system", "query", "-v")
 	if err != nil {
 		return 0, fmt.Errorf("query job: %w", err)
 	}
@@ -203,10 +212,14 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "ProbeFailed", "dmg Job failed: "+res.Failure)
 		return requeueSlow, nil
 	}
-	env, err := dmg.Parse(res.Output)
+	envs, err := dmg.ParseAll(res.Output)
 	if err != nil {
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "ProbeFailed", err.Error())
 		return requeueSlow, nil
+	}
+	env := envs[0]
+	if len(envs) > 1 {
+		r.setMsCondition(sys, status, envs[1])
 	}
 	if env.Error != nil {
 		switch dmg.Classify(*env.Error) {
@@ -384,6 +397,43 @@ func formatFailure(res *dmg.Result) string {
 		return fmt.Sprintf("dmg exited %d", res.ExitCode)
 	}
 	return ""
+}
+
+// setMsCondition reports whether the management service has a leader. `dmg system
+// query` is served from a replica's local copy and answers without quorum, so
+// membership alone would show a healthy system while no write can be accepted (#34).
+func (r *DaosSystemReconciler) setMsCondition(sys *daosv1alpha1.DaosSystem, st *daosv1alpha1.DaosSystemStatus, env *dmg.Envelope) {
+	was := metav1.ConditionUnknown
+	if c := findCond(st, daosv1alpha1.ConditionManagementService); c != nil {
+		was = c.Status
+	}
+	status, reason, msg := metav1.ConditionUnknown, "QueryError", ""
+	switch info, err := dmg.LeaderQuery(env); {
+	case env.Error != nil:
+		msg = *env.Error
+	case err != nil:
+		msg = err.Error()
+	case info == nil:
+		reason, msg = "NoAnswer", "dmg system leader-query returned no response"
+	case info.CurrentLeader == "":
+		status, reason = metav1.ConditionFalse, "NoQuorum"
+		msg = fmt.Sprintf("no replica holds the leadership; %d/%d replicas answer",
+			len(info.Replicas)-len(info.DownReplicas), len(info.Replicas))
+		if len(info.DownReplicas) > 0 {
+			msg += " (down: " + strings.Join(info.DownReplicas, ",") + ")"
+		}
+		msg += "; membership queries still answer from a replica's local copy"
+	default:
+		status, reason = metav1.ConditionTrue, "Leader"
+		msg = fmt.Sprintf("leader %s, %d replicas", info.CurrentLeader, len(info.Replicas))
+		if len(info.DownReplicas) > 0 {
+			msg += "; down: " + strings.Join(info.DownReplicas, ",")
+		}
+	}
+	setCond(st, daosv1alpha1.ConditionManagementService, status, reason, msg)
+	if status != was && status != metav1.ConditionTrue {
+		r.event(sys, corev1.EventTypeWarning, "ManagementServiceDegraded", msg)
+	}
 }
 
 func findCond(st *daosv1alpha1.DaosSystemStatus, t string) *metav1.Condition {

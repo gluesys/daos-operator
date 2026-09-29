@@ -98,6 +98,12 @@ const (
 	// service: True once formatted, False (AwaitingApproval/Formatting/FormatFailed)
 	// before, Unknown when no replica answered.
 	ConditionFormatted = "Formatted"
+	// ConditionManagementService mirrors `dmg system leader-query`: True when a
+	// replica holds the leadership, False (NoQuorum) when none does. Membership
+	// queries are served from a replica's local copy and keep reporting every rank
+	// as joined while the service itself is down, so this is the one that tells
+	// them apart (#34). It does not gate Ready: the data path is unaffected.
+	ConditionManagementService = "ManagementService"
 	// ConditionTelemetry reports the metrics Service / ServiceMonitor state.
 	ConditionTelemetry = "Telemetry"
 	// ConditionClientAgent reports the per-node client agent DaemonSet.

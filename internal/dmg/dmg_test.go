@@ -46,6 +46,71 @@ func TestSystemQuery(t *testing.T) {
 	}
 }
 
+// captured on da1 (daos-ib, 2026-09-29): dmg -j system leader-query
+const leaderOK = `{
+  "response": {
+    "current_leader": "192.168.59.91:10101",
+    "replicas": ["192.168.59.91:10101", "192.168.59.92:10101", "192.168.59.93:10101"],
+    "down_replicas": null
+  },
+  "error": null,
+  "status": 0
+}`
+
+// the same call with two of the three replicas down: nobody leads (#34)
+const leaderNoQuorum = `{
+  "response": {
+    "current_leader": "",
+    "replicas": ["192.168.59.91:10101", "192.168.59.92:10101", "192.168.59.93:10101"],
+    "down_replicas": ["192.168.59.93:10101", "192.168.59.91:10101"]
+  },
+  "error": null,
+  "status": 0
+}`
+
+func TestParseAll(t *testing.T) {
+	// one pod, two commands: membership first, then the leader, with the tool's
+	// own error lines between them
+	out := "DEBUG log line\n" + queryOK + "\nERROR: dmg: something\n" + leaderNoQuorum + "\nERROR: dmg: trailing\n"
+	envs, err := ParseAll(out)
+	if err != nil || len(envs) != 2 {
+		t.Fatalf("envelopes: %d err=%v", len(envs), err)
+	}
+	if m, err := SystemQuery(envs[0]); err != nil || len(m) != 2 {
+		t.Fatalf("members: %+v err=%v", m, err)
+	}
+	info, err := LeaderQuery(envs[1])
+	if err != nil || info == nil || info.CurrentLeader != "" || len(info.DownReplicas) != 2 {
+		t.Fatalf("leader: %+v err=%v", info, err)
+	}
+	// a single compact envelope still parses
+	envs, err = ParseAll(dmgCompact)
+	if err != nil || len(envs) != 1 || envs[0].Status != 0 {
+		t.Fatalf("single: %+v err=%v", envs, err)
+	}
+	if _, err := ParseAll("no json here"); err == nil {
+		t.Fatal("expected an error for output without JSON")
+	}
+}
+
+const dmgCompact = `{"response": null, "error": null, "status": 0}`
+
+func TestLeaderQuery(t *testing.T) {
+	e, err := Parse(leaderOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := LeaderQuery(e)
+	if err != nil || info.CurrentLeader != "192.168.59.91:10101" || len(info.Replicas) != 3 || len(info.DownReplicas) != 0 {
+		t.Fatalf("leader: %+v err=%v", info, err)
+	}
+	// an error envelope carries no response
+	e, _ = Parse(`{"response": null, "error": "unable to contact the DAOS Management Service", "status": -1009}`)
+	if info, err := LeaderQuery(e); err != nil || info != nil {
+		t.Fatalf("empty response: %+v err=%v", info, err)
+	}
+}
+
 func TestClassify(t *testing.T) {
 	cases := map[string]ErrorKind{
 		"": ErrNone,

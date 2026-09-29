@@ -99,6 +99,11 @@ const (
 	dmgMembersAdminExcluded = `{"response": {"members": [
 	  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
 	  {"addr": "10.0.0.2:10001", "state": "adminexcluded", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`
+	// `dmg system leader-query`, run in the same pod as the membership query (#34)
+	dmgLeaderOK = `{"response": {"current_leader": "10.0.0.1:10001",
+	  "replicas": ["10.0.0.1:10001", "10.0.0.2:10001"], "down_replicas": null}, "error": null, "status": 0}`
+	dmgLeaderNoQuorum = `{"response": {"current_leader": "",
+	  "replicas": ["10.0.0.1:10001", "10.0.0.2:10001"], "down_replicas": ["10.0.0.2:10001"]}, "error": null, "status": 0}`
 	dmgMembersAwait = `{"response": {"members": [
 	  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
 	  {"addr": "10.0.0.2:10001", "state": "awaitformat", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`
