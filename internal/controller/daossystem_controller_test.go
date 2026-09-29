@@ -891,6 +891,43 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(string(sec.Data["daosCA.crt"])).To(Equal(ca))
 	})
 
+	It("refuses reintegrate while the rank cannot take it, and says what to do first (#30)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembersAdminExcluded}}}
+		reconcileWith(f)
+		Expect(getSys().Status.Formatted).To(BeTrue())
+
+		By("an administratively excluded rank: DAOS refuses it, so we refuse it first")
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		op := getSys().Status.LastRankOp
+		Expect(op.Succeeded).To(BeFalse())
+		Expect(op.Message).To(ContainSubstring("administratively excluded"))
+		Expect(op.Message).To(ContainSubstring("clear-exclude:1"))
+		Expect(op.Message).To(ContainSubstring("restart"))
+		Expect(f.count("system reintegrate --ranks=1")).To(BeZero(), "never sent to dmg")
+
+		By("a rank whose engine is down: the drain would only time out")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembersAwait})
+		reconcileWith(f)
+		sys = getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(getSys().Status.LastRankOp.Message).To(ContainSubstring("no running engine"))
+		Expect(f.count("system reintegrate --ranks=1")).To(BeZero())
+
+		By("a joined rank passes the gate and reaches dmg")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		reconcileWith(f)
+		sys = getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(f.count("system reintegrate --ranks=1")).To(Equal(1))
+	})
+
 	It("runs a requested rank operation once and reports each rank's result (#20)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
 		reconcileWith(f) // formatted = true after the membership query

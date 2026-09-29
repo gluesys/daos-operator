@@ -286,6 +286,23 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Reported on every successful query, even when an operation follows.
 	r.checkSpace(pool, &status)
 
+	// A pool we did not create can be sitting under this label: destroying a
+	// DaosPool and re-applying the same name adopts whatever still answers to it,
+	// and the CR then reports Ready for a pool that is not the size asked for
+	// (3Ti spec, 404 GB pool -- 2026-09-28). Extending grows the real size, so
+	// only a pool smaller than the spec is suspect (#31).
+	// DAOS keeps a good slice of the request for itself (a 10 GiB request reports
+	// ~7.5 GiB usable), so only a pool less than half the size asked for counts as
+	// "not the pool this resource describes" -- the case seen was 404 GB for 3 TiB.
+	if want := pool.Spec.Size.Value(); want > 0 && status.TotalBytes > 0 && status.TotalBytes*2 < want {
+		msg := fmt.Sprintf("pool %q is %s but spec.size asks for %s: this is not the pool this resource describes "+
+			"(re-applying a name while the old pool is still being destroyed adopts the old one). "+
+			"Destroy it and let the operator create it, or set spec.size to match",
+			status.Label, humanBytes(status.TotalBytes), humanBytes(want))
+		setC(metav1.ConditionFalse, "SizeMismatch", msg)
+		return r.updateStatus(ctx, pool, status, poolRequeueIdle)
+	}
+
 	// drift -> at most one operation per pass; a failed operation is not retried
 	// until the spec changes
 	failedForThisSpec := func(reason string) bool {

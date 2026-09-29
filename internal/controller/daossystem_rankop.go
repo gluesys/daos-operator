@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,62 @@ var (
 		"clear-exclude": "clear an administrative exclusion so the ranks may rejoin",
 	}
 )
+
+// rankOpPrecondition refuses an operation DAOS would only fail at after a long
+// wait, and says what to do first. Learned on da1~4 (#30): excluding a rank
+// stops its engine (it is refused at join), so a later reintegrate finds nothing
+// to drain and returns only after the 5 minute SystemDrainReq timeout.
+func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus) string {
+	if op != "reintegrate" {
+		return ""
+	}
+	want := parseRankSet(ranks)
+	var admin, down []string
+	for _, rk := range status.Ranks {
+		if !want[rk.Rank] {
+			continue
+		}
+		switch rk.State {
+		case "adminexcluded":
+			admin = append(admin, fmt.Sprintf("%d", rk.Rank))
+		case "excluded", "errored", "unknown", "stopped", "awaitformat":
+			down = append(down, fmt.Sprintf("%d (%s, on %s)", rk.Rank, rk.State, rk.Node))
+		}
+	}
+	if len(admin) > 0 {
+		return fmt.Sprintf("refused: rank(s) %s are administratively excluded; DAOS will not reintegrate them. "+
+			"Clear the exclusion first (%s=clear-exclude:%s), restart that node's server pod so the engine rejoins, "+
+			"then reintegrate", strings.Join(admin, ","), daosv1alpha1.AnnotationRankOp, strings.Join(admin, ","))
+	}
+	if len(down) > 0 {
+		return fmt.Sprintf("refused: rank(s) %s have no running engine; reintegrate would wait out the 5 minute drain "+
+			"timeout and fail. Restart that node's server pod first, then reintegrate once the rank is joined",
+			strings.Join(down, ", "))
+	}
+	return ""
+}
+
+// parseRankSet expands "0,2-3" into a set.
+func parseRankSet(ranks string) map[int32]bool {
+	out := map[int32]bool{}
+	for _, part := range strings.Split(ranks, ",") {
+		lo, hi, found := strings.Cut(part, "-")
+		a, err := strconv.Atoi(strings.TrimSpace(lo))
+		if err != nil {
+			continue
+		}
+		b := a
+		if found {
+			if v, err := strconv.Atoi(strings.TrimSpace(hi)); err == nil {
+				b = v
+			}
+		}
+		for i := a; i <= b; i++ {
+			out[int32(i)] = true
+		}
+	}
+	return out
+}
 
 // parseRankOp splits "<op>:<ranks>" and validates both halves.
 func parseRankOp(v string) (op, ranks string, err error) {
@@ -106,6 +163,9 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 	}
 	if !status.Formatted {
 		return record(op, ranks, false, "refused: the system is not formatted, so it has no ranks to operate on")
+	}
+	if why := rankOpPrecondition(op, ranks, status); why != "" {
+		return record(op, ranks, false, why)
 	}
 
 	res, err := r.runDmg(ctx, sys, ns, jobRankOpSuffix, "system", op, "--ranks="+ranks)

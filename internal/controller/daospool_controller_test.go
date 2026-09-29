@@ -240,6 +240,35 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("mem-ratio"))
 	})
 
+	It("refuses to call a pool Ready when it is far smaller than spec.size (#31)", func() {
+		p := getPool()
+		p.Spec.Size = resource.MustParse("3Ti")
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		// dmgPoolQuery describes a pool of a few GB -- nothing like 3Ti
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		poolRec(f)
+		c := ready(getPool().Status.Conditions)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("SizeMismatch"))
+		Expect(c.Message).To(ContainSubstring("spec.size asks for"))
+		Expect(f.count("-dmg-create")).To(BeZero(), "it must not try to create over an existing pool")
+	})
+
+	It("does not cry mismatch when an extend made the pool bigger than spec.size", func() {
+		p := getPool()
+		p.Spec.Size = resource.MustParse("1Gi") // smaller than what dmg reports
+		p.Spec.ACL = nil
+		p.Spec.Ranks = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		poolRec(f)
+		c := ready(getPool().Status.Conditions)
+		Expect(c.Reason).NotTo(Equal("SizeMismatch"))
+	})
+
 	It("does not retry a failed create until the spec changes", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
 		poolRec(f)

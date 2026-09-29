@@ -411,8 +411,14 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 		return fmt.Errorf("%s is not formatted yet: there are no ranks to operate on", name)
 	}
 	impact := map[string]string{
-		"drain":         "Data is migrated off these ranks first; pools stay redundant. This moves a lot of data and takes as long as it takes.",
-		"exclude":       "The ranks are marked down IMMEDIATELY and every pool on them starts rebuilding. Data on them is not migrated first.",
+		"drain": "Data is migrated off these ranks first; pools stay redundant. This moves a lot of data and takes as long as it takes.",
+		"exclude": "The ranks are marked down IMMEDIATELY and every pool on them starts rebuilding. Data on them is not migrated first.\n" +
+			"Their ENGINES STOP TOO: an excluded rank is refused at join, so the daos_engine on that node exits.\n" +
+			"Undoing it takes three steps, in this order:\n" +
+			"  1. kubectl daos rank clear-exclude <sys> --ranks=<N>\n" +
+			"  2. kubectl -n <ns> delete pod <sys>-server-<node>-0   (so the engine starts and rejoins)\n" +
+			"  3. kubectl daos rank reintegrate <sys> --ranks=<N>\n" +
+			"Calling reintegrate before the engine is back only waits out a 5 minute drain timeout and fails.",
 		"reintegrate":   "The ranks rejoin their pools and data rebuilds back onto them.",
 		"clear-exclude": "An administrative exclusion is cleared so the ranks may rejoin. Nothing moves until they are reintegrated.",
 	}[op]

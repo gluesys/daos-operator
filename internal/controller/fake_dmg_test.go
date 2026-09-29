@@ -96,6 +96,9 @@ const (
 	  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
 	  {"addr": "10.0.0.2:10001", "state": "joined", "rank": 1, "uuid": "u1", "fault_domain": "/n2"},
 	  {"addr": "10.0.0.3:10001", "state": "joined", "rank": 2, "uuid": "u2", "fault_domain": "/n3"}]}, "error": null, "status": 0}`
+	dmgMembersAdminExcluded = `{"response": {"members": [
+	  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+	  {"addr": "10.0.0.2:10001", "state": "adminexcluded", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`
 	dmgMembersAwait = `{"response": {"members": [
 	  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
 	  {"addr": "10.0.0.2:10001", "state": "awaitformat", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`
