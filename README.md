@@ -81,7 +81,7 @@ KV-cache workload failed outright: the fabric is not an implementation detail.
 ## Documentation
 
 - [`doc/deploy-gpu-k8s.md`](doc/deploy-gpu-k8s.md) — deploying the vLLM KV-cache
-  path on common GPU setups *(Korean)*
+  path on common GPU setups, with the traps each one hides
 - [`doc/adr/`](doc/adr/) — the decisions behind the deployment, device-binding and
   upgrade models, with the evidence that approved them *(Korean)*
 - [`doc/testbed-*.md`](doc/) — what was run on real hardware and what broke *(Korean)*

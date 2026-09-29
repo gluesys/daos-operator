@@ -1,82 +1,89 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
-# K8s GPU 환경 배포 가이드 — vLLM KV 캐시를 DAOS 에 내리기
+# Deploying on a GPU Kubernetes cluster — vLLM KV cache on DAOS
 
-vLLM 이 만든 KV 캐시를 LMCache 가 DAOS 컨테이너에 저장하게 만드는 배포 절차다.
-같은 프롬프트가 다시 오면 **파드가 재시작된 뒤에도** 캐시가 DAOS 에서 복원된다(§6 검증).
+How to make LMCache store the KV cache vLLM produces in a DAOS container. When the
+same prompt comes back, the cache is restored from DAOS **even after the pod
+restarted** (§6 verifies exactly that).
 
-`helm install` 한 번으로 operator·CSI·S3 게이트웨이·vLLM 참조 워크로드를 함께 올릴 수 있다.
+One `helm install` brings up the operator, the CSI driver, the S3 gateway and the
+vLLM reference workload together.
 
 ```
-                    ┌─────────────── GPU 노드 ───────────────┐
-   프롬프트 ──▶ vLLM(hostNetwork) ──▶ LMCache ──▶ lmcache-daos ──libdfs──┐
+                    ┌─────────────── GPU node ───────────────┐
+     prompt ──▶ vLLM(hostNetwork) ──▶ LMCache ──▶ lmcache-daos ──libdfs──┐
                     │      ▲                                 │          │
-                    │      └── daos_agent (DaemonSet, 노드당 1개)       │
+                    │      └── daos_agent (DaemonSet, one per node)     │
                     └─────────────────────────────────────────┘         ▼
-                                                            DAOS 컨테이너(kvlmc)
-                                                              in DaosPool
+                                                            DAOS container (kvlmc)
+                                                                in a DaosPool
 ```
 
 ---
 
-## 1. 전제 조건
+## 1. Prerequisites
 
-| 항목 | 요구 | 확인 |
+| Item | Requirement | Check |
 |---|---|---|
-| Kubernetes | **1.29 이상** (네이티브 사이드카) | `kubectl version` |
-| DAOS | 2.8 시스템 하나 (외부 또는 operator 가 띄운 파드 서버) | `kubectl get daossystem` |
-| GPU | 노드에 NVIDIA GPU + 드라이버, `nvidia.com/gpu` 자원이 보일 것 | `kubectl get nodes -o custom-columns=N:.metadata.name,GPU:.status.capacity.nvidia\.com/gpu` |
-| 이미지 저장소 | 서빙 이미지가 **on-disk 약 10 GB**. 노드 컨테이너 저장소에 그만한 여유 | `df -h`(§5.2) |
-| 모델 | HF 캐시를 노드에 두고 hostPath 로 마운트(오프라인) 하거나 PVC 사용 | |
+| Kubernetes | **1.29 or later** (native sidecars) | `kubectl version` |
+| DAOS | one 2.8 system (external, or pod servers run by the operator) | `kubectl get daossystem` |
+| GPU | NVIDIA GPU + driver on the node, `nvidia.com/gpu` advertised | `kubectl get nodes -o custom-columns=N:.metadata.name,GPU:.status.capacity.nvidia\.com/gpu` |
+| Image store | the serving image is **~10 GB on disk**; the node's container store needs that much free | `df -h` (§5.2) |
+| Model | keep the HF cache on the node and mount it by hostPath (offline), or use a PVC | |
 
-> **왜 hostNetwork 인가.** daos_agent 는 자기가 보는 인터페이스 이름을 클라이언트에 건네고, DAOS 서버는
-> **클라이언트가 알린 주소로 되짚어 닿을 수 있어야** 한다. 파드 네트워크의 클라이언트는 CNI 의 마스커레이드
-> (flannel 의 `-s 10.244.0.0/16 -j MASQUERADE` 등) 뒤에 있어 알린 주소와 실제 출발지가 어긋나고, 모든 RPC 가
-> `crt_proto_query() ... DER_TIMEDOUT` 으로 끝난다. **실측으로 확인했고, 같은 시스템에 hostNetwork 로는
-> 교차 노드 접속이 정상 동작한다.** CSI 노드 플러그인과 S3 게이트웨이가 hostNetwork 인 것도 같은 이유다.
+> **Why hostNetwork.** daos_agent hands the client the interface names it sees, and
+> the DAOS servers must be able to **reach back at the address the client
+> announced**. A client on the pod network sits behind the CNI's masquerade
+> (flannel's `-s 10.244.0.0/16 -j MASQUERADE`, for instance), so the announced
+> address and the real source address disagree and every RPC ends in
+> `crt_proto_query() ... DER_TIMEDOUT`. **We measured this, and cross-node access
+> to the same system works when the client is on hostNetwork.** The CSI node plugin
+> and the S3 gateway are on hostNetwork for the same reason.
 
 ---
 
-## 2. GPU 런타임 — 흔한 세 가지 환경
+## 2. GPU runtime — the three common setups
 
-vLLM 파드가 GPU 를 받으려면 (a) `nvidia.com/gpu` 자원을 광고하는 device plugin 과 (b) 컨테이너에 드라이버를
-넣어주는 런타임이 필요하다. 환경에 따라 이 둘이 이미 갖춰져 있기도 하다.
+For a vLLM pod to get a GPU you need (a) a device plugin advertising
+`nvidia.com/gpu` and (b) a runtime that injects the driver into the container.
+Depending on the environment, both may already be in place.
 
-### 2.1 NVIDIA GPU Operator (가장 흔하다 · 권장)
+### 2.1 NVIDIA GPU Operator (the most common · recommended)
 
-온프레미스 클러스터에서 가장 널리 쓰인다. 드라이버·toolkit·device plugin·RuntimeClass 를 한꺼번에 설치한다.
+The most widely used option on on-premises clusters. It installs the driver, the
+toolkit, the device plugin and the RuntimeClass in one go.
 
 ```bash
 helm repo add nvidia https://nvidia.github.io/gpu-operator && helm repo update
 helm install gpu-operator nvidia/gpu-operator -n gpu-operator --create-namespace \
-  --set driver.enabled=true          # 노드에 드라이버가 이미 있으면 false
+  --set driver.enabled=true          # false if the node already has the driver
 ```
 
-확인:
+Check:
 ```bash
-kubectl get runtimeclass                     # nvidia 가 있어야 한다
+kubectl get runtimeclass                     # nvidia must be there
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.capacity.nvidia\.com/gpu}{"\n"}{end}'
 ```
 
-values 에 넣을 것:
+What to put in values:
 ```yaml
 runtimeClassName: nvidia
-nodeSelector: {"nvidia.com/gpu.present": "true"}     # GPU Operator 가 붙이는 라벨
+nodeSelector: {"nvidia.com/gpu.present": "true"}     # label the GPU Operator adds
 tolerations: [{key: nvidia.com/gpu, operator: Exists, effect: NoSchedule}]
 ```
 
-### 2.2 device plugin 단독 + nvidia-container-toolkit (이 문서의 검증 구성)
+### 2.2 Device plugin alone + nvidia-container-toolkit (the setup verified here)
 
-드라이버를 직접 관리하는 노드에 쓴다. **CRI-O 에서는 함정이 하나 있다**(§5.1).
+For nodes whose driver you manage yourself. **CRI-O has one trap** (§5.1).
 
 ```bash
-# 노드에서 (GPU 노드에만)
+# on the node (GPU nodes only)
 dnf install -y nvidia-container-toolkit
-nvidia-ctk runtime configure --runtime=crio     # containerd 면 --runtime=containerd
-systemctl restart crio                          # 또는 containerd
+nvidia-ctk runtime configure --runtime=crio     # --runtime=containerd for containerd
+systemctl restart crio                          # or containerd
 
-# 클러스터에
+# in the cluster
 kubectl apply -f - <<'YAML'
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
@@ -86,40 +93,43 @@ YAML
 kubectl create -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.1/deployments/static/nvidia-device-plugin.yml
 ```
 
-device plugin DaemonSet 은 `runtimeClassName: nvidia` 로 돌려야 한다(그래야 NVML 을 본다). 전략은 기본값
-`DEVICE_LIST_STRATEGY=envvar` 를 쓴다 — CRI-O 에서 `cdi-cri`/`cdi-annotations` 는 §5.1 때문에 피한다.
+Run the device plugin DaemonSet with `runtimeClassName: nvidia` — that is what lets
+it see NVML. Keep the default `DEVICE_LIST_STRATEGY=envvar` strategy; on CRI-O,
+avoid `cdi-cri` / `cdi-annotations` because of §5.1.
 
-### 2.3 관리형 쿠버네티스 (EKS · GKE · AKS)
+### 2.3 Managed Kubernetes (EKS · GKE · AKS)
 
-GPU 노드풀을 만들면 device plugin 은 대개 이미 있다. 라벨만 환경에 맞춘다.
+Create a GPU node pool and the device plugin is usually already there. Only the
+labels differ.
 
-| 환경 | nodeSelector 예 | 비고 |
+| Environment | nodeSelector example | Note |
 |---|---|---|
-| EKS (GPU AMI) | `{"nvidia.com/gpu.present": "true"}` 또는 인스턴스 타입 라벨 | device plugin 기본 포함 |
-| GKE | `{"cloud.google.com/gke-accelerator": "nvidia-tesla-a100"}` | 드라이버 DaemonSet 을 따로 적용 |
-| AKS | `{"accelerator": "nvidia"}` | GPU 노드풀 생성 시 설치 |
+| EKS (GPU AMI) | `{"nvidia.com/gpu.present": "true"}` or the instance-type label | device plugin included by default |
+| GKE | `{"cloud.google.com/gke-accelerator": "nvidia-tesla-a100"}` | apply the driver DaemonSet separately |
+| AKS | `{"accelerator": "nvidia"}` | installed when the GPU node pool is created |
 
 ```bash
-kubectl get nodes -o json | jq -r '.items[] | .metadata.name + " " + (.status.capacity["nvidia.com/gpu"] // "없음")'
+kubectl get nodes -o json | jq -r '.items[] | .metadata.name + " " + (.status.capacity["nvidia.com/gpu"] // "none")'
 ```
 
-> 관리형 환경에서는 **hostNetwork 와 hostPath 를 정책(PSA/OPA)이 막는 경우**가 있다. DAOS 클라이언트에는 둘 다
-> 필요하므로 네임스페이스에 예외가 필요하다(`pod-security.kubernetes.io/enforce: privileged`).
-> 또한 클라우드 VPC 에서 DAOS 서버까지 L3 로 닿아야 한다.
+> Managed environments sometimes **block hostNetwork and hostPath by policy**
+> (PSA/OPA). A DAOS client needs both, so the namespace needs an exemption
+> (`pod-security.kubernetes.io/enforce: privileged`). The cloud VPC also has to
+> reach the DAOS servers at L3.
 
 ---
 
-## 3. DAOS 쪽 준비
+## 3. Preparing the DAOS side
 
-### 3.1 시스템·풀·KV 컨테이너
+### 3.1 System, pool and KV container
 
 ```bash
-kubectl get daossystem                      # Ready 인지
+kubectl get daossystem                      # is it Ready
 kubectl apply -f - <<'YAML'
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: kvpool}
-spec: {systemRef: <DaosSystem 이름>, size: 100Gi, redundancyFactor: 0}
+spec: {systemRef: <DaosSystem name>, size: 100Gi, redundancyFactor: 0}
 ---
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosContainer
@@ -127,47 +137,50 @@ metadata: {name: kvlmc, namespace: daos-system}
 spec:
   poolRef: kvpool
   type: POSIX
-  chunkSize: 4194304        # 4 MiB — lmcache-daos 성능의 대부분이 여기서 결정된다
-  fileOclass: SX            # 노드가 2대 이상이면 RP_2GX 등 복제 사용
+  chunkSize: 4194304        # 4 MiB -- most of lmcache-daos performance is decided here
+  fileOclass: SX            # use replication (RP_2GX etc.) with two or more nodes
   dirOclass: S1
   redundancyFactor: 0
 YAML
 ```
 
-`chunkSize` 기본값 1 MiB 는 청크당 RPC 오버헤드로 읽기가 크게 떨어진다. **4 MiB 를 쓴다.**
+The 1 MiB default `chunkSize` costs an RPC per chunk and drops read throughput
+badly. **Use 4 MiB.**
 
-### 3.2 GPU 노드에 클라이언트 agent 깔기
+### 3.2 Installing the client agent on the GPU nodes
 
-GPU 노드마다 daos_agent 를 하나 두고 소켓을 hostPath 로 공개한다. 서빙 파드는 그 소켓만 마운트하면 된다.
+Run one daos_agent per GPU node and expose its socket through a hostPath. Serving
+pods only need to mount that socket.
 
 ```yaml
 # DaosSystem spec
 clientAgent:
   enabled: true
-  nodeSelector: {"nvidia.com/gpu.present": "true"}   # GPU 노드
-  # hostSocketDir: /var/run/daos_agent/<system>      # 기본값, 여러 시스템 공존 가능
-  # hostNetwork: true                                # 기본값. 그대로 둔다
+  nodeSelector: {"nvidia.com/gpu.present": "true"}   # GPU nodes
+  # hostSocketDir: /var/run/daos_agent/<system>      # default; several systems can coexist
+  # hostNetwork: true                                # default. Leave it alone
 client:
-  includeFabricIfaces: ["ens18"]   # 서버가 쓰는 패브릭 인터페이스 이름
+  includeFabricIfaces: ["ens18"]   # the fabric interface names the servers use
 ```
 
 ```bash
-kubectl get daossystem <이름> -o jsonpath='{.status.conditions[?(@.type=="ClientAgent")].message}{"\n"}'
+kubectl get daossystem <name> -o jsonpath='{.status.conditions[?(@.type=="ClientAgent")].message}{"\n"}'
 # "N node agent(s), host network; clients mount hostPath ... as /var/run/daos_agent"
 ```
 
-`includeFabricIfaces` 를 비워두면 agent 의 패브릭 스캔이 **CNI 인터페이스(cni0, flannel.1)까지** 후보로 올려
-클라이언트가 엔진에 닿지 못한다. 엔진이 쓰는 인터페이스 이름을 적는다.
+Leave `includeFabricIfaces` empty and the agent's fabric scan will offer the
+**CNI interfaces (cni0, flannel.1)** as candidates, after which the client cannot
+reach the engines. Name the interfaces the engines use.
 
 ---
 
-## 4. 설치
+## 4. Install
 
 ```bash
 helm install daos daos-operator/charts/daos-operator -n daos-system --create-namespace -f my-values.yaml
 ```
 
-`my-values.yaml` (GPU Operator 환경 기준):
+`my-values.yaml` (for a GPU Operator environment):
 
 ```yaml
 vllm:
@@ -179,10 +192,10 @@ vllm:
       systemName: daos_k8s                       # DaosSystem spec.systemName
       agentSocketHostPath: /var/run/daos_agent/daos-k8s
       model:
-        path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/<해시>
+        path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/<hash>
         servedName: llama31-8b
-        cacheHostPath: /mnt/nvme/hf_cache        # 노드의 HF 캐시 → /data/hf_cache
-      port: 8100                                 # hostNetwork: 노드에서 비어 있는 포트
+        cacheHostPath: /mnt/nvme/hf_cache        # the node's HF cache -> /data/hf_cache
+      port: 8100                                 # hostNetwork: a free port on the node
       gpus: 1
       gpuMemoryUtilization: "0.90"
       maxModelLen: 16384
@@ -192,136 +205,153 @@ vllm:
       resources: {requests: {cpu: "8", memory: 32Gi}}
 ```
 
-모델을 hostPath 대신 PVC 로 두려면 `model.cacheHostPath` 를 빼고 `extraEnv` 로 `HF_HOME` 을 지정한 뒤
-PVC 를 직접 붙인다(현재 차트는 hostPath 만 렌더한다).
+To keep the model in a PVC instead of a hostPath, drop `model.cacheHostPath`, set
+`HF_HOME` through `extraEnv` and attach the PVC yourself — the chart only renders
+the hostPath form today.
 
 ---
 
-## 5. 환경별 함정 (실측)
+## 5. Traps, per environment (all measured)
 
-### 5.1 CRI-O 는 `cdi.k8s.io/*` 애너테이션을 무시한다
+### 5.1 CRI-O ignores `cdi.k8s.io/*` annotations
 
-CDI 스펙(`/etc/cdi/nvidia.yaml`)을 만들어두고 파드에 `cdi.k8s.io/gpu: nvidia.com/gpu=all` 을 달아도
-`/dev/nvidia*` 도 NVML 도 들어오지 않는다(crio 로그에 CDI 처리 흔적 자체가 없다). device plugin 은
-`CDI --device-list-strategy options are only supported on NVML-based systems` 로 CrashLoop 한다.
-→ **nvidia 런타임 핸들러 + RuntimeClass** 를 쓰고, device plugin 은 `envvar` 전략으로 돌린다(§2.2).
-containerd 에서는 CDI 가 동작하지만, 이 가이드는 양쪽 모두에서 통하는 RuntimeClass 방식을 권한다.
+Write the CDI spec (`/etc/cdi/nvidia.yaml`), annotate the pod with
+`cdi.k8s.io/gpu: nvidia.com/gpu=all`, and neither `/dev/nvidia*` nor NVML shows up
+— the crio log holds no trace of CDI being processed at all. The device plugin then
+CrashLoops with `CDI --device-list-strategy options are only supported on
+NVML-based systems`.
+→ Use the **nvidia runtime handler + RuntimeClass** and run the device plugin with
+the `envvar` strategy (§2.2). CDI does work on containerd, but this guide
+recommends the RuntimeClass route because it works on both.
 
-### 5.2 서빙 이미지가 노드 디스크를 채운다
+### 5.2 The serving image fills up the node disk
 
-on-disk 약 10 GB 다. 루트 파티션이 작고 다른 컨테이너 런타임(podman 등)과 저장소를 공유하면 풀 도중
-`disk-pressure` taint 가 걸려 노드에 아무 것도 스케줄되지 않고, kubelet 이미지 GC 가 **다른 이미지를 지우려 든다.**
+It is ~10 GB on disk. If the root partition is small and shared with another
+container runtime (podman, say), the pull can trip the `disk-pressure` taint, after
+which nothing schedules on the node and the kubelet image GC **starts deleting other
+images.**
 
-큰 디스크로 옮길 때 **CRI-O 만 따로 옮긴다**:
+When moving to a bigger disk, **move CRI-O alone**:
 ```toml
 # /etc/crio/crio.conf.d/98-storage.toml
 [crio]
 root = "/mnt/nvme/crio"
 runroot = "/run/crio"
 ```
-podman 의 graphroot 를 옮기는 방식은 실패한다 — podman DB 에 컨테이너별 절대경로가 박혀 있어
-`database configuration mismatch` 로 컨테이너가 뜨지 않는다. CRI-O 만 분리하면 kubelet GC 가 다른 런타임의
-이미지를 건드릴 위험도 함께 사라진다.
+Moving podman's graphroot instead does not work — podman's database stores an
+absolute path per container, so containers fail to start with `database
+configuration mismatch`. Separating CRI-O also removes the risk of the kubelet GC
+touching another runtime's images.
 
-### 5.3 이미지에 CUDA 툴체인이 없다
+### 5.3 The image ships no CUDA toolchain
 
-flashinfer 샘플러가 커널을 JIT 컴파일하려다 `Could not find nvcc` 로 **엔진 기동 전체를 실패시킨다.**
-차트가 `VLLM_USE_FLASHINFER_SAMPLER=0` 을 기본으로 넣는다(sm_86 기준 성능 영향 없음, 샘플링만 PyTorch 경로).
+The flashinfer sampler tries to JIT-compile a kernel, fails with `Could not find
+nvcc` and **takes the whole engine startup down with it.** The chart sets
+`VLLM_USE_FLASHINFER_SAMPLER=0` by default (no measurable cost on sm_86; only
+sampling moves to the PyTorch path).
 
-### 5.4 hostNetwork 라 포트가 노드와 공유된다
+### 5.4 hostNetwork means the port is shared with the node
 
-기본 8100 이다. 노드에서 이미 쓰는 포트면 `port:` 를 바꾼다. 한 노드에 두 개를 올리려면 서로 다른 포트여야 한다.
+The default is 8100. Change `port:` if the node already uses it. Two services on one
+node need different ports.
 
-### 5.5 노드 단위 agent 와 소켓
+### 5.5 The per-node agent and its socket
 
-소켓이 hostPath 에 있어 **이전 agent 가 남긴 소켓 파일이 새 agent 를 막을 수 있다**
-(`Configured dRPC socket file is already in use`). operator 가 기동 전에 정리하는 initContainer 를 넣는다 —
-직접 DaemonSet 을 만든다면 같은 처리를 해야 한다.
+The socket lives on a hostPath, so **a socket file left behind by a previous agent
+can block the new one** (`Configured dRPC socket file is already in use`). The
+operator adds an initContainer that cleans up before start — build your own
+DaemonSet and you have to do the same.
 
 ---
 
-## 6. 검증
+## 6. Verification
 
 ```bash
 POD=$(kubectl -n daos-system get pod -l app=vllm-daos -o name | head -1)
 NODE=$(kubectl -n daos-system get $POD -o jsonpath='{.spec.nodeName}')
 
-# 1) 커넥터가 붙었는지
+# 1) did the connector attach
 kubectl -n daos-system logs $POD | grep -E "Creating connector|DaosConnector"
 #   Creating connector for URL: plugin://daos/kvpool/kvlmc?sys=daos_k8s
 
-# 2) 콜드: 한 번 보내고 저장을 확인
-curl -s -X POST http://<노드IP>:8100/v1/completions -H 'Content-Type: application/json' \
+# 2) cold: send one request and confirm the store
+curl -s -X POST http://<node IP>:8100/v1/completions -H 'Content-Type: application/json' \
   -d '{"model":"llama31-8b","prompt":"'"$(python3 -c 'print("DAOS is an object store. "*120)')"'","max_tokens":16,"temperature":0}' >/dev/null
 kubectl -n daos-system logs $POD | grep "Stored"
 #   Stored 1024 out of total 1024 tokens. size: 0.1250 GB
 kubectl get daospool kvpool -o jsonpath='used={.status.usedPercent}%{"\n"}'
 
-# 3) 로컬 캐시를 버리고 같은 프롬프트 → DAOS 에서 복원되는지 (핵심)
+# 3) throw away the local cache, send the same prompt -- is it restored from DAOS (the point)
 kubectl -n daos-system rollout restart deploy/vllm-daos
-#   (준비되면 같은 요청을 한 번 더)
+#   (once it is ready, send the same request again)
 kubectl -n daos-system logs $POD | grep -E "hit tokens|Retrieved"
 #   LMCache hit tokens: 1024
 #   Retrieved 1024 out of 1024 required tokens
 ```
 
-3번이 통과하면 KV 캐시가 GPU 노드 바깥의 DAOS 에 살아 있다는 뜻이다.
+If step 3 passes, the KV cache lives in DAOS, outside the GPU node.
 
 ---
 
-## 7. 문제 해결
+## 7. Troubleshooting
 
-| 증상 | 원인 | 조치 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| `crt_proto_query() ... DER_TIMEDOUT` | 파드 네트워크 클라이언트(마스커레이드) | 파드를 `hostNetwork: true` 로 |
-| `daos_init failed: rc=-1011` | agent 가 안 떴거나 소켓이 유령 | `kubectl logs <agent 파드>`, §5.5 |
-| agent 가 `socket file is already in use` | hostPath 의 이전 소켓 | initContainer 로 정리(operator 가 처리) |
-| device plugin CrashLoop, `only supported on NVML-based systems` | CDI 애너테이션 미동작 | RuntimeClass nvidia + `envvar` 전략(§5.1) |
-| `Could not find nvcc` | 이미지에 CUDA 툴체인 없음 | `VLLM_USE_FLASHINFER_SAMPLER=0`(차트 기본값) |
-| 파드가 `Pending`, 노드에 `disk-pressure` | 이미지 10 GB 가 안 들어감 | CRI-O 저장소를 큰 디스크로(§5.2) |
-| `ImagePullBackOff` 403 | 사내 레지스트리 인증 | 해당 네임스페이스에 `imagePullSecret` |
-| 읽기가 느리다 | 컨테이너 `chunkSize` 기본 1 MiB | 4 MiB 로 다시 만든다(§3.1) |
+| `crt_proto_query() ... DER_TIMEDOUT` | client on the pod network (masquerade) | put the pod on `hostNetwork: true` |
+| `daos_init failed: rc=-1011` | the agent is not up, or its socket is a ghost | `kubectl logs <agent pod>`, §5.5 |
+| agent says `socket file is already in use` | an old socket on the hostPath | clean it in an initContainer (the operator does) |
+| device plugin CrashLoop, `only supported on NVML-based systems` | CDI annotations do nothing | RuntimeClass nvidia + `envvar` strategy (§5.1) |
+| `Could not find nvcc` | no CUDA toolchain in the image | `VLLM_USE_FLASHINFER_SAMPLER=0` (chart default) |
+| pod `Pending`, node has `disk-pressure` | the 10 GB image does not fit | move the CRI-O store to a bigger disk (§5.2) |
+| `ImagePullBackOff` 403 | internal registry authentication | add an `imagePullSecret` in that namespace |
+| reads are slow | the container's default 1 MiB `chunkSize` | recreate it with 4 MiB (§3.1) |
 
 ---
 
-## 8. 검증된 조합
+## 8. The combination that was verified
 
-| 항목 | 값 |
+| Item | Value |
 |---|---|
-| Kubernetes / 런타임 | 1.31.14 / CRI-O 1.31.5 (cgroup v2) |
-| GPU | NVIDIA RTX A6000 (sm_86), 드라이버 610.43.02, nvidia-container-toolkit 1.20.1 |
-| DAOS | 2.8.0 (파드 서버, ofi+tcp) |
-| 이미지 | `vllm-lmcache-daos:0.30.0-0.5.5-20260927` (vLLM 0.30.0 + LMCache 0.5.5 + lmcache-daos) |
-| 모델 | Llama-3.1-8B-Instruct, bf16, max-model-len 16384 |
+| Kubernetes / runtime | 1.31.14 / CRI-O 1.31.5 (cgroup v2) |
+| GPU | NVIDIA RTX A6000 (sm_86), driver 610.43.02, nvidia-container-toolkit 1.20.1 |
+| DAOS | 2.8.0 (pod servers, ofi+tcp) |
+| Image | `vllm-lmcache-daos:0.30.0-0.5.5-20260927` (vLLM 0.30.0 + LMCache 0.5.5 + lmcache-daos) |
+| Model | Llama-3.1-8B-Instruct, bf16, max-model-len 16384 |
 
-GPU Operator·containerd·관리형 쿠버네티스 조합은 **이 문서 기준으로 미검증**이다(구성 방법만 적었다).
+GPU Operator, containerd and managed Kubernetes are **unverified as of this
+document** — only how to configure them is written down.
 
-## RDMA 패브릭(ofi+verbs, ucx)을 쓸 때
+## When the fabric is RDMA (ofi+verbs, ucx)
 
-DAOS 시스템이 RDMA 프로바이더면 **클라이언트 파드가 verbs 장치를 직접 봐야 한다.** `/dev/infiniband`
-가 없으면 libfabric 의 verbs 프로바이더 초기화가 실패하고(`na_ofi_provider_check` 치명 오류) 커넥터가
-아예 올라오지 않는다. tcp 로 붙을 때는 드러나지 않는 요구사항이라, 패브릭을 바꾸는 순간 처음 만난다.
+If the DAOS system runs an RDMA provider, **the client pod has to see the verbs
+devices directly.** Without `/dev/infiniband`, libfabric's verbs provider fails to
+initialize (a fatal `na_ofi_provider_check`) and the connector never comes up. It is
+a requirement that stays hidden over tcp, so you meet it the moment you switch
+fabrics.
 
-차트에서는 워크로드에 `rdma: true` 를 준다:
+In the chart, give the workload `rdma: true`:
 
 ```yaml
 vllm:
   services:
     - name: vllm-daos
-      rdma: true          # /dev/infiniband 마운트 + privileged
+      rdma: true          # mounts /dev/infiniband + privileged
       ...
 ```
 
-CSI 노드 플러그인과 S3 게이트웨이도 같은 조건이다(둘 다 이미 `/dev` 를 마운트하고 privileged 로 뜬다).
-RDMA device plugin 을 쓰는 클러스터라면 hostPath 대신 그쪽 자원 요청으로 바꾸면 된다.
+The CSI node plugin and the S3 gateway are under the same condition (both already
+mount `/dev` and run privileged). On a cluster with an RDMA device plugin, swap the
+hostPath for that resource request.
 
-실측(2026-09-28, 100 Gb IB, da1~3 3 rank + GPU 노드 1대):
+Measured (2026-09-28, 100 Gb IB, 3 ranks on da1~3 + one GPU node):
 
-| 경로 | 1 GbE 관리망 | IB/verbs |
+| Path | 1 GbE management network | IB/verbs |
 |---|---|---|
-| dfuse 쓰기 / 읽기 (1 GiB) | 5.2 / 10.5 MiB/s | **587 / 914 MB/s** |
-| CSI PVC 쓰기 (1 GiB) | 26 MB/s | **744 MB/s** |
-| vLLM 3840 토큰 KV 캐시 | 실패 | **`Retrieved 3840/3840`** |
+| dfuse write / read (1 GiB) | 5.2 / 10.5 MiB/s | **587 / 914 MB/s** |
+| CSI PVC write (1 GiB) | 26 MB/s | **744 MB/s** |
+| vLLM 3840-token KV cache | failed | **`Retrieved 3840/3840`** |
 
-**LMCache 커넥터 주의**: DAOS 첫 연결이 3초를 넘기면 health monitor 가 degraded 로 들어가 lookup·store 를
-통째로 건너뛴다. 느린 경로나 rank 가 많은 시스템에서는 `DAOS_PING_TIMEOUT` 을 15 초 정도로 올린다.
+**A note on the LMCache connector**: if the first DAOS connection takes more than
+3 seconds, the health monitor goes degraded and skips lookup and store entirely. On
+a slow path, or a system with many ranks, raise `DAOS_PING_TIMEOUT` to about 15
+seconds.
