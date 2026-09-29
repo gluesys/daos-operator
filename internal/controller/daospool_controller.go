@@ -286,22 +286,34 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// Reported on every successful query, even when an operation follows.
 	r.checkSpace(pool, &status)
 
-	// A pool we did not create can be sitting under this label: destroying a
-	// DaosPool and re-applying the same name adopts whatever still answers to it,
-	// and the CR then reports Ready for a pool that is not the size asked for
-	// (3Ti spec, 404 GB pool -- 2026-09-28). Extending grows the real size, so
-	// only a pool smaller than the spec is suspect (#31).
-	// DAOS keeps a good slice of the request for itself (a 10 GiB request reports
-	// ~7.5 GiB usable), so only a pool less than half the size asked for counts as
-	// "not the pool this resource describes" -- the case seen was 404 GB for 3 TiB.
+	// The pool answering to this label may not be the one the spec describes:
+	// re-applying a name while the old pool is still being destroyed adopts the
+	// old one (3Ti spec, 404 GB pool -- 2026-09-28), and a pool created by hand
+	// or by an older spec keeps its original size because the operator never
+	// resizes. DAOS keeps a slice of the request for itself (a 10 GiB request
+	// reports ~7.5 GiB usable) and extending only grows it, so only a pool less
+	// than half the size asked for is reported (#31).
+	//
+	// This is reported on its own condition and does NOT take the pool out of
+	// service. The data path is fine -- containers and PVs in it keep working --
+	// and flipping Ready would stop every S3Service that waits on it.
+	sizeMismatch := ""
 	if want := pool.Spec.Size.Value(); want > 0 && status.TotalBytes > 0 && status.TotalBytes*2 < want {
-		msg := fmt.Sprintf("pool %q is %s but spec.size asks for %s: this is not the pool this resource describes "+
-			"(re-applying a name while the old pool is still being destroyed adopts the old one). "+
-			"Destroy it and let the operator create it, or set spec.size to match",
-			status.Label, humanBytes(status.TotalBytes), humanBytes(want))
-		setC(metav1.ConditionFalse, "SizeMismatch", msg)
-		return r.updateStatus(ctx, pool, status, poolRequeueIdle)
+		sizeMismatch = fmt.Sprintf("pool %q is %s but spec.size asks for %s; the operator never resizes a pool, so this "+
+			"resource is not describing what exists. Causes seen: the name was re-applied while the old pool was still "+
+			"being destroyed, or the pool predates this spec. Destroy it and let the operator create it, or set "+
+			"spec.size to what is there", status.Label, humanBytes(status.TotalBytes), humanBytes(want))
 	}
+	setMismatch := func() {
+		st, reason := metav1.ConditionFalse, "Matches"
+		msg := "pool size is within what spec.size asks for"
+		if sizeMismatch != "" {
+			st, reason, msg = metav1.ConditionTrue, "SizeMismatch", sizeMismatch
+		}
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpecMismatch,
+			Status: st, Reason: reason, Message: msg, ObservedGeneration: pool.Generation})
+	}
+	setMismatch()
 
 	// drift -> at most one operation per pass; a failed operation is not retried
 	// until the spec changes
@@ -317,7 +329,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.startOp(ctx, pool, sys, ns, status, opACL)
 	}
 	if info.State == "Ready" {
-		setC(metav1.ConditionTrue, "Ready", fmt.Sprintf("state %s, rebuild %s, %d ranks", info.State, info.Rebuild.State, len(status.EnabledRanks)))
+		msg := fmt.Sprintf("state %s, rebuild %s, %d ranks", info.State, info.Rebuild.State, len(status.EnabledRanks))
+		if sizeMismatch != "" {
+			msg += "; spec.size does not match this pool (see the SpecMismatch condition)"
+		}
+		setC(metav1.ConditionTrue, "Ready", msg)
 	} else {
 		setC(metav1.ConditionFalse, "State"+info.State, fmt.Sprintf("dmg reports state %s (rebuild %s, %d disabled targets)", info.State, info.Rebuild.State, info.DisabledTargets))
 	}

@@ -112,4 +112,9 @@ const (
 	// spec.spaceWarningPercent. DAOS has no per-container quota, so a full pool
 	// hits every container and PV in it at once.
 	ConditionSpaceLow = "SpaceLow"
+
+	// ConditionSpecMismatch is True when the pool that answers to this label is
+	// not the one the spec describes (size). It does not take the pool out of
+	// service: the data path is fine, the resource simply is not describing it.
+	ConditionSpecMismatch = "SpecMismatch"
 )

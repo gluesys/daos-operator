@@ -240,7 +240,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("mem-ratio"))
 	})
 
-	It("refuses to call a pool Ready when it is far smaller than spec.size (#31)", func() {
+	It("flags a pool far smaller than spec.size without taking it out of service (#31)", func() {
 		p := getPool()
 		p.Spec.Size = resource.MustParse("3Ti")
 		p.Spec.ACL = nil
@@ -249,10 +249,17 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
 		poolRec(f)
 		poolRec(f)
-		c := ready(getPool().Status.Conditions)
-		Expect(c.Status).To(Equal(metav1.ConditionFalse))
-		Expect(c.Reason).To(Equal("SizeMismatch"))
-		Expect(c.Message).To(ContainSubstring("spec.size asks for"))
+		p = getPool()
+		mm := meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpecMismatch)
+		Expect(mm).NotTo(BeNil())
+		Expect(mm.Status).To(Equal(metav1.ConditionTrue))
+		Expect(mm.Reason).To(Equal("SizeMismatch"))
+		Expect(mm.Message).To(ContainSubstring("spec.size asks for"))
+		// the data path is fine: a pool serving containers must not be taken out of
+		// service over a spec discrepancy (an S3Service waits on Ready)
+		c := ready(p.Status.Conditions)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue), "the pool keeps serving")
+		Expect(c.Message).To(ContainSubstring("SpecMismatch"), "but Ready points at it")
 		Expect(f.count("-dmg-create")).To(BeZero(), "it must not try to create over an existing pool")
 	})
 
@@ -265,8 +272,9 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
 		poolRec(f)
 		poolRec(f)
-		c := ready(getPool().Status.Conditions)
-		Expect(c.Reason).NotTo(Equal("SizeMismatch"))
+		mm := meta.FindStatusCondition(getPool().Status.Conditions, daosv1alpha1.ConditionSpecMismatch)
+		Expect(mm).NotTo(BeNil())
+		Expect(mm.Status).To(Equal(metav1.ConditionFalse), "an extended pool is bigger, not a mismatch")
 	})
 
 	It("does not retry a failed create until the spec changes", func() {
