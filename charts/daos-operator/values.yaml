@@ -8,7 +8,7 @@
 # metrics Service/ServiceMonitor, dmg Jobs) is created by the operator.
 
 image:
-  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  repository: ghcr.io/gluesys/daos-operator
   tag: ""            # defaults to .Chart.appVersion
   pullPolicy: IfNotPresent
 imagePullSecrets: []
@@ -58,10 +58,10 @@ system:
     version: "2.8.0"
     namespace: daos-system
     images:
-      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260914
-      agent: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
-      admin: registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
-      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+      server: ghcr.io/gluesys/daos-server:2.8.0-20260922
+      agent: ghcr.io/gluesys/daos-agent:2.8.0-20260914
+      admin: ghcr.io/gluesys/daos-admin:2.8.0-20260914
+      client: ghcr.io/gluesys/daos-client:2.8.0-20260914
     placement: dedicated
     nodeSelector:
       daos.gluesys.com/role: storage
@@ -85,7 +85,7 @@ csi:
   system: ""              # defaults to system.name
   driverName: daos.csi.gluesys.com
   image:
-    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    repository: ghcr.io/gluesys/daos-csi
     tag: ""               # defaults to .Chart.appVersion
     pullPolicy: IfNotPresent
   agentImage: ""          # defaults to system.spec.images.agent
