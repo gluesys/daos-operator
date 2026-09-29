@@ -82,6 +82,7 @@ annotations, not from the chart: `daos.gluesys.com/fabric-iface`,
 
 ## Documentation
 
-- `doc/deploy-gpu-k8s.md` — deploying the vLLM KV-cache path on common GPU setups
-- `doc/adr/` — the decisions behind the deployment, device binding and upgrade models
-- `doc/testbed-*.md` — what was measured on real hardware, and what broke
+Project documentation lives at
+<https://github.com/gluesys/daos-operator>. The engineering notes (ADRs, testbed
+records, the GPU deployment guide) are written in Korean; the README there is in
+English.
