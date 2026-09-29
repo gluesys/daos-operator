@@ -3,8 +3,9 @@
 
 # ADR-003: 업그레이드 모델 — 3.0 이전에는 "전체 중단 업그레이드"를 1급 절차로
 
-- 상태: 제안
-- 날짜: 2026-09-14
+- 상태: **승인** (2026-09-29, kpkim)
+- 날짜: 2026-09-14 (승인 2026-09-29)
+- 승인 근거: 전체 중단 재기동(dmg system stop/start)과 노드 추가·rank 장애 복구를 데이터 무손실로 확인
 
 ## 배경
 DAOS 재단 공식 문구: "3.0 expects a communications protocol change which will not allow backward
