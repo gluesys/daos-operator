@@ -123,3 +123,40 @@ mem-ratio 가 안 듣는 것처럼 보였다).
 **살아 있는 동명 DAOS 풀을 그대로 Ready 로 보고**한다. 그때 `spec.size` 와 실제 크기가 다른데도
 조건은 Ready 다(3Ti 스펙에 실제 404 GB). 크기 사다리를 잴 때 이걸 모르면 결과를 통째로 잘못 읽는다 —
 실제로 한 번 잘못 읽었다. 풀마다 새 이름을 쓰거나 파괴 완료를 확인하고 만들 것. 별도 이슈로 올린다.
+
+## da4 를 나중에 붙이기 — 스케일아웃 포맷 실검증 (2026-09-29)
+
+IB 케이블을 고친 뒤 da4 를 **가동 중인 시스템에 추가**했다. 이것이 `8865ad3`(돌아가는 시스템에
+붙은 노드를 그 노드만 포맷) 이 데이터가 있는 실제 시스템에서 처음 끝까지 검증된 사례다.
+
+절차: ib0 를 `100.100.33.94/24` 로, 옛 시스템 슈퍼블록 wipe(9개 장치), 휴지페이지 5120 + kubelet
+재시작, 티어 주석 2개, `da-server=true` 라벨. 그러면 operator 가 스스로 `not formatted yet:
+192.168.59.94` 로 사람 승인을 요구하고, 승인 후 **그 주소만** 포맷해 rank3 으로 붙였다.
+결과 `4/4 joined`, 10 TiB 풀 `big10` 의 데이터 md5 그대로.
+
+### 걸린 것 1: 호스트에 옛 `daos_server` 가 살아 포트를 잡고 있었다
+
+포맷이 `request system does not match running system (daos_ib != daos_flexa)` 로 실패했다.
+da4 의 **네이티브 `daos_server` 프로세스가 10101 을 점유**하고 있었기 때문이다. 부팅 자동시작은
+`disabled` 인데도 프로세스는 떠 있었다.
+
+- da3 에도 같은 유휴 프로세스가 있었다. 거기서는 파드가 포트를 먼저 잡아 겉보기엔 정상이었지만,
+  **다음 재시작 때 네이티브 쪽이 먼저 잡으면 그 rank 가 조용히 깨진다.**
+- 조치: 네 노드 모두 `systemctl mask daos_server daos_agent`. 호스트에 DAOS 패키지가 깔린 노드를
+  파드 서버로 쓸 때는 **정지·비활성화로는 부족하고 mask 가 필요하다.**
+
+### 걸린 것 2: 호스트 `daos_agent` 정지가 파드 에이전트의 소켓을 지운다
+
+`daos_agent.service` 에 `RuntimeDirectory=daos_agent` 가 있어 **서비스가 멈출 때 systemd 가
+`/var/run/daos_agent` 를 통째로 삭제**한다. operator 는 파드 에이전트의 hostPath 소켓을
+`/var/run/daos_agent/<system>/` 에 두므로, 호스트 서비스를 건드리는 순간 그 아래 소켓이 같이
+날아가고 모든 클라이언트가 `DER_NONEXIST` 로 떨어진다. 에이전트 파드를 재시작하면 복구된다.
+
+파드 에이전트가 살아 있는데 소켓만 사라지므로 `kubectl get pods` 로는 정상으로 보인다. 소켓 경로를
+`/var/run/daos_agent` 밖으로 옮기는 편이 안전하다(이슈 등록).
+
+### 걸린 것 3: 포맷 실패 사유가 다음 질의에 덮인다
+
+포맷 Job 이 실패했는데 조건 메시지는 곧바로 `... not formatted yet: <주소> (a human must approve ...)`
+로 돌아갔다. 실패 사유(`system does not match`)는 Job 로그에만 있었고 Job 은 삭제돼 사라졌다.
+승인을 다시 넣어도 같은 자리에서 실패할 뿐 이유를 알 수 없다 — 진단에 시간을 썼다.
