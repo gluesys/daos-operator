@@ -200,3 +200,39 @@ DAOS 가 rank 를 죽었다고 판정하는 시간에 달렸다. KV 캐시·추�
 **읽기는 정족수 없이도 답한다.** ③ 구간 내내 `dmg system query` 는 `[0-3] Joined` 를 반환했다.
 operator 의 멤버십 조회가 바로 이 명령이므로, **MS 가 정족수를 잃어도 status 는 정상으로 보인다.**
 헬스체크는 `leader-query` 의 리더 유무나 쓰기 가능 여부로 판단해야 한다(별도 이슈).
+
+## ManagementService 조건 실장비 검증 (2026-09-29, #34)
+
+MS 3중화 시험에서 드러난 맹점 — 정족수를 잃어도 `dmg system query` 는 복제본의
+로컬 사본에서 응답하므로 operator status 가 정상으로 남는다 — 의 수정을
+daos-ib 에서 확인했다. operator `v0.1.0-rc.1-59-g74cc176`.
+
+주입 방식은 앞 시험과 다르다. 파드를 내리지 않고 **제어 평면만 멈췄다**:
+da1(당시 리더, .91)과 da3(.93) 호스트에서 `kill -STOP $(pgrep -x daos_server)`.
+`daos_engine` 은 그대로 돌아 데이터 경로는 무사하다. 컨테이너 안에서는 PID 1 에
+SIGSTOP 이 막히므로 호스트에서 보내야 한다. 서버 파드에 liveness probe 가 없어
+재시작되지 않고, readiness 의 TCP 연결은 커널이 받아주므로 파드는 Ready 로 남는다.
+
+| 시각(UTC) | 사건 | status |
+|---|---|---|
+| 14:53:53 | da1·da3 `daos_server` SIGSTOP | MS=True(Leader) |
+| 14:54:57 | 첫 감지, Warning `ManagementServiceDegraded` | MS=False(NoQuorum) |
+| 14:55:05~14:56:59 | 되돌아감 — 복제본이 아직 옛 리더를 답한다 | MS=True(Leader) |
+| 14:57:02 | 재감지, 이후 유지 | MS=False(NoQuorum) |
+| 14:57:25 | 두 노드 SIGCONT | |
+| 14:58:06 | 복귀(41초), 리더는 da2 | MS=True(Leader) |
+
+메시지: `no replica holds the leadership; 1/3 replicas answer (down:
+192.168.59.91:10101,192.168.59.93:10101); membership queries still answer from a
+replica's local copy`
+
+- **맹점이 재현됐고, 조건만 뒤집혔다.** 정족수를 잃은 내내 `ranksJoined=4/4`,
+  `Formatted=True`, `Ready=True` 였다. 멤버십만 보는 감시는 여전히 초록색이다.
+  `Ready` 는 일부러 건드리지 않았다 — 데이터 경로는 멀쩡하고, 내리면
+  S3Service·풀까지 연쇄로 끌려간다(#31 교훈).
+- **감지는 즉시가 아니고 한 번 튄다.** 첫 감지까지 64초, 그 뒤 약 2분간
+  True 로 되돌아갔다가 다시 False 로 굳었다. 살아남은 복제본이 peer 를 down 으로
+  찍기 전까지는 **옛 리더를 그대로 답하기** 때문이다(DAOS 동작, operator 문제 아님).
+  조건 하나만 보고 경보를 울리면 놓칠 수 있으므로, 전이마다 남는
+  `ManagementServiceDegraded` 이벤트를 같이 보는 편이 안전하다.
+- 시험 후 4 rank 전부 joined, `big10` 13.3 TiB Ready 로 이상 없음.
