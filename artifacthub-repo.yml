@@ -7,7 +7,7 @@
 #   oras push ghcr.io/gluesys/charts/daos-operator:artifacthub.io \
 #     --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
 #     artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
-repositoryID: 3ee4b817-729f-4fe8-a987-0936097004b7
+repositoryID: f5b7f736-7bd2-46d5-86e7-76a4236b569f
 owners:
   - name: Gluesys
     email: kpkim@gluesys.com
