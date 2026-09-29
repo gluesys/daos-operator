@@ -240,6 +240,26 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("mem-ratio"))
 	})
 
+	It("lets a container be deleted when its pool is gone instead of holding the finalizer forever", func() {
+		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Name: "orphan", Namespace: "default"},
+			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: "no-such-pool", Type: "POSIX"}}
+		Expect(k8sClient.Create(ctx, c)).To(Succeed())
+		// give it the finalizer the way the controller would
+		c.Finalizers = []string{daosv1alpha1.FinalizerContainer}
+		Expect(k8sClient.Update(ctx, c)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, c)).To(Succeed())
+
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: "default", Name: "orphan"}})
+		Expect(err).NotTo(HaveOccurred())
+
+		got := &daosv1alpha1.DaosContainer{}
+		err = k8sClient.Get(ctx, types.NamespacedName{Namespace: "default", Name: "orphan"}, got)
+		Expect(apierrors.IsNotFound(err)).To(BeTrue(), "the resource must be gone, not stuck on a finalizer")
+		Expect(f.count("-daos-destroy")).To(BeZero(), "nothing to destroy without a pool to reach")
+	})
+
 	It("flags a pool far smaller than spec.size without taking it out of service (#31)", func() {
 		p := getPool()
 		p.Spec.Size = resource.MustParse("3Ti")

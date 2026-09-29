@@ -88,6 +88,21 @@ func contKey(c *daosv1alpha1.DaosContainer) string { return "cont/" + c.Namespac
 // contJobLabel identifies the owning DaosContainer on a Job (label values cannot hold "/").
 func contJobLabel(c *daosv1alpha1.DaosContainer) string { return c.Namespace + "." + c.Name }
 
+// releaseOrphan drops the finalizer of a container being deleted whose pool or
+// system is gone. The container may still exist in DAOS -- we cannot reach it to
+// find out -- so this is recorded as a warning rather than done quietly.
+func (r *DaosContainerReconciler) releaseOrphan(ctx context.Context, c *daosv1alpha1.DaosContainer, why string) (ctrl.Result, error) {
+	if r.Recorder != nil {
+		r.Recorder.Event(c, corev1.EventTypeWarning, "DestroySkipped",
+			"deleting without destroying: "+why+". If the container still exists in DAOS, destroy it by hand")
+	}
+	if controllerutil.ContainsFinalizer(c, daosv1alpha1.FinalizerContainer) {
+		controllerutil.RemoveFinalizer(c, daosv1alpha1.FinalizerContainer)
+		return ctrl.Result{}, r.Update(ctx, c)
+	}
+	return ctrl.Result{}, nil
+}
+
 func (r *DaosContainerReconciler) event(obj runtime.Object, typ, reason, msg string) {
 	if r.Recorder != nil {
 		r.Recorder.Event(obj, typ, reason, msg)
@@ -215,6 +230,12 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	pool := &daosv1alpha1.DaosPool{}
 	if err := r.Get(ctx, types.NamespacedName{Name: c.Spec.PoolRef}, pool); err != nil {
 		if apierrors.IsNotFound(err) {
+			// being deleted with no pool to reach: there is nothing this operator
+			// can destroy, and holding the finalizer only makes the resource
+			// undeletable without hand surgery. Let it go and say so.
+			if !c.DeletionTimestamp.IsZero() {
+				return r.releaseOrphan(ctx, c, "DaosPool "+c.Spec.PoolRef+" does not exist")
+			}
 			setC(metav1.ConditionFalse, "PoolNotFound", "DaosPool "+c.Spec.PoolRef+" does not exist")
 			return r.updateStatus(ctx, c, status, poolRequeueWait)
 		}
@@ -223,6 +244,9 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	sys, ns, err := systemFor(ctx, r.Client, pool.Spec.SystemRef)
 	if err != nil {
 		if apierrors.IsNotFound(err) {
+			if !c.DeletionTimestamp.IsZero() {
+				return r.releaseOrphan(ctx, c, "DaosSystem "+pool.Spec.SystemRef+" does not exist")
+			}
 			setC(metav1.ConditionFalse, "SystemNotFound", "DaosSystem "+pool.Spec.SystemRef+" does not exist")
 			return r.updateStatus(ctx, c, status, poolRequeueWait)
 		}
