@@ -262,7 +262,10 @@ type ClientAgentSpec struct {
 	NodeSelector map[string]string   `json:"nodeSelector,omitempty"`
 	Tolerations  []corev1.Toleration `json:"tolerations,omitempty"`
 	// HostSocketDir is the host directory that receives daos_agent.sock.
-	// Default /var/run/daos_agent/<system name>, so several systems can share a node.
+	// Default /var/run/daos-operator/agent/<system name>, so several systems can
+	// share a node. Do not put this under /var/run/daos_agent: the host's
+	// daos_agent.service owns that path via RuntimeDirectory=, and systemd
+	// deletes it (with our socket in it) when that service stops (#33).
 	HostSocketDir string `json:"hostSocketDir,omitempty"`
 	// HostNetwork runs the agent in the host network namespace (default true).
 	// Set false to serve pod-network clients; see the type comment.
@@ -345,6 +348,17 @@ type DaosSystemSpec struct {
 	Upgrade       UpgradeSpec      `json:"upgrade,omitempty"`
 }
 
+// FormatAttempt is what came back from one `dmg storage format`.
+type FormatAttempt struct {
+	Time metav1.Time `json:"time"`
+	// Hosts are the control addresses the format was restricted to; empty means
+	// the whole system (the first format).
+	Hosts     []string `json:"hosts,omitempty"`
+	Succeeded bool     `json:"succeeded"`
+	// Message is dmg's error when it failed.
+	Message string `json:"message,omitempty"`
+}
+
 // RankStatus mirrors `dmg system query -v` for one rank. The operator copies
 // it; it never keeps its own membership database (no second source of truth).
 type RankStatus struct {
@@ -373,6 +387,10 @@ type DaosSystemStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 	// SelectedNodes are the nodes matching spec.nodeSelector, sorted.
 	SelectedNodes []string `json:"selectedNodes,omitempty"`
+	// LastFormat records the most recent `dmg storage format` attempt. The
+	// Formatted condition is rewritten by the next membership query, so a
+	// failure would otherwise leave no trace once the Job is collected (#32).
+	LastFormat *FormatAttempt `json:"lastFormat,omitempty"`
 	// MsReplicaNodes are the nodes chosen to host management-service replicas.
 	MsReplicaNodes  []string           `json:"msReplicaNodes,omitempty"`
 	NodeConfigs     []NodeConfigStatus `json:"nodeConfigs,omitempty"`

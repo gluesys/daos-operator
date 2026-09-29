@@ -128,7 +128,10 @@ spec:
                   hostSocketDir:
                     description: |-
                       HostSocketDir is the host directory that receives daos_agent.sock.
-                      Default /var/run/daos_agent/<system name>, so several systems can share a node.
+                      Default /var/run/daos-operator/agent/<system name>, so several systems can
+                      share a node. Do not put this under /var/run/daos_agent: the host's
+                      daos_agent.service owns that path via RuntimeDirectory=, and systemd
+                      deletes it (with our socket in it) when that service stops (#33).
                     type: string
                   nodeSelector:
                     additionalProperties:
@@ -717,6 +720,31 @@ spec:
                 type: string
               formatted:
                 type: boolean
+              lastFormat:
+                description: |-
+                  LastFormat records the most recent `dmg storage format` attempt. The
+                  Formatted condition is rewritten by the next membership query, so a
+                  failure would otherwise leave no trace once the Job is collected (#32).
+                properties:
+                  hosts:
+                    description: |-
+                      Hosts are the control addresses the format was restricted to; empty means
+                      the whole system (the first format).
+                    items:
+                      type: string
+                    type: array
+                  message:
+                    description: Message is dmg's error when it failed.
+                    type: string
+                  succeeded:
+                    type: boolean
+                  time:
+                    format: date-time
+                    type: string
+                required:
+                - succeeded
+                - time
+                type: object
               lastQueryTime:
                 description: LastQueryTime is when `dmg system query` last answered
                   (ranks are as of then).

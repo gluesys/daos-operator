@@ -158,7 +158,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		Formatted: sys.Status.Formatted, PendingFormat: sys.Status.PendingFormat, FormatTime: sys.Status.FormatTime,
 		LastQueryTime: sys.Status.LastQueryTime, Ranks: sys.Status.Ranks, RanksJoined: sys.Status.RanksJoined,
 		RanksTotal: sys.Status.RanksTotal, ObservedVersion: sys.Status.ObservedVersion, Upgrade: sys.Status.Upgrade,
-		Certificates: sys.Status.Certificates, LastRankOp: sys.Status.LastRankOp}
+		Certificates: sys.Status.Certificates, LastRankOp: sys.Status.LastRankOp, LastFormat: sys.Status.LastFormat}
 	for _, n := range nodes.Items {
 		status.SelectedNodes = append(status.SelectedNodes, n.Name)
 	}

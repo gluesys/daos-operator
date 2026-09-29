@@ -200,7 +200,8 @@ var _ = Describe("DaosSystem Controller", func() {
 			}
 		}
 		Expect(sock).NotTo(BeNil())
-		Expect(sock.Path).To(Equal("/var/run/daos_agent/t1"), "one directory per system so nodes can serve several")
+		Expect(sock.Path).To(Equal("/var/run/daos-operator/agent/t1"),
+			"one directory per system, and outside /var/run/daos_agent which the host service deletes on stop (#33)")
 		Expect(*sock.Type).To(Equal(corev1.HostPathDirectoryOrCreate))
 		Expect(ds.Spec.Template.Spec.Containers[0].Image).To(Equal(sys.Spec.Images.Agent))
 		// a socket file left on the hostPath by a previous agent blocks the new
@@ -211,6 +212,13 @@ var _ = Describe("DaosSystem Controller", func() {
 		c := cond(getSys(), daosv1alpha1.ConditionClientAgent)
 		Expect(c).NotTo(BeNil())
 		Expect(c.Reason).To(Equal("NoNodes"), "envtest runs no DaemonSet controller, so desired stays 0")
+
+		// the socket can be deleted under a running agent (the host's
+		// daos_agent.service owns /var/run/daos_agent via RuntimeDirectory and
+		// systemd wipes it on stop); clients then fail while the pod looks fine
+		lp := ds.Spec.Template.Spec.Containers[0].LivenessProbe
+		Expect(lp).NotTo(BeNil(), "the agent must not stay up without its socket (#33)")
+		Expect(strings.Join(lp.Exec.Command, " ")).To(ContainSubstring("/var/run/daos_agent/daos_agent.sock"))
 
 		// pod-network clients (chart-deployed pods that cannot ask for hostNetwork)
 		sys = getSys()
@@ -448,6 +456,54 @@ var _ = Describe("DaosSystem Controller", func() {
 		}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
 		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.0.0.1"))
+	})
+
+	It("keeps the reason a format failed where the next query cannot erase it (#32)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+
+		By("n3 joins the node set and needs a format")
+		n3 := &corev1.Node{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "n3"}, n3)).To(Succeed())
+		n3.Annotations = map[string]string{
+			daosv1alpha1.AnnotationFabricIface: "eth0",
+			daosv1alpha1.AnnotationBdevList:    "0000:05:00.0",
+			daosv1alpha1.AnnotationBdevDSN:     "0000:05:00.0=DSN9"}
+		Expect(k8sClient.Update(ctx, n3)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n1", "n2", "n3")
+		reconcileWith(f)
+		Expect(getSys().Status.PendingFormat).To(BeTrue())
+
+		By("the format fails: status.lastFormat records it and names what to check")
+		f.set("-l 10.0.0.3 storage format", &dmg.Result{Done: true, ExitCode: 1,
+			Output: `{"response": null, "error": "request system does not match running system (t1 != daos_flexa)", "status": -1}`})
+		approve()
+		reconcileWith(f)
+		sys := getSys()
+		Expect(sys.Status.LastFormat).NotTo(BeNil())
+		Expect(sys.Status.LastFormat.Succeeded).To(BeFalse())
+		Expect(sys.Status.LastFormat.Hosts).To(Equal([]string{"10.0.0.3"}))
+		Expect(sys.Status.LastFormat.Message).To(ContainSubstring("does not match running system"))
+		Expect(sys.Status.LastFormat.Message).To(ContainSubstring("systemctl mask"), "the message says where to look")
+
+		By("the next membership query rewrites the condition but keeps the failure visible")
+		reconcileWith(f)
+		c := cond(getSys(), daosv1alpha1.ConditionFormatted)
+		Expect(c.Message).To(ContainSubstring("not formatted yet: 10.0.0.3"))
+		Expect(c.Message).To(ContainSubstring("last attempt"))
+		Expect(c.Message).To(ContainSubstring("does not match running system"))
+
+		By("a successful format replaces the record")
+		f.set("-l 10.0.0.3 storage format", &dmg.Result{Done: true, ExitCode: 0, Output: dmgFormatOK})
+		approve()
+		reconcileWith(f)
+		lf := getSys().Status.LastFormat
+		Expect(lf.Succeeded).To(BeTrue())
+		Expect(lf.Message).To(BeEmpty())
 	})
 
 	It("formats only the node added to a system that already carries data (daos-images #1)", func() {

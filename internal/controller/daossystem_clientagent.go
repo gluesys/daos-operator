@@ -46,7 +46,12 @@ func clientAgentSocketDir(sys *daosv1alpha1.DaosSystem) string {
 	if d := sys.Spec.ClientAgent.HostSocketDir; d != "" {
 		return filepath.Clean(d)
 	}
-	return filepath.Join("/var/run/daos_agent", sys.Name)
+	// deliberately not under /var/run/daos_agent: the host's daos_agent.service
+	// declares RuntimeDirectory=daos_agent, so systemd deletes that directory --
+	// and everything we put under it -- whenever that service stops. A node
+	// recycled from a native install hits this the moment someone stops the old
+	// service, and the agent pod keeps running with its socket gone (#33).
+	return filepath.Join("/var/run/daos-operator/agent", sys.Name)
 }
 
 // ensureClientAgent keeps the per-node daos_agent DaemonSet in step with
@@ -95,6 +100,14 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 				{Name: "agentcfg", MountPath: "/etc/daos/daos_agent.yml", SubPath: "daos_agent.yml", ReadOnly: true},
 				{Name: "agentsock", MountPath: agentSocketDir},
 				{Name: "dev", MountPath: "/dev"},
+			},
+			// the socket can vanish under a running agent (something wipes the
+			// host directory); clients then fail with DER_NONEXIST while the pod
+			// still looks healthy. Restart on that instead of staying up (#33).
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{
+					Command: []string{"test", "-S", agentSocketDir + "/daos_agent.sock"}}},
+				InitialDelaySeconds: 30, PeriodSeconds: 30, FailureThreshold: 2,
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")},

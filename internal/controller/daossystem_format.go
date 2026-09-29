@@ -163,12 +163,16 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 			return 0, err
 		}
 		if msg := formatFailure(res); msg != "" {
+			msg += formatHint(msg)
+			now := metav1.Now()
+			status.LastFormat = &daosv1alpha1.FormatAttempt{Time: now, Hosts: only, Succeeded: false, Message: msg}
 			setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionFalse, "FormatFailed", msg)
 			r.event(sys, corev1.EventTypeWarning, "FormatFailed", msg)
 			return requeueSlow, nil
 		}
 		now := metav1.Now()
 		status.Formatted, status.PendingFormat, status.FormatTime = true, false, &now
+		status.LastFormat = &daosv1alpha1.FormatAttempt{Time: now, Hosts: only, Succeeded: true}
 		done := "dmg storage format succeeded"
 		if len(only) > 0 {
 			done += " on " + strings.Join(only, ",")
@@ -261,7 +265,12 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 	msg := fmt.Sprintf("%d/%d ranks joined%s", joined, len(members), awaitSuffix(awaiting))
 	if len(unformatted) > 0 {
 		msg += "; not formatted yet: " + strings.Join(unformatted, ",")
-		if !approved {
+		// the condition is rewritten on every query, so carry the reason the last
+		// attempt failed -- otherwise approving again just fails the same way with
+		// nothing to read, and the Job holding the answer is already collected
+		if lf := status.LastFormat; lf != nil && !lf.Succeeded {
+			msg += fmt.Sprintf("; last attempt %s failed: %s", lf.Time.Format(time.RFC3339), lf.Message)
+		} else if !approved {
 			msg += fmt.Sprintf(" (a human must approve: kubectl annotate daossystem %s %s=true)", sys.Name, daosv1alpha1.AnnotationFormatApproved)
 		}
 	}
@@ -324,6 +333,20 @@ func formatHosts(status *daosv1alpha1.DaosSystemStatus) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// formatHint turns dmg's terser refusals into the thing to go and check. The
+// system-name mismatch is the one that costs the most time: it means something
+// else answers on the control port -- on a node recycled from a native install
+// that is the host's own daos_server, which `systemctl disable` does not stop
+// (#32).
+func formatHint(msg string) string {
+	if strings.Contains(msg, "does not match running system") {
+		return " -- another DAOS system answers on the control port of that host;" +
+			" on a node recycled from a native install, stop and mask it" +
+			" (systemctl mask --now daos_server daos_agent)"
+	}
+	return ""
 }
 
 func awaitSuffix(n int) string {
