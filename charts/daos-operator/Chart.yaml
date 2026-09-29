@@ -17,3 +17,27 @@ maintainers:
   - name: Gluesys exastor
 annotations:
   daos.gluesys.com/daos-version: "2.8.0"
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/crds: |
+    - kind: DaosSystem
+      version: v1alpha1
+      name: daossystems.daos.gluesys.com
+      displayName: DAOS system
+      description: The engines - node selection, fabric, storage tiers, management-service replicas
+    - kind: DaosPool
+      version: v1alpha1
+      name: daospools.daos.gluesys.com
+      displayName: DAOS pool
+      description: A pool, its redundancy factor, rank set and space warnings
+    - kind: DaosContainer
+      version: v1alpha1
+      name: daoscontainers.daos.gluesys.com
+      displayName: DAOS container
+      description: A container in a pool, POSIX or unstructured
+    - kind: S3Service
+      version: v1alpha1
+      name: s3services.daos.gluesys.com
+      displayName: S3 gateway
+      description: A versitygw gateway serving one pool over S3
