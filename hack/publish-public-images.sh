@@ -22,8 +22,8 @@ DRY=${1:-}
 
 # source path : destination name : tag
 IMAGES=(
-  "daos-operator/daos-operator:daos-operator:${OPERATOR_TAG:-v0.1.0-rc.2}"
-  "daos-csi/daos-csi:daos-csi:${CSI_TAG:-v0.1.0-rc.2}"
+  "daos-operator/daos-operator:daos-operator:${OPERATOR_TAG:-v0.1.0-rc.3}"
+  "daos-csi/daos-csi:daos-csi:${CSI_TAG:-v0.1.0-rc.3}"
   "daos-images/daos-server:daos-server:${DAOS_TAG:-2.8.0-20260922}"
   "daos-images/daos-agent:daos-agent:${DAOS_TAG:-2.8.0-20260914}"
   "daos-images/daos-admin:daos-admin:${DAOS_TAG:-2.8.0-20260914}"
