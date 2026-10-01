@@ -213,7 +213,7 @@ the hostPath form today.
 
 ## 5. Traps, per environment (all measured)
 
-### 5.1 CRI-O ignores `cdi.k8s.io/*` annotations
+### 5.1 CRI-O ignores `cdi.k8s.io/*` annotations — when you wire CDI by hand
 
 Write the CDI spec (`/etc/cdi/nvidia.yaml`), annotate the pod with
 `cdi.k8s.io/gpu: nvidia.com/gpu=all`, and neither `/dev/nvidia*` nor NVML shows up
@@ -221,8 +221,15 @@ Write the CDI spec (`/etc/cdi/nvidia.yaml`), annotate the pod with
 CrashLoops with `CDI --device-list-strategy options are only supported on
 NVML-based systems`.
 → Use the **nvidia runtime handler + RuntimeClass** and run the device plugin with
-the `envvar` strategy (§2.2). CDI does work on containerd, but this guide
-recommends the RuntimeClass route because it works on both.
+the `envvar` strategy (§2.2).
+
+**This applies to the hand-wired setup of §2.2, not to the GPU Operator.** Measured
+on 2026-10-01 (CRI-O 1.31.5, the same version, Rocky 10.2, H100 NVL): the GPU
+Operator's device plugin runs with `DEVICE_LIST_STRATEGY=cdi-annotations,cdi-cri`
+and `CDI_ENABLED=true` and it works — a pod that names no `runtimeClassName` at all
+gets the GPU. Its toolkit container installs the CDI specs and the runtime drop-in
+that a hand-wired setup has to get right itself. So the difference is not CRI-O; it
+is who did the wiring.
 
 ### 5.2 The serving image fills up the node disk
 
@@ -318,8 +325,18 @@ If step 3 passes, the KV cache lives in DAOS, outside the GPU node.
 | Image | `vllm-lmcache-daos:0.30.0-0.5.5-20260927` (vLLM 0.30.0 + LMCache 0.5.5 + lmcache-daos) |
 | Model | Llama-3.1-8B-Instruct, bf16, max-model-len 16384 |
 
-GPU Operator, containerd and managed Kubernetes are **unverified as of this
-document** — only how to configure them is written down.
+The GPU Operator path was verified separately on 2026-10-01: GPU Operator v26.7.1
+with `driver.enabled=false` (host driver 610.57.04) and `toolkit.enabled=true`, on
+Kubernetes 1.31.14 / CRI-O 1.31.5 / Rocky 10.2 with one H100 NVL and a RoCE 400G
+link. A single pod took `nvidia.com/gpu: 1` together with `hostNetwork`,
+`privileged`, a `/dev/infiniband` hostPath and the agent socket, and saw the GPU,
+the CUDA devices, the DAOS pools and the IB devices at once. The operator adds its
+own `99-nvidia.conf` drop-in and leaves a custom CRI-O storage root (§5.2) alone.
+
+Not verified: letting the GPU Operator manage the **network** driver (MOFED/DOCA).
+That path touches the NIC driver the DAOS client depends on, so it needs its own
+test. containerd and managed Kubernetes also remain unverified — only how to
+configure them is written down.
 
 ## When the fabric is RDMA (ofi+verbs, ucx)
 
