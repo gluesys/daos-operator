@@ -15,6 +15,15 @@ Set rdma: true when the DAOS system runs on an RDMA provider (ofi+verbs, ucx).
 The client then needs the verbs devices themselves: without /dev/infiniband the
 libfabric verbs provider fails to initialise (na_ofi_provider_check) and the
 connector never comes up. A tcp system does not need any of this.
+
+rdmaResource names a resource from an RDMA device plugin (the NVIDIA Network
+Operator's rdmaSharedDevicePlugin advertises rdma/rdma_shared_device_a) and is
+the better option where one exists: the plugin injects the verbs devices the
+container needs, so the pod drops both the /dev/infiniband hostPath and
+privileged, and keeps IPC_LOCK for memory registration. Measured on a 400G RoCE
+link with no loss of speed -- 64 MiB round trip, 2777 MB/s write and
+12162 MB/s read without privileged (doc/deploy-gpu-k8s.md). It takes precedence
+over rdma when both are set.
 */}}
 {{- range .Values.vllm.services }}
 {{- $ns := $.Values.system.spec.namespace | default "daos-system" }}
@@ -104,7 +113,11 @@ spec:
             {{- with .extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if .rdma }}
+          {{- if .rdmaResource }}
+          securityContext:
+            capabilities:
+              add: ["IPC_LOCK"]
+          {{- else if .rdma }}
           securityContext:
             privileged: true
           {{- end }}
@@ -113,6 +126,9 @@ spec:
           resources:
             limits:
               nvidia.com/gpu: {{ .gpus | default 1 }}
+              {{- if .rdmaResource }}
+              {{ .rdmaResource }}: {{ .rdmaResourceCount | default 1 }}
+              {{- end }}
             {{- with .resources }}
             {{- if .requests }}
             requests:
@@ -126,7 +142,7 @@ spec:
             - {name: hf-cache, mountPath: /data/hf_cache}
             {{- end }}
             - {name: shm, mountPath: /dev/shm}
-            {{- if .rdma }}
+            {{- if and .rdma (not .rdmaResource) }}
             - {name: ib-dev, mountPath: /dev/infiniband}
             {{- end }}
           readinessProbe:
@@ -147,7 +163,7 @@ spec:
         {{- end }}
         - name: shm
           emptyDir: {medium: Memory, sizeLimit: 8Gi}
-        {{- if .rdma }}
+        {{- if and .rdma (not .rdmaResource) }}
         - name: ib-dev
           hostPath: {path: /dev/infiniband, type: Directory}
         {{- end }}

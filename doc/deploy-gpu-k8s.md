@@ -357,8 +357,36 @@ vllm:
 ```
 
 The CSI node plugin and the S3 gateway are under the same condition (both already
-mount `/dev` and run privileged). On a cluster with an RDMA device plugin, swap the
-hostPath for that resource request.
+mount `/dev` and run privileged).
+
+**On a cluster with an RDMA device plugin, ask for the resource instead** — the
+plugin injects the verbs devices the container needs, so the pod drops both the
+hostPath and `privileged`:
+
+```yaml
+vllm:
+  services:
+    - name: vllm-daos
+      rdmaResource: rdma/rdma_shared_device_a   # from the device plugin
+      ...
+```
+
+which renders `IPC_LOCK` and the resource request in place of `privileged` and the
+`/dev/infiniband` mount. `rdmaResource` wins when both it and `rdma` are set.
+
+Verified on 2026-10-01 (H100 NVL, 400G RoCE, NVIDIA Network Operator 26.4.2 with
+`ofedDriver.deploy=false` because the host already carries DOCA-OFED, and
+`rdmaSharedDevicePlugin.deploy=true`): a pod holding only
+`rdma/rdma_shared_device_a: 1` and `IPC_LOCK` saw `rdma_cm umad0 uverbs0`, listed
+the DAOS pools, and moved data at **2777 MB/s write / 12162 MB/s read** over a
+64 MiB round trip — the same speed as the privileged path. It also took
+`nvidia.com/gpu: 1` at the same time.
+
+Two things to know. The Network Operator chart at 26.7.0 requires
+`kubeVersion >= 1.32.0`, so a 1.31 cluster needs **26.4.2**. And do not enable the
+operator's OFED driver container on a host that already has vendor OFED installed —
+a DAOS node does, since it needs verbs — because the container would take the
+kernel modules the running clients are using.
 
 Measured (2026-09-28, 100 Gb IB, 3 ranks on da1~3 + one GPU node):
 
