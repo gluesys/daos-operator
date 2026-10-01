@@ -59,9 +59,20 @@ var (
 // wait, and says what to do first. Learned on da1~4 (#30): excluding a rank
 // stops its engine (it is refused at join), so a later reintegrate finds nothing
 // to drain and returns only after the 5 minute SystemDrainReq timeout.
+//
+// The test is whether the ENGINE is back, not what the rank state says. A rank
+// stays "excluded" after its engine returns -- DAOS keeps it out until something
+// reintegrates it -- so refusing on the state alone blocks the one operation
+// that can clear it, and the documented recovery (restart the server pod, then
+// reintegrate) can never finish. Measured on cxl2, 2026-10-02: engine up and
+// serving on rank 1, rank still "excluded", and this guard refused forever.
 func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus) string {
 	if op != "reintegrate" {
 		return ""
+	}
+	ready := map[string]bool{}
+	for _, nc := range status.NodeConfigs {
+		ready[nc.Node] = nc.ServerReady
 	}
 	want := parseRankSet(ranks)
 	var admin, down []string
@@ -73,6 +84,9 @@ func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus)
 		case "adminexcluded":
 			admin = append(admin, fmt.Sprintf("%d", rk.Rank))
 		case "excluded", "errored", "unknown", "stopped", "awaitformat":
+			if ready[rk.Node] {
+				continue // engine is back; reintegrate is exactly what is wanted
+			}
 			down = append(down, fmt.Sprintf("%d (%s, on %s)", rk.Rank, rk.State, rk.Node))
 		}
 	}
@@ -82,8 +96,8 @@ func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus)
 			"then reintegrate", strings.Join(admin, ","), daosv1alpha1.AnnotationRankOp, strings.Join(admin, ","))
 	}
 	if len(down) > 0 {
-		return fmt.Sprintf("refused: rank(s) %s have no running engine; reintegrate would wait out the 5 minute drain "+
-			"timeout and fail. Restart that node's server pod first, then reintegrate once the rank is joined",
+		return fmt.Sprintf("refused: rank(s) %s have no running engine (their server pod is not ready); reintegrate "+
+			"would wait out the 5 minute drain timeout and fail. Restart that node's server pod first, then reintegrate",
 			strings.Join(down, ", "))
 	}
 	return ""
