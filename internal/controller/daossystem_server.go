@@ -178,6 +178,10 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			hostVol("hugepages", "/dev/hugepages", &dirCreate),
 			hostVol("dev", "/dev", &dir),
 			hostVol("sys", "/sys", &dir),
+			// SPDK setup.sh modprobes uio_pci_generic/vfio-pci when binding NVMe and, under set -e,
+			// silently gives up without the host module tree: the drives stay on the kernel nvme
+			// driver and format fails with "NVMe SSDs not found" (2026-10-02, exaci5-3a)
+			hostVol("modules", "/lib/modules", &dir),
 			// daos_server puts its dRPC socket here and refuses to start if the
 			// directory is missing; it must not survive a restart either
 			{Name: "runsock", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
@@ -192,6 +196,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			{Name: "hugepages", MountPath: "/dev/hugepages"},
 			{Name: "dev", MountPath: "/dev"},
 			{Name: "sys", MountPath: "/sys"},
+			{Name: "modules", MountPath: "/lib/modules", ReadOnly: true},
 			{Name: "runsock", MountPath: "/var/run/daos_server"},
 		}
 		if certsSecret != "" {
