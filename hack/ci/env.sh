@@ -22,6 +22,7 @@ for v in "${!VM_IP[@]}"; do
 done
 
 SNAP=${SNAP:-k8s-ready}
+export PATH=$HOME/.local/bin:$PATH    # kubectl/helm 을 사용자 영역에 둔다(러너·개발 PC 공통)
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 
 qm() { $VDI_SSH "sudo env LC_ALL=C qm $*"; }   # env LC_ALL: sudo 가 ko_KR LC_* 를 넘겨 perl 이 경고를 쏟는다
