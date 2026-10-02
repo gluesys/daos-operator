@@ -24,7 +24,7 @@ done
 SNAP=${SNAP:-k8s-ready}
 SSH_OPTS=(-o BatchMode=yes -o StrictHostKeyChecking=no -o ConnectTimeout=10)
 
-qm() { $VDI_SSH "export LC_ALL=C; sudo qm $*"; }
+qm() { $VDI_SSH "sudo env LC_ALL=C qm $*"; }   # env LC_ALL: sudo 가 ko_KR LC_* 를 넘겨 perl 이 경고를 쏟는다
 node_ssh() { local ip=$1; shift; ssh "${SSH_OPTS[@]}" "root@$ip" "$@"; }
 wait_ssh() {
     local ip=$1 limit=${2:-300} t=0
