@@ -39,10 +39,22 @@
 
 ## 3. CI 를 걸기 전에 처리할 것
 
-1. **`daos-ci-lane` 의 토큰 평문 노출** — remote URL 세 개에 토큰이 박혀 있다(확인함).
-   **폐기·재발급 후 remote 재작성**이 CI 작업보다 먼저다. credential helper 로 옮길 것.
+1. ~~토큰 평문 노출~~ — **2026-10-02 처리 완료.** 노출 범위가 계획서가 지목한
+   `daos-ci-lane` 한 곳이 아니라 더 넓었다: GitHub classic PAT 1개(`public_repo`,
+   `~/.bash_history` 에도 잔존), GitLab PAT `gitlab_flexa_mr`(id 226,
+   `jenkins_lib`·`samba-flexa`), 그리고 **프로젝트 액세스 토큰** `kkp_ndmp`(id 237,
+   `ndmp4`). 마지막 것은 봇 계정(`project_111_bot_…`) 소유라 개인 설정 화면에 안 보여
+   찾기 어려웠고, `manage_runner`·`k8s_proxy`·`write_registry`·`self_rotate` 까지
+   가진 가장 위험한 토큰이었다 — **프로젝트 111 → Settings → Access Tokens** 에 있다.
+   셋 다 폐기 확인했고, 세 저장소 remote 를 **SSH 로 전환**해 URL 에 자격증명을 넣는
+   방식 자체를 없앴다(`jenkins_lib` 은 fetch 만 SSH 이고 push 만 토큰 URL 인 비대칭이
+   원인이었다). 51곳 재스캔에서 흔적 0건.
 2. **릴리스 태그** — 2026-10-02 에 `v0.1.0-rc.3`·`v0.1.0-rc.4` 를 달아 푸시했다.
    Tier 3 릴리스 게이트가 비교할 기준이 이제 있다.
+3. **아직 남은 것** — `~/.docker/config.json` 의 레지스트리 자격증명(base64 는 인코딩일
+   뿐 암호화가 아니다)과 `~/src/Flexa/tokens/*` 평문 파일. 의도적인 보관소라 성격이
+   다르지만, **CI 러너가 그 파일을 읽을 수 있는 환경**이 되므로 자격증명 전달 방식을
+   정해야 한다 — GitLab CI 변수(masked/protected) 또는 외부 시크릿 저장소.
 
 ## 4. 계획서의 열린 결정 3개에 대한 참고
 
