@@ -89,6 +89,9 @@ KV-cache workload failed outright: the fabric is not an implementation detail.
   cluster on ExaCI5 slots 3/4, snapshot-rollback resets, nvme/kdev/mixed profiles, tier
   mapping; [`doc/ci-handoff-2026-10-02.md`](doc/ci-handoff-2026-10-02.md) lists the real
   regressions it must catch *(Korean)*
+- [`hack/ci/`](hack/ci/) — the scripts that build and reset that CI cluster
+  (`vm-reshape.sh` once, `prep-all.sh`/`cluster-init.sh`/`snapshot.sh` to rebuild the
+  base, `rollback.sh` before every run) *(Korean comments)*
 - [`doc/design-notes.ko.md`](doc/design-notes.ko.md) — internal design notes per
   feature *(Korean)*
 
