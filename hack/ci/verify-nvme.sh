@@ -15,6 +15,11 @@ log=${LOG:-/tmp/verify-nvme.log}; : > "$log"
 helm upgrade --install daos-operator "$repo/charts/daos-operator" -n daos-system --create-namespace \
     -f "$repo/test/e2e/profiles/nvme-1rank.yaml" --wait --timeout 5m 2>&1 | tee -a "$log"
 
+# 포맷은 사람 승인을 기다린다(operator 설계). CI 클러스터에서는 스크립트가 승인한다.
+# 실패한 포맷은 operator 가 승인을 지우므로(2026-10-02) 서버가 Ready 가 된 뒤에 단다.
+kubectl -n daos-system wait daossystem/daos --for=condition=ServersReady --timeout=600s 2>&1 | tee -a "$log"
+kubectl -n daos-system annotate daossystem daos daos.gluesys.com/format-approved=true --overwrite | tee -a "$log"
+
 # hostprep 이 NVMe 를 보고 묶었는가
 sleep 60
 kubectl get node exaci5-3a -o jsonpath='{.metadata.annotations}' | tr ',' '\n' | grep daos.gluesys.com | tee -a "$log"
