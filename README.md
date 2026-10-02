@@ -85,6 +85,10 @@ KV-cache workload failed outright: the fabric is not an implementation detail.
 - [`doc/adr/`](doc/adr/) — the decisions behind the deployment, device-binding and
   upgrade models, with the evidence that approved them *(Korean)*
 - [`doc/testbed-*.md`](doc/) — what was run on real hardware and what broke *(Korean)*
+- [`doc/ci-design-2026-10-02.md`](doc/ci-design-2026-10-02.md) — the CI design: a six-VM
+  cluster on ExaCI5 slots 3/4, snapshot-rollback resets, nvme/kdev/mixed profiles, tier
+  mapping; [`doc/ci-handoff-2026-10-02.md`](doc/ci-handoff-2026-10-02.md) lists the real
+  regressions it must catch *(Korean)*
 - [`doc/design-notes.ko.md`](doc/design-notes.ko.md) — internal design notes per
   feature *(Korean)*
 
