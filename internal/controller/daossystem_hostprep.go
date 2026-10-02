@@ -106,6 +106,8 @@ func (r *DaosSystemReconciler) ensureHostPrep(ctx context.Context, sys *daosv1al
 			{Name: "sys", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/sys", Type: &hostPathDir}}},
 			{Name: "dev", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/dev", Type: &hostPathDir}}},
 			{Name: "procsys", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/proc/sys", Type: &hostPathDir}}},
+			// nvme prepare runs SPDK setup.sh, which modprobes the user-space driver
+			{Name: "modules", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/lib/modules", Type: &hostPathDir}}},
 		}
 		pod.Containers = []corev1.Container{{
 			Name:            "hostprep",
@@ -130,6 +132,7 @@ func (r *DaosSystemReconciler) ensureHostPrep(ctx context.Context, sys *daosv1al
 				// daos_server nvme prepare needs the real /sys and /dev too
 				{Name: "sys", MountPath: "/sys"},
 				{Name: "dev", MountPath: "/dev"},
+				{Name: "modules", MountPath: "/lib/modules", ReadOnly: true},
 			},
 			Resources: corev1.ResourceRequirements{
 				Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")},

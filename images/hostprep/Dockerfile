@@ -19,6 +19,9 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 GOOS=linux go build -a -o hostprep ./cmd/hostprep
 
 FROM ${BASE}
+# SPDK setup.sh (daos_server nvme prepare) needs lsmod/modprobe; without them it exits under
+# set -e before binding and nvme prepare still reports success (2026-10-02, exaci5-3a)
+RUN dnf -y install kmod && dnf clean all
 COPY --from=builder /workspace/hostprep /usr/local/bin/hostprep
 RUN chmod 0755 /usr/local/bin/hostprep
 ENTRYPOINT ["/usr/local/bin/hostprep"]

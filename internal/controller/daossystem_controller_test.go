@@ -179,6 +179,9 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeTrue())
 		Expect(*ds.Spec.Template.Spec.Containers[0].SecurityContext.Privileged).To(BeTrue())
 		Expect(ds.Spec.Template.Spec.Containers[0].Env).To(ContainElement(corev1.EnvVar{Name: "DAOS_HOSTPREP_BIND_NVME", Value: "false"}), "discover-only by default")
+		Expect(ds.Spec.Template.Spec.Containers[0].VolumeMounts).To(ContainElement(corev1.VolumeMount{Name: "modules", MountPath: "/lib/modules", ReadOnly: true}),
+			"nvme prepare runs SPDK setup.sh, which modprobes the user-space driver")
+		Expect(ds.Spec.Template.Spec.Volumes).To(ContainElement(HaveField("Name", "modules")))
 		Expect(ds.OwnerReferences).To(HaveLen(1))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "daos-hostprep"}, &corev1.ServiceAccount{})).To(Succeed())
 	})
@@ -259,7 +262,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		for _, m := range c.VolumeMounts {
 			mounts = append(mounts, m.MountPath)
 		}
-		Expect(mounts).To(ContainElements("/etc/daos/daos_server.yml", "/var/daos", "/var/log/daos", "/dev/hugepages", "/dev", "/sys", "/var/run/daos_server"))
+		Expect(mounts).To(ContainElements("/etc/daos/daos_server.yml", "/var/daos", "/var/log/daos", "/dev/hugepages", "/dev", "/sys", "/var/run/daos_server", "/lib/modules"))
+		// SPDK setup.sh runs modprobe for uio_pci_generic/vfio-pci and aborts (set -e) without the
+		// host module tree, leaving NVMe on the kernel driver (2026-10-02, exaci5-3a)
+		Expect(c.VolumeMounts).To(ContainElement(corev1.VolumeMount{Name: "modules", MountPath: "/lib/modules", ReadOnly: true}))
 		for _, v := range pod.Volumes {
 			switch v.Name {
 			case "config":
