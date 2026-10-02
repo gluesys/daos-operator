@@ -6,7 +6,7 @@
 #        exa-build runner (tag daos-build) and pushed to the project registry
 #        as :<short sha>, :<VERSION> and :latest on main.
 # Do not add a job that silently skips when its prerequisites are missing.
-stages: [check, image, release]
+stages: [check, image, e2e, release]
 
 default:
   image: python:3.12-slim
@@ -123,6 +123,29 @@ image-hostprep:
     - push "$IMG:$CI_COMMIT_SHORT_SHA"
     - push "$IMG:$VERSION"
     - push "$IMG:latest"
+
+# e2e: ExaCI5 슬롯 3·4 VM 클러스터(doc/ci-design-2026-10-02.md). 러너 exaci5-3j, 태그 daos-k8s.
+# 한 번에 한 파이프라인만 클러스터를 쓴다. Phase A 는 롤백만 검증한다(수동).
+.daos-k8s: &daos-k8s
+  stage: e2e
+  tags: [daos-k8s]
+  resource_group: daos-k8s-ci
+  timeout: 45m
+  before_script:
+    - install -m 600 "$DAOS_CI_SSH_KEY" ~/.ssh/id_ed25519
+    - install -m 600 "$DAOS_CI_KUBECONFIG" ~/.kube/daos-ci.conf
+    - export KUBECONFIG=~/.kube/daos-ci.conf
+    - export VDI_SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=no -p 9349 jenkins-ci@192.168.2.186"
+
+env-reset:
+  <<: *daos-k8s
+  script:
+    - hack/ci/rollback.sh
+    - kubectl get nodes -o wide
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
 
 # kubectl-daos binaries for krew platforms, published as a generic package and
 # linked from a GitLab Release. Tags only.
