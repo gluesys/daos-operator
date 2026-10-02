@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# Tier 0 render profile (hack/ci/chart-schema.sh). Not a deployment recipe.
+system:
+  create: true
+  name: daos
+  spec:
+    version: "2.8.0"
+    namespace: daos-system
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260922
+      agent: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
+      admin: registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+    placement: dedicated
+    nodeSelector: {daos.gluesys.com/role: storage}
+    msReplicas: 1
+    provider: "ofi+tcp"
+    nrHugepages: 4096
+    allowInsecure: true
+    engines:
+      - {targets: 4, helpers: 0, bdevClass: nvme, scmSizeGiB: 4}
+    disableVFIO: true
+    hostPrep: {enabled: true, bindNvme: true}
