@@ -9,7 +9,9 @@ role=$1; name=$2; ip2=$3; ibip=$4
 K8S_VER=1.31.14
 
 hostnamectl set-hostname "$name"
-nmcli -t -f NAME con show | grep -qx ens19 || nmcli con add type ethernet ifname ens19 con-name ens19 ipv4.method manual ipv4.addresses "$ip2/24" autoconnect yes
+# 기본 이미지에 DHCP 프로파일 ens19 가 이미 있을 수 있다(J 노드). 있든 없든 고정 주소로 고친다.
+nmcli -t -f NAME con show | grep -qx ens19 || nmcli con add type ethernet ifname ens19 con-name ens19
+nmcli con modify ens19 ipv4.method manual ipv4.addresses "$ip2/24" ipv6.method disabled connection.autoconnect yes
 nmcli con up ens19 >/dev/null
 
 swapoff -a; sed -i '/\sswap\s/d' /etc/fstab
@@ -36,10 +38,15 @@ if [ "$role" = worker ]; then
     echo uio_pci_generic > /etc/modules-load.d/uio.conf; modprobe uio_pci_generic
     echo "vm.nr_hugepages = 4096" > /etc/sysctl.d/90-hugepages.conf
     sysctl -w vm.nr_hugepages=4096 >/dev/null
+    # IB: 기본 이미지에 rdma-core 가 없어 mlx5_core 만 뜨고 netdev 가 없다. mlx5_ib + ib_ipoib 가
+    # 있어야 IPoIB 주소와 파드의 /dev/infiniband(verbs) 가 생긴다. (jenkins_lib ExaCI.src 도 같은 사정)
+    dnf install -y -q rdma-core libibverbs infiniband-diags
+    printf 'mlx5_ib\nib_ipoib\n' > /etc/modules-load.d/ib.conf; modprobe mlx5_ib; modprobe ib_ipoib; sleep 3
     # IPoIB (verbs 프로파일용). VF 인터페이스 이름은 보장되지 않으므로 첫 ib* 를 쓴다. 없으면 건너뛴다.
     ibif=$(ls /sys/class/net | grep -m1 '^ib' || true)
     if [ -n "$ibif" ]; then
-        nmcli -t -f NAME con show | grep -qx ibci || nmcli con add type infiniband ifname "$ibif" con-name ibci ipv4.method manual ipv4.addresses "$ibip/24" autoconnect yes
+        nmcli -t -f NAME con show | grep -qx ibci || nmcli con add type infiniband ifname "$ibif" con-name ibci
+        nmcli con modify ibci ipv4.method manual ipv4.addresses "$ibip/24" ipv6.method disabled connection.autoconnect yes
         nmcli con up ibci >/dev/null || true
     fi
 fi
