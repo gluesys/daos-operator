@@ -15,7 +15,14 @@ for v in "${CLUSTER_VMIDS[@]}"; do
 done
 wait
 wait_ssh "${VM_IP[$CP_VMID]}" 240
-until [ "$(kubectl get nodes --no-headers 2>/dev/null | awk '$2=="Ready"' | wc -l)" = 5 ]; do
+# 스냅샷 안의 etcd 는 롤백 직전의 Ready 를 그대로 들고 있다. 롤백 이후 kubelet 이 보낸
+# 하트비트(lastHeartbeatTime >= 시작 시각)로 Ready 인 노드만 센다.
+since=$(date -u -d "@$start" +%Y-%m-%dT%H:%M:%SZ)
+fresh_ready() {
+    kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status} {.status.conditions[?(@.type=="Ready")].lastHeartbeatTime}{"\n"}{end}' 2>/dev/null \
+        | awk -v s="$since" '$1=="True" && $2>=s' | wc -l
+}
+until [ "$(fresh_ready)" = 5 ]; do
     [ $(( $(date +%s) - start )) -ge 300 ] && { echo "rollback: nodes not Ready in 300s"; kubectl get nodes || true; exit 1; }
     sleep 5
 done
