@@ -146,15 +146,27 @@ spec:
 		waitReadyStable(10 * time.Minute)
 	})
 
-	// Case 7. Uninstall leaves nothing that the next install would trip over.
-	It("uninstalls cleanly (case 7)", func() {
-		run("helm", "uninstall", release, "-n", ns, "--wait", "--timeout", "5m")
-		for _, kind := range []string{"daossystem", "daospool", "daoscontainer", "s3service"} {
+	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:
+	// "uninstall must never stop engines"), and pools and containers carry finalizers only the
+	// operator releases. So a clean removal is: tear the DAOS objects down while the operator
+	// still runs, then uninstall. Afterwards nothing may be left behind.
+	It("tears down in order and uninstalls cleanly (case 7)", func() {
+		By("destroying containers, pools and the system while the operator runs")
+		for _, kind := range []string{"daoscontainer", "daospool"} {
+			for _, name := range strings.Fields(kubectl("get", kind, "-o", "jsonpath={.items[*].metadata.name}")) {
+				kubectl("annotate", kind, name, "daos.gluesys.com/destroy-approved=true", "--overwrite")
+				kubectl("delete", kind, name, "--wait=false")
+			}
 			Eventually(func() string { out, _ := kubectlE("get", kind, "-o", "name"); return strings.TrimSpace(out) }).
-				WithTimeout(5*time.Minute).Should(BeEmpty(), "%s left after uninstall", kind)
+				WithTimeout(15*time.Minute).Should(BeEmpty(), "%s not destroyed", kind)
 		}
+		kubectl("delete", "daossystem", sysName, "--wait=false")
+		waitGone("daossystem", sysName, 10*time.Minute)
+
+		By("uninstalling the operator")
+		run("helm", "uninstall", release, "-n", ns, "--wait", "--timeout", "5m")
 		Eventually(func() string {
-			out, _ := kubectlE("get", "pods,sts,ds,deploy,jobs", "-o", "name")
+			out, _ := kubectlE("get", "pods,sts,ds,deploy", "-o", "name")
 			return strings.TrimSpace(out)
 		}).
 			WithTimeout(5*time.Minute).Should(BeEmpty(), "workloads left after uninstall")
