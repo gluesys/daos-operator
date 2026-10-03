@@ -1,7 +1,7 @@
 {{- if .Values.csi.enabled }}
 {{- $sys := .Values.csi.system | default .Values.system.name }}
 {{- $ns := .Release.Namespace }}
-{{- $img := printf "%s:%s" .Values.csi.image.repository (default .Chart.AppVersion .Values.csi.image.tag) }}
+{{- $img := printf "%s:%s" .Values.csi.image.repository (include "daos-operator.tag" (list .Values.csi.image.tag .Chart.AppVersion "csi.image.tag")) }}
 # exastor/daos-csi (deploy/ mirrored as templates). One CSI deployment per DaosSystem:
 # the node DaemonSet's daos_agent sidecar reads <system>-agent, so csi.system must
 # name the DaosSystem whose containers this driver mounts.
