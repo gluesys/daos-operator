@@ -42,5 +42,18 @@ control-plane: controller-manager
 {{- end -}}
 
 {{- define "daos-operator.image" -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- printf "%s:%s" .Values.image.repository (include "daos-operator.tag" (list .Values.image.tag .Chart.AppVersion "image.tag")) -}}
+{{- end -}}
+
+{{/*
+An image tag that YAML or --set read as a number (an all-digit commit hash such as 17519342) would
+render as "%!s(float64=1.7519342e+07)", and a leading zero would already be lost. Refuse it.
+Usage: include "daos-operator.tag" (list .Values.image.tag .Chart.AppVersion "image.tag")
+*/}}
+{{- define "daos-operator.tag" -}}
+{{- $tag := index . 0 | default (index . 1) -}}
+{{- if or (kindIs "float64" $tag) (kindIs "int64" $tag) (kindIs "int" $tag) -}}
+{{- fail (printf "%s=%v was read as a number; quote it in values (tag: \"...\") or use --set-string" (index . 2) $tag) -}}
+{{- end -}}
+{{- $tag -}}
 {{- end -}}

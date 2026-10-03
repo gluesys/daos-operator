@@ -5,11 +5,11 @@
 # 설계 doc/ci-design-2026-10-02.md 5절.
 image:
   repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
-  tag: 834c8fc0
+  tag: "17519342"
 imagePullSecrets:
   - name: gitlab-registry
 hostprep:
-  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:834c8fc0
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:17519342
 system:
   create: true
   name: daos
