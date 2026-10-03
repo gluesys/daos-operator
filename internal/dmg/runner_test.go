@@ -19,6 +19,7 @@ package dmg
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"testing"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -110,5 +111,45 @@ func TestJobFinished(t *testing.T) {
 	j.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	if ok, f := jobFinished(j); !ok || f != "" {
 		t.Fatalf("%v %q", ok, f)
+	}
+}
+
+// Job pods run on the storage nodes next to a busy-polling engine. Without a CPU request they
+// are BestEffort, get the minimum CPU share, and every daos/dmg call took 8-80 s instead of
+// <0.5 s (CI cluster, 2026-10-03): PVCs took 5-7 min and an agent that missed the client's
+// wait window failed creates with DER_AGENT_COMM. Both containers must request CPU.
+func TestJobPodsRequestCPU(t *testing.T) {
+	ctx := context.Background()
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+	spec := RunSpec{Namespace: "ns", Name: "cont-x-daos-create", Image: "client", ControlConfigMap: "sys-control",
+		Command: []string{"daos", "cont", "create"}, Sidecar: &corev1.Container{Name: "agent", Image: "agent"}}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "cont-x-daos-create"}, job); err != nil {
+		t.Fatal(err)
+	}
+	pod := job.Spec.Template.Spec
+	for _, ct := range append(append([]corev1.Container{}, pod.InitContainers...), pod.Containers...) {
+		cpu := ct.Resources.Requests[corev1.ResourceCPU]
+		if cpu.IsZero() {
+			t.Errorf("container %q has no CPU request (BestEffort starves next to the engine)", ct.Name)
+		}
+	}
+	// a request the caller set on the sidecar is kept
+	spec2 := spec
+	spec2.Name = "cont-y-daos-create"
+	spec2.Sidecar = &corev1.Container{Name: "agent", Image: "agent", Resources: corev1.ResourceRequirements{
+		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}}}
+	if _, err := r.Run(ctx, spec2); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "cont-y-daos-create"}, job); err != nil {
+		t.Fatal(err)
+	}
+	if got := job.Spec.Template.Spec.InitContainers[0].Resources.Requests[corev1.ResourceCPU]; got.String() != "1" {
+		t.Errorf("caller's sidecar CPU request overwritten: %s", got.String())
 	}
 }
