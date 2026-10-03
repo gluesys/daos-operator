@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"sort"
 	"strings"
 
@@ -215,8 +216,11 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 			volumes = append(volumes, secretVolume("sidecar-certs", s.CertsSecret, s.SidecarCertsFiles))
 			sc.VolumeMounts = append(sc.VolumeMounts, corev1.VolumeMount{Name: "sidecar-certs", MountPath: "/etc/daos/certs", ReadOnly: true})
 		}
+		withDefaultRequests(&sc.Resources)
 		inits = append(inits, sc)
 	}
+	var mainRes corev1.ResourceRequirements
+	withDefaultRequests(&mainRes)
 	var shareNS *bool
 	if s.ShareProcessNamespace {
 		shareNS = ptr.To(true)
@@ -246,6 +250,7 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 					Env:             s.Env,
 					SecurityContext: sec,
 					VolumeMounts:    mounts,
+					Resources:       mainRes,
 				}},
 			},
 		},
@@ -263,6 +268,26 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 }
 
 // secretVolume projects selected Secret keys (path -> key); *.key files are 0400.
+// Job pods run on the storage nodes next to an engine that busy-polls its cores. Without a CPU
+// request a pod is BestEffort, gets the minimum CPU share, and every daos/dmg call took 8-80 s
+// instead of <0.5 s (CI cluster, 2026-10-03): a PVC took 5-7 minutes, and an agent that missed
+// the client's socket wait failed creates with DER_AGENT_COMM. Requests set by the caller win.
+var defaultJobRequests = corev1.ResourceList{
+	corev1.ResourceCPU:    resource.MustParse("250m"),
+	corev1.ResourceMemory: resource.MustParse("64Mi"),
+}
+
+func withDefaultRequests(r *corev1.ResourceRequirements) {
+	if r.Requests == nil {
+		r.Requests = corev1.ResourceList{}
+	}
+	for k, v := range defaultJobRequests {
+		if _, ok := r.Requests[k]; !ok {
+			r.Requests[k] = v.DeepCopy()
+		}
+	}
+}
+
 func secretVolume(name, secret string, files map[string]string) corev1.Volume {
 	items := make([]corev1.KeyToPath, 0, len(files))
 	for path, key := range files {
