@@ -5,11 +5,11 @@
 # 설계 doc/ci-design-2026-10-02.md 5절.
 image:
   repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
-  tag: bdb57d99
+  tag: 834c8fc0
 imagePullSecrets:
   - name: gitlab-registry
 hostprep:
-  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:bdb57d99
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:834c8fc0
 system:
   create: true
   name: daos
@@ -45,7 +45,7 @@ csi:
   enabled: true
   image:
     repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
-    tag: latest
+    tag: 55f554f9
   storageClasses:
     - name: daos-e2e
       reclaimPolicy: Delete
