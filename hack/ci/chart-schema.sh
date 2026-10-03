@@ -46,4 +46,13 @@ for values in "$chart"/ci/*-values.yaml; do
         fi
     done
 done
+# A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
+# as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
+if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
+    if helm template daos-operator "$chart" -n daos-system --set image.tag=17519342 >/dev/null 2>&1; then
+        echo "FAIL  numeric image.tag was accepted"; fail=1
+    else
+        echo "ok    numeric image.tag refused"
+    fi
+fi
 exit $fail
