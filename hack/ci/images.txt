@@ -1,8 +1,8 @@
-registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator:latest
-registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:latest
-registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi:latest
-registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260922
-registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
-registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
-registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator:834c8fc0
+registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:834c8fc0
+registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi:55f554f9
+registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261003-g9927f7be
+registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261003-g9927f7be
+registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261003-g9927f7be
+registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261003-g9927f7be
 registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923

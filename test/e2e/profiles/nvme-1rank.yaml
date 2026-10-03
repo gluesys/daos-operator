@@ -5,11 +5,11 @@
 # 설계 doc/ci-design-2026-10-02.md 5절.
 image:
   repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
-  tag: latest
+  tag: 834c8fc0
 imagePullSecrets:
   - name: gitlab-registry
 hostprep:
-  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:latest
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:834c8fc0
 system:
   create: true
   name: daos
@@ -17,10 +17,10 @@ system:
     version: "2.8.0"
     namespace: daos-system
     images:
-      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20260922
-      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20260914
-      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20260914
-      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20260914
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261003-g9927f7be
+      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261003-g9927f7be
+      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261003-g9927f7be
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261003-g9927f7be
     placement: dedicated
     nodeSelector:
       kubernetes.io/hostname: exaci5-3a
@@ -40,3 +40,13 @@ system:
     hostPrep:
       enabled: true
       bindNvme: true
+# CSI for the data-path case (Tier 1 case 2). One rank: SX/S1, rdFac 0 (RP_2* needs two).
+csi:
+  enabled: true
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: 55f554f9
+  storageClasses:
+    - name: daos-e2e
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}

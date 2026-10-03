@@ -137,6 +137,41 @@ image-hostprep:
     - export KUBECONFIG=~/.kube/daos-ci.conf
     - export VDI_SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=no -p 9349 jenkins-ci@192.168.2.186"
 
+# The Tier 1 suite, compiled where Go is and run on the CI cluster runner (no Go there).
+e2e-build:
+  stage: check
+  image: golang:1.26
+  variables:
+    GOTOOLCHAIN: auto
+    GOFLAGS: -buildvcs=false
+  script:
+    # static: the runner (3J) is Rocky 8 with glibc 2.28, the golang image is newer
+    - CGO_ENABLED=0 go test -c -tags e2e -o dist/e2e.test ./test/e2e/
+  artifacts:
+    paths: [dist/e2e.test]
+    expire_in: 3 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# Tier 1 (doc/ci-design-2026-10-02.md 7절). allow_failure while it settles (8절: 1~2 weeks), then blocking.
+e2e-tier1:
+  <<: *daos-k8s
+  needs: [e2e-build]
+  timeout: 75m
+  script:
+    - cd test/e2e && E2E_RESET=1 ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: dist/e2e-junit.xml
+    expire_in: 14 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == "main"
+      allow_failure: true
+
 env-reset:
   <<: *daos-k8s
   script:

@@ -1,120 +1,96 @@
-// SPDX-License-Identifier: Apache-2.0
 //go:build e2e
-// +build e2e
 
-/*
-Copyright 2026 Gluesys Co., Ltd..
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Gluesys Co., Ltd.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
+// Package e2e is the Tier 1 suite (doc/ci-design-2026-10-02.md 7절). It runs against
+// whatever cluster KUBECONFIG points at, with the chart values in test/e2e/profiles/
+// <E2E_PROFILE>.yaml, so the same specs serve the CI VM cluster and real hardware.
+//
+//	E2E_PROFILE   profile name (default nvme-1rank)
+//	E2E_RESET=1   run hack/ci/rollback.sh first (CI cluster only)
+//	E2E_SET       extra helm --set values, comma separated (CI image tags)
 package e2e
 
 import (
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+)
 
-	"gitlab.gluesys.com/exastor/daos-operator/test/utils"
+const (
+	ns      = "daos-system"
+	release = "daos-operator"
+	sysName = "daos"
 )
 
 var (
-	// managerImage is the manager image to be built and loaded for testing.
-	managerImage = "example.com/daos-operator:v0.0.1"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+	repoRoot string
+	profile  string
 )
 
-// TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
-//
-// To enable kubectl kuberc (use custom kubectl configurations), set: KUBECTL_KUBERC=true
-// By default, kuberc is disabled to ensure consistent test behavior across different environments.
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting daos-operator e2e test suite\n")
-	RunSpecs(t, "e2e suite")
+	SetDefaultEventuallyPollingInterval(5 * time.Second)
+	SetDefaultConsistentlyPollingInterval(5 * time.Second)
+	RunSpecs(t, "daos-operator Tier 1 e2e")
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
+	wd, err := os.Getwd()
+	Expect(err).NotTo(HaveOccurred())
+	repoRoot = filepath.Clean(filepath.Join(wd, "..", ".."))
+	Expect(os.Getenv("KUBECONFIG")).NotTo(BeEmpty(), "KUBECONFIG must point at the target cluster")
+	name := envOr("E2E_PROFILE", "nvme-1rank")
+	profile = filepath.Join(repoRoot, "test", "e2e", "profiles", name+".yaml")
+	Expect(profile).To(BeAnExistingFile())
+	fmt.Fprintf(GinkgoWriter, "profile %s, cluster %s\n", name, os.Getenv("KUBECONFIG"))
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
-
-	configureKubectlKubeRC()
-	setupCertManager()
+	if os.Getenv("E2E_RESET") == "1" {
+		By("resetting the cluster to the k8s-ready snapshot")
+		run(filepath.Join(repoRoot, "hack", "ci", "rollback.sh"))
+	}
+	installChart()
+	approveFormatAndWaitReady()
 })
 
-var _ = AfterSuite(func() {
-	teardownCertManager()
+// installChart installs the operator, the DaosSystem and CSI from the profile.
+func installChart() {
+	By("helm install " + filepath.Base(profile))
+	args := []string{"upgrade", "--install", release, filepath.Join(repoRoot, "charts", "daos-operator"),
+		"-n", ns, "--create-namespace", "-f", profile}
+	if s := os.Getenv("E2E_SET"); s != "" {
+		args = append(args, "--set", s)
+	}
+	// No --wait: helm 4 also waits for custom resources, and the DaosSystem cannot become
+	// ready before the suite approves the format below.
+	run("helm", args...)
+	run("kubectl", "-n", ns, "rollout", "status", "deploy/"+release, "--timeout=5m")
+}
+
+// approveFormatAndWaitReady approves the storage format once the servers are up (the
+// operator waits for a human; on the CI cluster the suite is that human) and waits until
+// Ready has held for a full minute: right after pool creation the status was seen to drop
+// to 0/0 ranks for ~30 s and come back (2026-10-03), so a single Ready sample is not enough.
+func approveFormatAndWaitReady() {
+	By("waiting for the server pods")
+	Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(10 * time.Minute).Should(Equal("True"))
+	By("approving the format")
+	Eventually(func() error {
+		_, err := kubectlE("annotate", "daossystem", sysName, "daos.gluesys.com/format-approved=true", "--overwrite")
+		return err
+	}).WithTimeout(time.Minute).Should(Succeed())
+	By("waiting for Ready to hold")
+	waitReadyStable(10 * time.Minute)
+}
+
+var _ = ReportAfterEach(func(r SpecReport) {
+	if r.Failed() {
+		dumpDiagnostics()
+	}
 })
-
-// Disable kubectl kuberc by default for test isolation.
-// This prevents local kubectl configurations from affecting test behavior.
-// To enable kuberc, set: KUBECTL_KUBERC=true
-func configureKubectlKubeRC() {
-	if os.Getenv("KUBECTL_KUBERC") != "true" {
-		By("disabling kubectl kuberc for test isolation")
-		err := os.Setenv("KUBECTL_KUBERC", "false")
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to disable kubectl kuberc")
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"kubectl kuberc disabled for consistent test behavior (override with KUBECTL_KUBERC=true)\n")
-	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "kubectl kuberc enabled (KUBECTL_KUBERC=true)\n")
-	}
-}
-
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
-		return
-	}
-
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
-		return
-	}
-
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
-
-	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
-}
-
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager() {
-	if !shouldCleanupCertManager {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")
-		return
-	}
-
-	By("uninstalling CertManager")
-	utils.UninstallCertManager()
-}

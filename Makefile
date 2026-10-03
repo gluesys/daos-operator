@@ -85,10 +85,11 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
 	esac
 
+E2E_REPORT ?= $(CURDIR)/dist/e2e-junit.xml
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: ## Tier 1 e2e against the cluster in $$KUBECONFIG (E2E_PROFILE, E2E_RESET=1 on the CI cluster). See doc/ci-design-2026-10-02.md.
+	@mkdir -p $(dir $(E2E_REPORT))
+	go test -tags=e2e ./test/e2e/ -count=1 -timeout 70m -v -ginkgo.v -ginkgo.junit-report=$(E2E_REPORT)
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
