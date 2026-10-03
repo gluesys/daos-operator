@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -203,9 +204,11 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			mounts = append(mounts, corev1.VolumeMount{Name: "certs", MountPath: certsMountPath, ReadOnly: true})
 		}
 		pod.Containers = []corev1.Container{{
-			Name:            serverContainer,
-			Image:           sys.Spec.Images.Server,
-			ImagePullPolicy: corev1.PullIfNotPresent,
+			Name: serverContainer,
+			// a daos_server that exits at start leaves its error here for ServersReady
+			TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+			Image:                    sys.Spec.Images.Server,
+			ImagePullPolicy:          corev1.PullIfNotPresent,
 			// entrypoint sees an uncommented engines: block and skips env rendering
 			Ports:           ports,
 			SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
@@ -236,14 +239,66 @@ func (r *DaosSystemReconciler) serverReady(ctx context.Context, sys *daosv1alpha
 	if err := r.List(ctx, pods, client.InNamespace(ns), client.MatchingLabels(sts.Spec.Selector.MatchLabels)); err != nil || len(pods.Items) == 0 {
 		return false, "server pod not scheduled"
 	}
-	p := pods.Items[0]
+	return false, podNotReadyMessage(pods.Items[0])
+}
+
+// podNotReadyMessage says why a server pod is not ready and, when daos_server exited, why it
+// did: the first error line it left in the termination message (the container uses
+// FallbackToLogsOnError). Without it a THP, RAM or bdev-space failure showed only as
+// "CrashLoopBackOff" and the cause was in the pod log (CI cluster, 2026-10-04).
+func podNotReadyMessage(p corev1.Pod) string {
 	for _, cs := range p.Status.ContainerStatuses {
-		if cs.State.Waiting != nil {
-			return false, fmt.Sprintf("server pod %s: %s", p.Name, cs.State.Waiting.Reason)
+		cause := ""
+		if t := cs.State.Terminated; t != nil {
+			cause = crashCause(t.Message)
+		} else if t := cs.LastTerminationState.Terminated; t != nil {
+			cause = crashCause(t.Message)
 		}
-		if cs.State.Terminated != nil {
-			return false, fmt.Sprintf("server pod %s: exited %d (%s)", p.Name, cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+		var msg string
+		switch {
+		case cs.State.Waiting != nil:
+			msg = fmt.Sprintf("server pod %s: %s", p.Name, cs.State.Waiting.Reason)
+		case cs.State.Terminated != nil:
+			msg = fmt.Sprintf("server pod %s: exited %d (%s)", p.Name, cs.State.Terminated.ExitCode, cs.State.Terminated.Reason)
+		default:
+			continue
+		}
+		if cause != "" {
+			msg += ": " + cause
+		}
+		return msg
+	}
+	return fmt.Sprintf("server pod %s: %s, not ready", p.Name, p.Status.Phase)
+}
+
+// crashCause picks the line that explains why daos_server exited: a DAOS fault ("code = N
+// description = ...", printed before its resolution) if there is one, else the first "ERROR:"
+// line that is not the syslog noise every daos_server in a pod prints, else the last line;
+// at most 240 characters.
+func crashCause(msg string) string {
+	var firstErr, last string
+	for _, l := range strings.Split(msg, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		last = l
+		if strings.Contains(l, "code = ") && strings.Contains(l, "description = ") {
+			return clip(l)
+		}
+		if firstErr == "" && strings.HasPrefix(l, "ERROR:") && !strings.Contains(l, "failed to create syslogger") {
+			firstErr = l
 		}
 	}
-	return false, fmt.Sprintf("server pod %s: %s, not ready", p.Name, p.Status.Phase)
+	if firstErr != "" {
+		return clip(firstErr)
+	}
+	return clip(last)
+}
+
+func clip(s string) string {
+	if r := []rune(s); len(r) > 240 {
+		return string(r[:240]) + "…"
+	}
+	return s
 }

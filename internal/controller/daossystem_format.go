@@ -230,6 +230,11 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 			if external(sys) {
 				msg = "the external system reports it is not formatted (" + *env.Error + "); format it where it runs"
 			}
+			// carry why the last attempt failed: approving again would fail the same way, and the
+			// Job that held the answer is gone (same as the partly formatted branch below)
+			if lf := status.LastFormat; lf != nil && !lf.Succeeded {
+				msg += fmt.Sprintf("; last attempt %s failed: %s", lf.Time.Format(time.RFC3339), lf.Message)
+			}
 			if approved {
 				msg += "; approval present, formatting on the next pass"
 			} else {
@@ -378,20 +383,26 @@ func formatFailure(res *dmg.Result) string {
 	if err != nil {
 		return "format output: " + err.Error()
 	}
+	// a failed format comes back as a top-level "N host(s) had errors" AND the per-host errors;
+	// the cause (e.g. fallocate: no space left on device) is only in the latter
+	he, herr := dmg.StorageFormat(env)
+	var hostMsgs []string
+	for m, hosts := range he {
+		hostMsgs = append(hostMsgs, hosts+": "+m)
+	}
+	sort.Strings(hostMsgs)
 	if env.Error != nil {
-		return "dmg storage format: " + *env.Error
-	}
-	he, err := dmg.StorageFormat(env)
-	if err != nil {
-		return err.Error()
-	}
-	if len(he) > 0 {
-		var msgs []string
-		for m, hosts := range he {
-			msgs = append(msgs, hosts+": "+m)
+		msg := "dmg storage format: " + *env.Error
+		if len(hostMsgs) > 0 {
+			msg += ": " + strings.Join(hostMsgs, "; ")
 		}
-		sort.Strings(msgs)
-		return "dmg storage format host errors: " + strings.Join(msgs, "; ")
+		return msg
+	}
+	if herr != nil {
+		return herr.Error()
+	}
+	if len(hostMsgs) > 0 {
+		return "dmg storage format host errors: " + strings.Join(hostMsgs, "; ")
 	}
 	if res.ExitCode != 0 {
 		return fmt.Sprintf("dmg exited %d", res.ExitCode)
