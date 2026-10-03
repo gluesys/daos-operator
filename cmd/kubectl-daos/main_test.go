@@ -208,3 +208,28 @@ func TestStatusShowsDecisions(t *testing.T) {
 		t.Errorf("both decisions must be surfaced:\n%s", out.String())
 	}
 }
+
+// main used to hand every -flag to the global flag set, which does not know the subcommand
+// flags, so "rank exclude d1 --ranks=0" exited with "flag provided but not defined: -ranks"
+// and "system upgrade --image I" never worked from a shell (Tier 1 e2e, 2026-10-03).
+func TestSplitArgsKeepsSubcommandFlags(t *testing.T) {
+	cases := []struct {
+		in           []string
+		global, args []string
+	}{
+		{[]string{"rank", "exclude", "d1", "--ranks=0", "--yes", "-n", "ns"},
+			[]string{"--yes", "-n", "ns"}, []string{"rank", "exclude", "d1", "--ranks=0"}},
+		{[]string{"rank", "drain", "d1", "--ranks", "1,3-4"},
+			nil, []string{"rank", "drain", "d1", "--ranks", "1,3-4"}},
+		{[]string{"--kubeconfig", "/k", "system", "upgrade", "d1", "--image", "img:2", "--version=2.8.1", "--yes"},
+			[]string{"--kubeconfig", "/k", "--yes"}, []string{"system", "upgrade", "d1", "--image", "img:2", "--version=2.8.1"}},
+		{[]string{"cont", "destroy", "-n", "ns", "c1", "--yes"},
+			[]string{"-n", "ns", "--yes"}, []string{"cont", "destroy", "c1"}},
+	}
+	for _, c := range cases {
+		g, a := splitArgs(c.in)
+		if strings.Join(g, " ") != strings.Join(c.global, " ") || strings.Join(a, " ") != strings.Join(c.args, " ") {
+			t.Errorf("splitArgs(%v)\n global %v want %v\n args   %v want %v", c.in, g, c.global, a, c.args)
+		}
+	}
+}
