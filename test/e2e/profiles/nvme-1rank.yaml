@@ -40,3 +40,13 @@ system:
     hostPrep:
       enabled: true
       bindNvme: true
+# CSI for the data-path case (Tier 1 case 2). One rank: SX/S1, rdFac 0 (RP_2* needs two).
+csi:
+  enabled: true
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: latest
+  storageClasses:
+    - name: daos-e2e
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
