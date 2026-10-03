@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# Tier 1 case 11 overlay: a file bdev larger than the root filesystem, in the default data path
+# (/var/daos/<sys> on the root disk, about 64 GiB free on the CI workers).
+system:
+  spec:
+    engines:
+      - targets: 4
+        helpers: 0
+        fabricIface: ens19
+        bdevClass: file
+        bdevList: [/var/daos/bdev0]   # the file class needs file paths (design 13절 #16)
+        bdevSizeGiB: 100
+        scmSizeGiB: 4

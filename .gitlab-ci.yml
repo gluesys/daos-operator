@@ -161,7 +161,7 @@ e2e-tier1:
   needs: [e2e-build]
   timeout: 75m
   script:
-    - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter='!upgrade' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
+    - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter='!upgrade && !regression' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
   artifacts:
     when: always
     reports:
@@ -188,6 +188,26 @@ e2e-upgrade:
     when: always
     reports:
       junit: dist/e2e-upgrade-junit.xml
+    expire_in: 14 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+      allow_failure: true
+    - if: $CI_COMMIT_BRANCH == "main"
+      allow_failure: true
+
+# Tier 1 cases 9-12: test-bed failures reproduced on purpose; each resets the cluster and installs
+# its own broken system. Manual on MRs, every run on main.
+e2e-regression:
+  <<: *daos-k8s
+  needs: [e2e-build]
+  timeout: 75m
+  script:
+    - cd test/e2e && E2E_NO_INSTALL=1 E2E_PROFILE=kdev-1rank ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter=regression -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-regression-junit.xml
+  artifacts:
+    when: always
+    reports:
+      junit: dist/e2e-regression-junit.xml
     expire_in: 14 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"

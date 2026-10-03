@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# Tier 1 case 10 overlay: DAOS's default system_ram_reserved (64 GiB) on a 32 GiB node.
+system:
+  spec:
+    systemRamReservedGiB: 64
