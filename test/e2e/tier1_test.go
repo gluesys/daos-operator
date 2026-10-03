@@ -63,9 +63,8 @@ spec:
       volumeMounts: [{name: d, mountPath: /data}]
   volumes: [{name: d, persistentVolumeClaim: {claimName: e2e-data}}]`, name, k, v, client, script)
 		}
-		// Provisioning is slow today: every DaosContainer operation is a Job with a fresh
-		// daos_agent sidecar whose first client call takes ~2 min (2026-10-03, CI cluster), and a
-		// container needs a create and a query Job. Measure it and report it rather than hide it.
+		// Provisioning time is reported, not just bounded: it was 5-7 min while the operator's Job
+		// pods were BestEffort and starved next to the engine (fixed by daos-operator !5: 20 s).
 		By("waiting for the volume to be provisioned")
 		start := time.Now()
 		Eventually(func() string { return jsonpath("pvc", "e2e-data", ".status.phase") }).WithTimeout(15 * time.Minute).Should(Equal("Bound"))
