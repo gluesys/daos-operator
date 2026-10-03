@@ -62,7 +62,10 @@ import (
 // second source of truth; nothing here can destroy data.
 type DaosSystemReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader reads the DaosSystem uncached at the start of a reconcile (see Reconcile).
+	// nil falls back to the cached Client (tests).
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 	// Dmg runs the admin tool as Jobs (#10). nil disables the format/membership step.
 	Dmg dmg.Runner
 	// Recorder emits Events for format decisions; nil is allowed.
@@ -132,7 +135,15 @@ func clientIfaces(sys *daosv1alpha1.DaosSystem) []string {
 func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	sys := &daosv1alpha1.DaosSystem{}
-	if err := r.Get(ctx, req.NamespacedName, sys); err != nil {
+	// The status is rebuilt from this copy and replaces the stored one at the end, so it must
+	// not be older than what the previous reconcile wrote. The informer cache can be: on the CI
+	// cluster lastRankOp moved back from a finished reintegrate to the earlier clear-exclude and
+	// a finished exclude stayed "is running" (2026-10-03). Read it from the API server.
+	var reader client.Reader = r.Client
+	if r.APIReader != nil {
+		reader = r.APIReader
+	}
+	if err := reader.Get(ctx, req.NamespacedName, sys); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if !sys.DeletionTimestamp.IsZero() {
