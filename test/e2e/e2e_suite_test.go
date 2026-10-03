@@ -10,6 +10,7 @@
 //	E2E_PROFILE   profile name (default nvme-1rank)
 //	E2E_RESET=1   run hack/ci/rollback.sh first (CI cluster only)
 //	E2E_SET       extra helm --set values, comma separated (CI image tags)
+//	E2E_UPGRADE_FROM  git tag of the release to upgrade from; run with -ginkgo.label-filter=upgrade
 package e2e
 
 import (
@@ -54,6 +55,9 @@ var _ = BeforeSuite(func() {
 	if os.Getenv("E2E_RESET") == "1" {
 		By("resetting the cluster to the k8s-ready snapshot")
 		run(filepath.Join(repoRoot, "hack", "ci", "rollback.sh"))
+	}
+	if os.Getenv("E2E_UPGRADE_FROM") != "" {
+		return // the upgrade case (label "upgrade") installs the old release itself
 	}
 	installChart()
 	approveFormatAndWaitReady()
