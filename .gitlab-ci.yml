@@ -145,7 +145,8 @@ e2e-build:
     GOTOOLCHAIN: auto
     GOFLAGS: -buildvcs=false
   script:
-    - go test -c -tags e2e -o dist/e2e.test ./test/e2e/
+    # static: the runner (3J) is Rocky 8 with glibc 2.28, the golang image is newer
+    - CGO_ENABLED=0 go test -c -tags e2e -o dist/e2e.test ./test/e2e/
   artifacts:
     paths: [dist/e2e.test]
     expire_in: 3 days
