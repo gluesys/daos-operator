@@ -135,14 +135,166 @@ spec:
 		out := kubectl("exec", pod, "-c", "daos-server", "--", "sh", "-c",
 			`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_engine ] && kill -9 ${p#/proc/} && echo killed ${p#/proc/}; done; true`)
 		Expect(out).To(ContainSubstring("killed"), "no daos_engine process found")
-		Eventually(func() string { return condStatus("Ready") }).WithTimeout(3*time.Minute).Should(Equal("False"),
-			"Ready must turn False while the engine is dead")
-		Expect(jsonpath("daossystem", sysName, ".status.ranks")).NotTo(ContainSubstring(`"joined"`),
-			"the dead rank must not be reported as joined")
+		// The rank state is the signal: Ready alone also dips briefly on its own (design 13절 #3),
+		// so a False Ready right after the kill proves nothing.
+		Eventually(func() string { return jsonpath("daossystem", sysName, ".status.ranks") }).WithTimeout(3*time.Minute).
+			ShouldNot(ContainSubstring(`"joined"`), "the dead rank must stop being reported as joined")
+		Expect(condStatus("Ready")).To(Equal("False"), "Ready must be False while the rank is not joined")
 		AddReportEntry("ServersReady while engine dead", condStatus("ServersReady"))
 		By("restarting the server pod and waiting for the system to come back")
 		kubectl("delete", "pod", pod, "--wait=true", "--timeout=3m")
 		waitReadyStable(10 * time.Minute)
+	})
+
+	// Case 3. The S3 gateway in front of a pool: a real put/list/get through versitygw.
+	It("serves S3 put, list and get from a DaosPool (case 3)", func() {
+		apply(`apiVersion: v1
+kind: Secret
+metadata: {name: e2e-s3root}
+stringData: {accessKey: e2eaccess, secretKey: e2esecret0123456789}`)
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: e2es3}
+spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0} # >= 1 GiB NVMe per target (4 targets)`)
+		Eventually(func() string { return jsonpath("daospool", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		// -fix28: the gateway works around #28, an object write pattern that SIGSEGVs the DAOS 2.8
+		// engine in vos_fetch_begin. The plain 2.8.0-20260923 image reproduced that crash here
+		// twice (2026-10-03), so it must not be used; this case catches a regression of the workaround.
+		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923-fix28")
+		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
+kind: S3Service
+metadata: {name: e2es3}
+spec: {poolRef: e2es3, image: %q, replicas: 1, port: 7070, region: kr-1, serviceType: ClusterIP, rootCredentialsSecret: e2e-s3root}`, image))
+		Eventually(func() string { return jsonpath("s3service", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		svc := jsonpath("s3service", "e2es3", ".status.endpoint")
+		Expect(svc).NotTo(BeEmpty())
+		By("put / list / get through " + svc)
+		aws := envOr("E2E_AWSCLI_IMAGE", "docker.io/amazon/aws-cli:2.17.0")
+		script := `set -e; export AWS_ACCESS_KEY_ID=e2eaccess AWS_SECRET_ACCESS_KEY=e2esecret0123456789 AWS_DEFAULT_REGION=kr-1
+ep=http://e2es3.` + ns + `.svc:7070; s3="aws --endpoint-url $ep s3"
+head -c 8388608 /dev/urandom > /tmp/obj; sha=$(sha256sum /tmp/obj | cut -d' ' -f1)
+$s3 mb s3://e2e; $s3 cp /tmp/obj s3://e2e/obj; $s3 ls s3://e2e | grep -q obj && echo LISTED
+$s3 cp s3://e2e/obj /tmp/back; [ "$(sha256sum /tmp/back | cut -d' ' -f1)" = "$sha" ] && echo S3_OK
+$s3 rm s3://e2e/obj; $s3 rb s3://e2e`
+		apply(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: e2e-s3client}
+spec:
+  restartPolicy: Never
+  containers: [{name: c, image: %s, command: [sh, -c, %q]}]`, aws, script))
+		Eventually(func() string { return jsonpath("pod", "e2e-s3client", ".status.phase") }).WithTimeout(5 * time.Minute).
+			Should(BeElementOf("Succeeded", "Failed"))
+		logs := kubectl("logs", "e2e-s3client")
+		Expect(logs).To(ContainSubstring("LISTED"), logs)
+		Expect(logs).To(ContainSubstring("S3_OK"), logs)
+
+		kubectl("delete", "pod", "e2e-s3client", "--wait=false")
+		kubectl("delete", "s3service", "e2es3", "--wait=true", "--timeout=3m")
+		kubectl("annotate", "daospool", "e2es3", "daos.gluesys.com/destroy-approved=true", "--overwrite")
+		kubectl("delete", "daospool", "e2es3", "--wait=false")
+		waitGone("daospool", "e2es3", 5*time.Minute)
+		kubectl("delete", "secret", "e2e-s3root")
+	})
+
+	// Case 4. Every kubectl-daos subcommand against a live system: the ones that change something
+	// must have their effect, the ones that do not apply must refuse with their message, and a
+	// no-op upgrade approval must not restart the engine. Rank exclude -> reintegrate is the
+	// recovery path that once could not finish (0b9f544).
+	It("runs every kubectl-daos subcommand (case 4)", func() {
+		bin := envOr("KUBECTL_DAOS", "kubectl-daos")
+		daos := func(args ...string) (string, error) { return runE(bin, append(args, "-n", ns)...) }
+		mustDaos := func(args ...string) string {
+			out, err := daos(args...)
+			ExpectWithOffset(1, err).NotTo(HaveOccurred(), "kubectl-daos %v\n%s", args, out)
+			return out
+		}
+
+		By("system status")
+		Expect(mustDaos("system", "status", sysName)).To(And(ContainSubstring("Ready"), ContainSubstring("rank")))
+
+		By("system format / certs refuse when they do not apply")
+		out, err := daos("system", "format", sysName, "--yes")
+		Expect(err).To(HaveOccurred())
+		Expect(out).To(ContainSubstring("already formatted"))
+		out, err = daos("system", "certs", sysName, "--yes")
+		Expect(err).To(HaveOccurred())
+		Expect(out).To(ContainSubstring("allowInsecure"))
+
+		By("system upgrade without a new image does not restart the engine")
+		pod := kubectl("get", "pod", "-l", "app.kubernetes.io/name=daos-server", "-o", "jsonpath={.items[0].metadata.name}")
+		uid := jsonpath("pod", pod, ".metadata.uid")
+		mustDaos("system", "upgrade", sysName, "--yes")
+		Consistently(func() string { return jsonpath("pod", pod, ".metadata.uid") }).WithTimeout(time.Minute).Should(Equal(uid))
+		waitReadyStable(3 * time.Minute)
+
+		// a pool on the rank, so reintegrate has pool-ranks to work on (with no pool DAOS answers
+		// "no pool-ranks found to operate on" and the operator records a failure)
+		By("creating a pool that lives on rank 0")
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: e2ekd}
+spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0} # >= 1 GiB NVMe per target (4 targets)`)
+		Eventually(func() string { return jsonpath("daospool", "e2ekd", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		// The documented undo of an exclude (kubectl daos rank exclude --help): the excluded rank's
+		// engine stops, so clear-exclude, restart the server pod, then reintegrate.
+		// Rank operations are one-shot and kubectl-daos returns as soon as it has set the
+		// annotation, so each step waits for status.lastRankOp. A step sent while the server is
+		// cycling fails with "unable to contact the DAOS Management Service" and is not retried by
+		// the operator (CI cluster, 2026-10-03); like a careful admin, the test re-sends only that.
+		rankOp := func(op string) {
+			for attempt := 1; ; attempt++ {
+				mustDaos("rank", op, sysName, "--ranks=0", "--yes")
+				var msg string
+				Eventually(func() string {
+					if jsonpath("daossystem", sysName, ".status.lastRankOp.op") != op {
+						return ""
+					}
+					msg = jsonpath("daossystem", sysName, ".status.lastRankOp.message")
+					return jsonpath("daossystem", sysName, ".status.lastRankOp.finishedAt")
+				}).WithTimeout(8*time.Minute).ShouldNot(BeEmpty(), "rank %s never reported a result (last message: %s)", op, msg)
+				if jsonpath("daossystem", sysName, ".status.lastRankOp.succeeded") == "true" {
+					return
+				}
+				Expect(msg).To(ContainSubstring("unable to contact"), "rank %s failed: %s", op, msg)
+				Expect(attempt).To(BeNumerically("<", 4), "rank %s: management service unreachable after %d tries: %s", op, attempt, msg)
+				AddReportEntry("rank "+op+" re-sent", msg)
+				time.Sleep(20 * time.Second)
+			}
+		}
+		By("rank exclude -> clear-exclude -> pod restart -> reintegrate")
+		rankOp("exclude")
+		Eventually(func() string { return jsonpath("daossystem", sysName, ".status.ranks") }).WithTimeout(8 * time.Minute).
+			Should(ContainSubstring("excluded"))
+		rankOp("clear-exclude")
+		kubectl("delete", "pod", pod, "--wait=true", "--timeout=3m")
+		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
+		// After clear-exclude and the restart the rank was seen to rejoin on its own, and a
+		// reintegrate sent then was dropped without a lastRankOp record (2026-10-03, design 13절).
+		// Reintegrate only if it has not.
+		time.Sleep(90 * time.Second)
+		if !strings.Contains(jsonpath("daossystem", sysName, ".status.ranks"), `"joined"`) {
+			rankOp("reintegrate")
+		} else {
+			AddReportEntry("rank rejoined without reintegrate", jsonpath("daossystem", sysName, ".status.ranks"))
+		}
+		waitReadyStable(10 * time.Minute)
+
+		By("cont destroy and pool destroy")
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainer
+metadata: {name: e2ekd}
+spec: {poolRef: e2ekd, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyFactor: 0}`)
+		Eventually(func() string {
+			return jsonpath("daoscontainer", "e2ekd", `.status.conditions[?(@.type=="Ready")].status`)
+		}).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		mustDaos("cont", "destroy", "e2ekd", "--yes")
+		waitGone("daoscontainer", "e2ekd", 5*time.Minute)
+		mustDaos("pool", "destroy", "e2ekd", "--yes")
+		waitGone("daospool", "e2ekd", 5*time.Minute)
 	})
 
 	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:

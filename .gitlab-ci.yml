@@ -147,8 +147,9 @@ e2e-build:
   script:
     # static: the runner (3J) is Rocky 8 with glibc 2.28, the golang image is newer
     - CGO_ENABLED=0 go test -c -tags e2e -o dist/e2e.test ./test/e2e/
+    - CGO_ENABLED=0 go build -o dist/kubectl-daos ./cmd/kubectl-daos
   artifacts:
-    paths: [dist/e2e.test]
+    paths: [dist/e2e.test, dist/kubectl-daos]
     expire_in: 3 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -160,7 +161,7 @@ e2e-tier1:
   needs: [e2e-build]
   timeout: 75m
   script:
-    - cd test/e2e && E2E_RESET=1 ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
+    - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
   artifacts:
     when: always
     reports:
