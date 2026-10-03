@@ -72,17 +72,7 @@ func main() {
 	fs.StringVar(&a.ns, "namespace", "default", "namespace (DaosContainer only)")
 	fs.StringVar(&a.kubecf, "kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig path")
 	fs.StringVar(&a.ctx, "context", "", "kubeconfig context")
-	// flags may appear anywhere: collect positionals, parse the rest
-	var args, flagArgs []string
-	for _, arg := range os.Args[1:] {
-		if strings.HasPrefix(arg, "-") {
-			flagArgs = append(flagArgs, arg)
-		} else if len(flagArgs) > 0 && !strings.Contains(flagArgs[len(flagArgs)-1], "=") && needsValue(flagArgs[len(flagArgs)-1]) {
-			flagArgs = append(flagArgs, arg)
-		} else {
-			args = append(args, arg)
-		}
-	}
+	flagArgs, args := splitArgs(os.Args[1:])
 	if err := fs.Parse(flagArgs); err != nil {
 		os.Exit(2)
 	}
@@ -100,6 +90,49 @@ func main() {
 		fmt.Fprintln(os.Stderr, "kubectl daos:", err)
 		os.Exit(1)
 	}
+}
+
+// splitArgs separates the global flags (parsed in main) from the command, its positionals and
+// its own flags (--ranks, --image, --version), which run() hands to the subcommand. Flags may
+// appear anywhere on the line. Giving the subcommand flags to the global flag set made it
+// reject them ("flag provided but not defined: -ranks"), so rank operations and
+// "system upgrade --image" never worked from a shell.
+func splitArgs(in []string) (global, args []string) {
+	toArgs := false // where the value of the previous flag goes
+	for i, arg := range in {
+		if strings.HasPrefix(arg, "-") {
+			name, _, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+			toArgs = subcommandFlag(name)
+			if toArgs {
+				args = append(args, arg)
+			} else {
+				global = append(global, arg)
+			}
+			if hasValue {
+				toArgs = false
+				continue
+			}
+			continue
+		}
+		if i > 0 && strings.HasPrefix(in[i-1], "-") && !strings.Contains(in[i-1], "=") && needsValue(in[i-1]) {
+			if toArgs {
+				args = append(args, arg)
+			} else {
+				global = append(global, arg)
+			}
+			continue
+		}
+		args = append(args, arg)
+	}
+	return global, args
+}
+
+func subcommandFlag(name string) bool {
+	switch name {
+	case "ranks", "image", "version":
+		return true
+	}
+	return false
 }
 
 func needsValue(f string) bool {
