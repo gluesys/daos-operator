@@ -194,10 +194,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.DaosSystemReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Dmg:      &dmg.JobRunner{Client: mgr.GetClient(), Kube: kube, Scheme: mgr.GetScheme()},
-		Recorder: mgr.GetEventRecorderFor("daossystem"),
+		APIReader: mgr.GetAPIReader(),
+		Client:    mgr.GetClient(),
+		Scheme:    mgr.GetScheme(),
+		Dmg:       &dmg.JobRunner{Client: mgr.GetClient(), Kube: kube, Scheme: mgr.GetScheme()},
+		Recorder:  mgr.GetEventRecorderFor("daossystem"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "daossystem")
 		os.Exit(1)
