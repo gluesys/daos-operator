@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Tier 1 kdev 프로파일: 워커 1대(exaci5-3a), kdev 클래스(virtio-scsi 디스크 /dev/sdb). 장치 바인딩이 필요 없어
+# NVMe 수정(kmod, /lib/modules) 이전 버전도 돈다 — 케이스 6(업그레이드)의 '목표' 쪽 값.
+# 설계 doc/ci-design-2026-10-02.md 5절.
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: "17519342"
+imagePullSecrets:
+  - name: gitlab-registry
+hostprep:
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:17519342
+system:
+  create: true
+  name: daos
+  spec:
+    version: "2.8.0"
+    namespace: daos-system
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261003-g9927f7be
+      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261003-g9927f7be
+      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261003-g9927f7be
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261003-g9927f7be
+    placement: dedicated
+    nodeSelector:
+      kubernetes.io/hostname: exaci5-3a
+    msReplicas: 1
+    provider: "ofi+tcp"
+    nrHugepages: 2048
+    allowInsecure: true
+    systemRamReservedGiB: 8
+    engines:
+      - targets: 4
+        helpers: 0
+        fabricIface: ens19
+        bdevClass: kdev
+        bdevList: [/dev/sdb]
+        scmSizeGiB: 4
+    hostPrep:
+      enabled: true
+      bindNvme: false
+# CSI for the data-path case (Tier 1 case 2). One rank: SX/S1, rdFac 0 (RP_2* needs two).
+csi:
+  enabled: true
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: 55f554f9
+  storageClasses:
+    - name: daos-e2e
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
