@@ -99,7 +99,9 @@ spec:
 	// Case 5. The operator dies in the middle of things; when it comes back it must not
 	// rewrite what it already made.
 	It("survives an operator restart without changing the workloads (case 5)", func() {
-		sts := kubectl("get", "sts", "-l", "app.kubernetes.io/name=daos-server", "-o", "jsonpath={.items[0].metadata.name}")
+		// the StatefulSet carries only managed-by/system/node labels; reach it through its pod
+		pod := kubectl("get", "pod", "-l", "app.kubernetes.io/name=daos-server", "-o", "jsonpath={.items[0].metadata.name}")
+		sts := strings.TrimSuffix(pod, "-0")
 		cm := sts // the server ConfigMap is named like its StatefulSet: <system>-server-<node>
 		genBefore := jsonpath("sts", sts, ".metadata.generation")
 		cmBefore := jsonpath("configmap", cm, ".metadata.resourceVersion")
@@ -123,16 +125,22 @@ spec:
 		}
 	})
 
-	// Case 13 (#37). Only the engine dies; the conditions must say so.
+	// Case 13 (#37). Only the engine dies; the conditions must say so. Seen on the CI cluster
+	// (2026-10-03): within about a minute the rank turns "errored" and Ready goes False
+	// (RanksNotJoined), while ServersReady and ManagementService stay True -- they are about
+	// pods and the MS leader, which are indeed fine. #37 asks for more than that; this case
+	// pins the part that holds today so a regression shows up.
 	It("reports an engine that died (case 13, #37)", func() {
 		pod := kubectl("get", "pod", "-l", "app.kubernetes.io/name=daos-server", "-o", "jsonpath={.items[0].metadata.name}")
 		By("killing daos_engine inside " + pod)
-		kubectl("exec", pod, "-c", "daos-server", "--", "sh", "-c",
-			`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_engine ] && kill -9 ${p#/proc/} && echo killed ${p#/proc/}; done`)
-		expectKnownBug("#37", func() {
-			Eventually(func() string { return condStatus("Ready") }).WithTimeout(3*time.Minute).Should(Equal("False"),
-				"Ready must turn False while the engine is dead")
-		})
+		out := kubectl("exec", pod, "-c", "daos-server", "--", "sh", "-c",
+			`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_engine ] && kill -9 ${p#/proc/} && echo killed ${p#/proc/}; done; true`)
+		Expect(out).To(ContainSubstring("killed"), "no daos_engine process found")
+		Eventually(func() string { return condStatus("Ready") }).WithTimeout(3*time.Minute).Should(Equal("False"),
+			"Ready must turn False while the engine is dead")
+		Expect(jsonpath("daossystem", sysName, ".status.ranks")).NotTo(ContainSubstring(`"joined"`),
+			"the dead rank must not be reported as joined")
+		AddReportEntry("ServersReady while engine dead", condStatus("ServersReady"))
 		By("restarting the server pod and waiting for the system to come back")
 		kubectl("delete", "pod", pod, "--wait=true", "--timeout=3m")
 		waitReadyStable(10 * time.Minute)
