@@ -203,6 +203,22 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.last("-dmg-query").ImagePullSecrets).To(Equal(want), "dmg Jobs")
 	})
 
+	It("tells a file-class engine without bdevList to list file paths, not to wait for node facts (#16)", func() {
+		sys := getSys()
+		sys.Spec.Engines[0].BdevClass, sys.Spec.Engines[0].FabricIface = "file", "ens2"
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		var n3 daosv1alpha1.NodeConfigStatus
+		for _, nc := range getSys().Status.NodeConfigs {
+			if nc.Node == "n3" {
+				n3 = nc
+			}
+		}
+		Expect(n3.Message).To(ContainSubstring("bdevClass file needs file paths"))
+		Expect(n3.Message).To(ContainSubstring("spec.engines[0].bdevList"))
+		Expect(n3.Message).NotTo(HavePrefix("waiting for node facts"))
+	})
+
 	It("runs one client agent per selected node when spec.clientAgent is on", func() {
 		sys := &daosv1alpha1.DaosSystem{}
 		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())
