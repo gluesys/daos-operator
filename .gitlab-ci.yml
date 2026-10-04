@@ -15,6 +15,8 @@ default:
 
 variables:
   GIT_DEPTH: "20"
+  # daos-images 의 CI 가 한 태그로 빌드한 역할 이미지(daos-images !2). render-validate 와 CI 클러스터가 쓴다.
+  DAOS_IMAGE_TAG: 2.8.0-20261003-g9927f7be
 
 syntax:
   stage: check
@@ -57,6 +59,83 @@ go-build:
     - gofmt -l api/ internal/ cmd/ | tee /tmp/gofmt.txt; test ! -s /tmp/gofmt.txt
     - make manifests generate && git diff --exit-code -- config/crd api/
     - make helm-sync && git diff --exit-code -- charts/
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# Tier 0 (doc/ci-design-2026-10-02.md): unit + envtest. go-build above deliberately skips envtest.
+go-test:
+  stage: check
+  image: golang:1.26
+  variables:
+    GOTOOLCHAIN: auto
+    GOFLAGS: -buildvcs=false
+  script:
+    - make test
+    - go tool cover -func=cover.out | tail -1
+  coverage: '/total:\s+\(statements\)\s+(\d+\.\d+)%/'
+  artifacts:
+    paths: [cover.out]
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# Tier 0: every chart profile (charts/daos-operator/ci/) against K8s 1.29/1.31/1.34 schemas,
+# custom resources included (schemas extracted from the chart's CRDs).
+chart-schema:
+  stage: check
+  image:
+    name: alpine/helm:3.19.0
+    entrypoint: [""]
+  script:
+    - apk add --no-cache -q bash python3 py3-yaml curl
+    - curl -fsSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz -C /usr/local/bin kubeconform
+    - hack/ci/chart-schema.sh
+  artifacts:
+    when: on_failure
+    paths: [dist/chart-schema/]
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# Tier 0: the configurations the operator renders, checked by the real DAOS 2.8 binaries
+# (exastor/daos-images scripts/validate-config.sh). Render needs Go, validation needs podman.
+render:
+  stage: check
+  image: golang:1.26
+  variables:
+    GOTOOLCHAIN: auto
+    GOFLAGS: -buildvcs=false
+  script:
+    - go run ./hack/render-samples -out dist/render
+  artifacts:
+    paths: [dist/render/]
+    expire_in: 7 days
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_COMMIT_TAG
+
+# DAOS 2.8 binaries need AVX2: exa-build (daos-build) has none and dies with SIGILL. 3J (daos-k8s,
+# Xeon 6330) runs them; gitlab-runner may `sudo podman` there (/etc/sudoers.d/gitlab-runner-podman).
+# No resource_group: it does not touch the e2e cluster, and 3J runs two jobs at once.
+render-validate:
+  stage: check
+  tags: [daos-k8s]
+  needs: [render]
+  script:
+    - export REG="${CI_REGISTRY%%:*}"
+    - echo "$CI_JOB_TOKEN" | sudo podman login --username gitlab-ci-token --password-stdin "$REG"
+    # job token allowlist: daos-images permits daos-operator (2026-10-03)
+    - git clone -q --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/exastor/daos-images.git" /tmp/daos-images-$CI_JOB_ID
+    - RENDER=0 DAOS_IMAGES_DIR=/tmp/daos-images-$CI_JOB_ID DOCKER="sudo podman" IMAGE_NSP="$REG/exastor/daos-images" IMAGE_TAG="$DAOS_IMAGE_TAG" hack/ci/render-validate.sh
+  after_script:
+    - rm -rf /tmp/daos-images-$CI_JOB_ID
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
