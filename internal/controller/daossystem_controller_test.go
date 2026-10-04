@@ -1095,6 +1095,21 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
 	})
 
+	It("treats a drain or reintegrate with no pool on the ranks as done, not failed (#14)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		reconcileWith(f)
+		f.set("system reintegrate --ranks=0", &dmg.Result{Done: true, ExitCode: 1,
+			Output: `{"response": null, "error": "no pool-ranks found to operate on with request params", "status": -1}`})
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:0"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeTrue())
+		Expect(sys.Status.LastRankOp.Message).To(ContainSubstring("nothing to do"))
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
+	})
+
 	It("attaches to a DAOS system run elsewhere without managing servers (#22)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
 		sys := getSys()

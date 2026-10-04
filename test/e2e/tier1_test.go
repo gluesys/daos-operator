@@ -233,7 +233,7 @@ spec:
 		waitReadyStable(3 * time.Minute)
 
 		// a pool on the rank, so reintegrate has pool-ranks to work on (with no pool DAOS answers
-		// "no pool-ranks found to operate on" and the operator records a failure)
+		// "no pool-ranks found to operate on", which the operator records as nothing to do, #14)
 		By("creating a pool that lives on rank 0")
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
