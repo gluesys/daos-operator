@@ -121,16 +121,19 @@ render:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
 
+# DAOS 2.8 binaries need AVX2: exa-build (daos-build) has none and dies with SIGILL. 3J (daos-k8s,
+# Xeon 6330) runs them; gitlab-runner may `sudo podman` there (/etc/sudoers.d/gitlab-runner-podman).
+# No resource_group: it does not touch the e2e cluster, and 3J runs two jobs at once.
 render-validate:
   stage: check
-  tags: [daos-build]
+  tags: [daos-k8s]
   needs: [render]
   script:
     - export REG="${CI_REGISTRY%%:*}"
-    - echo "$CI_JOB_TOKEN" | podman login --username gitlab-ci-token --password-stdin "$REG"
+    - echo "$CI_JOB_TOKEN" | sudo podman login --username gitlab-ci-token --password-stdin "$REG"
     # job token allowlist: daos-images permits daos-operator (2026-10-03)
     - git clone -q --depth 1 "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/exastor/daos-images.git" /tmp/daos-images-$CI_JOB_ID
-    - RENDER=0 DAOS_IMAGES_DIR=/tmp/daos-images-$CI_JOB_ID DOCKER=podman IMAGE_NSP="$REG/exastor/daos-images" IMAGE_TAG="$DAOS_IMAGE_TAG" hack/ci/render-validate.sh
+    - RENDER=0 DAOS_IMAGES_DIR=/tmp/daos-images-$CI_JOB_ID DOCKER="sudo podman" IMAGE_NSP="$REG/exastor/daos-images" IMAGE_TAG="$DAOS_IMAGE_TAG" hack/ci/render-validate.sh
   after_script:
     - rm -rf /tmp/daos-images-$CI_JOB_ID
   rules:
