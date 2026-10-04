@@ -98,7 +98,13 @@ helm:
       push() { for i in 1 2 3; do
         echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG" >/dev/null && podman push "$1" && return 0
         echo "push $1 failed (attempt $i)"; sleep 10; done; return 1; }
+    # MR pipelines push only the commit tag the e2e jobs deploy; VERSION and latest move on main/tags
+    - |
+      publish() { push "$1:$CI_COMMIT_SHORT_SHA" || return 1
+        [ -n "$CI_MERGE_REQUEST_IID" ] && return 0
+        podman tag "$1:$CI_COMMIT_SHORT_SHA" "$1:$VERSION" "$1:latest" && push "$1:$VERSION" && push "$1:latest"; }
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
 
@@ -107,22 +113,14 @@ image-operator:
   script:
     - IMG="$IMG_BASE/daos-operator"
     - podman build --pull -t "$IMG:$CI_COMMIT_SHORT_SHA" .
-    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
-    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
-    - push "$IMG:$CI_COMMIT_SHORT_SHA"
-    - push "$IMG:$VERSION"
-    - push "$IMG:latest"
+    - publish "$IMG"
 
 image-hostprep:
   <<: *image-job
   script:
     - IMG="$IMG_BASE/daos-hostprep"
     - podman build --pull -f images/hostprep/Dockerfile -t "$IMG:$CI_COMMIT_SHORT_SHA" .
-    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:$VERSION"
-    - podman tag "$IMG:$CI_COMMIT_SHORT_SHA" "$IMG:latest"
-    - push "$IMG:$CI_COMMIT_SHORT_SHA"
-    - push "$IMG:$VERSION"
-    - push "$IMG:latest"
+    - publish "$IMG"
 
 # e2e: ExaCI5 슬롯 3·4 VM 클러스터(doc/ci-design-2026-10-02.md). 러너 exaci5-3j, 태그 daos-k8s.
 # 한 번에 한 파이프라인만 클러스터를 쓴다. Phase A 는 롤백만 검증한다(수동).
@@ -136,6 +134,9 @@ image-hostprep:
     - install -m 600 "$DAOS_CI_KUBECONFIG" ~/.kube/daos-ci.conf
     - export KUBECONFIG=~/.kube/daos-ci.conf
     - export VDI_SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=no -p 9349 jenkins-ci@192.168.2.186"
+    # the operator and hostprep built from this commit (image-* jobs); the profiles pin a tag
+    # only for local runs. Without this, MRs tested the pinned operator, not their own code.
+    - export E2E_SET="image.tag=$CI_COMMIT_SHORT_SHA,hostprep.defaultImage=${CI_REGISTRY%%:*}/$CI_PROJECT_PATH/daos-hostprep:$CI_COMMIT_SHORT_SHA"
 
 # The Tier 1 suite, compiled where Go is and run on the CI cluster runner (no Go there).
 e2e-build:
@@ -158,7 +159,7 @@ e2e-build:
 # Tier 1 (doc/ci-design-2026-10-02.md 7절). allow_failure while it settles (8절: 1~2 weeks), then blocking.
 e2e-tier1:
   <<: *daos-k8s
-  needs: [e2e-build]
+  needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   script:
     - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter='!upgrade && !regression' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
@@ -177,7 +178,7 @@ e2e-tier1:
 # release predates the NVMe binding fixes). Manual on MRs, every run on main.
 e2e-upgrade:
   <<: *daos-k8s
-  needs: [e2e-build]
+  needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   variables:
     E2E_UPGRADE_FROM: v0.1.0-rc.4
@@ -200,7 +201,7 @@ e2e-upgrade:
 # its own broken system. Manual on MRs, every run on main.
 e2e-regression:
   <<: *daos-k8s
-  needs: [e2e-build]
+  needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   script:
     - cd test/e2e && E2E_NO_INSTALL=1 E2E_PROFILE=kdev-1rank ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter=regression -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-regression-junit.xml
