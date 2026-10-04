@@ -513,19 +513,19 @@ spec:
 ```go
 	It("keeps a mounted volume readable across a CSI node plugin restart", func() {
 		node := jsonpath("pod", "e2e-t2-app", ".spec.nodeName")
-		plugin := kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/component=csi-node",
+		plugin := kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
 			"--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
 		Expect(plugin).NotTo(BeEmpty())
 		kubectl("delete", "pod", "-n", ns, plugin, "--wait=true", "--timeout=3m")
 		Eventually(func() string {
-			return kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/component=csi-node",
+			return kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
 				"--field-selector", "spec.nodeName="+node, "-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
 		}).WithTimeout(3 * time.Minute).Should(Equal("True"))
 		checksumOK()
 	})
 ```
 
-실행 전 `kubectl -n daos-system get pod --show-labels | grep csi-node` 로 라벨을 확인한다. 다르면 셀렉터를 실제 라벨로 바꾼다.
+라벨은 2026-10-04 클러스터에서 확인한 값이다(`app.kubernetes.io/name=daos-csi`, `app.kubernetes.io/component=node`).
 
 - [ ] **Step 6: 노드 재부팅**
 
@@ -690,7 +690,7 @@ e2e-tier2-tiers:
 
 스케줄 파이프라인에서는 MR·main 용 e2e 잡이 돌지 않아야 한다. e2e-tier1·e2e-upgrade·e2e-regression 의 `rules` 맨 앞에 `- if: $CI_PIPELINE_SOURCE == "schedule"` + `when: never` 를 넣는다.
 
-`e2e-build`·`image-operator`·`image-hostprep` 의 `rules` 에는 `- if: $CI_PIPELINE_SOURCE == "schedule"` 을 추가한다(스케줄 파이프라인에서도 빌드돼야 needs 가 성립한다).
+스케줄 파이프라인은 `main` 에서 돌므로 `e2e-build`·`image-*` 는 기존 규칙(`$CI_COMMIT_BRANCH == "main"`)으로 이미 실행된다. 이 잡들의 규칙은 바꾸지 않는다.
 
 - [ ] **Step 2: CI lint**
 
