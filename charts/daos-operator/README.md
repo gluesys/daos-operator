@@ -62,6 +62,24 @@ system:
       client: <your-registry>/daos-client:2.8.0
 ```
 
+## Upgrade
+
+Helm installs `crds/` once and never upgrades them, so apply the new CRDs first,
+then upgrade the release:
+
+```bash
+helm pull oci://<registry>/charts/daos-operator --version <new> --untar -d /tmp/daos-operator-<new>
+kubectl apply --server-side --force-conflicts -f /tmp/daos-operator-<new>/daos-operator/crds/
+helm upgrade daos-operator oci://<registry>/charts/daos-operator \
+  --version <new> --namespace daos-system --reuse-values
+```
+
+Upgrading the release replaces the operator; it does not restart the engines. A new
+`spec.images.server` only reports `Upgrading=Pending`. The full-stop engine upgrade
+starts when you approve it with `kubectl daos system upgrade <system> [--image I] --yes`, after
+draining clients. The approval is consumed whatever happens, including when there
+is nothing to upgrade.
+
 ## Values
 
 See `values.yaml`. The parts most installations touch:

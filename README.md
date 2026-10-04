@@ -22,6 +22,24 @@ Images are public at `ghcr.io/gluesys/daos-{operator,csi,server,agent,admin,clie
 The chart installs the operator alone by default; the CSI driver, S3 gateways and
 the vLLM workload are opt-in (`csi.enabled`, `s3.services[]`, `vllm.services[]`).
 
+## Upgrade
+
+Helm installs `crds/` once and never upgrades them, so apply the new CRDs first,
+then upgrade the release:
+
+```bash
+helm pull oci://ghcr.io/gluesys/charts/daos-operator --version <new> --untar -d /tmp/daos-operator-<new>
+kubectl apply --server-side --force-conflicts -f /tmp/daos-operator-<new>/daos-operator/crds/
+helm upgrade daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
+  --version <new> --namespace daos-system --reuse-values
+```
+
+Upgrading the release replaces the operator; it does not restart the engines. A new
+`spec.images.server` only reports `Upgrading=Pending`. The full-stop engine upgrade
+starts when you approve it with `kubectl daos system upgrade <system> [--image I] --yes`, after
+draining clients. The approval is consumed whatever happens, including when there
+is nothing to upgrade.
+
 ## Custom resources
 
 | Kind | What it is |
