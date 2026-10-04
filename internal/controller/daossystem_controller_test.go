@@ -751,6 +751,33 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.count("system stop")).To(Equal(2), "start + poll only; completed upgrade does not run again")
 	})
 
+	It("drops an approval given when nothing is stale, so a later image change waits again (#11)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		reconcileWith(f)
+		p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-server-n1-0",
+			Labels: map[string]string{daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server"}},
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: "s"}}}}
+		Expect(k8sClient.Create(ctx, p)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, p, client.GracePeriodSeconds(0)) })
+
+		By("approval with the pods already on spec.images.server is consumed")
+		sys := getSys()
+		sys.Spec.Upgrade.Approved = true
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Spec.Upgrade.Approved).To(BeFalse(), "no-op approval must not latch")
+		Expect(f.count("system stop")).To(BeZero())
+
+		By("a later image change waits for a fresh approval")
+		sys.Spec.Images.Server = "s2"
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.Upgrade.Phase).To(Equal(upgradePending))
+		Expect(f.count("system stop")).To(BeZero())
+	})
+
 	It("fails the upgrade honestly when dmg system stop errors and drops the approval", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers},
 			"system stop": {Done: true, ExitCode: 1, Output: dmgUnreachable}}}

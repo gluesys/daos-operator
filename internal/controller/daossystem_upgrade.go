@@ -179,6 +179,14 @@ func (r *DaosSystemReconciler) reconcileUpgrade(ctx context.Context, sys *daosv1
 			if c := findCond(status, daosv1alpha1.ConditionUpgrading); c == nil || c.Reason == upgradePending {
 				setCond(status, daosv1alpha1.ConditionUpgrading, metav1.ConditionFalse, "UpToDate", "server pods run spec.images.server")
 			}
+			// an approval with nothing stale must not latch: a later image
+			// change would otherwise restart the system without a fresh one
+			if len(pods) > 0 && sys.Spec.Upgrade.Approved {
+				if err := r.resetApproval(ctx, sys); err != nil {
+					return false, 0, err
+				}
+				r.event(sys, corev1.EventTypeNormal, "UpgradeApprovalDropped", "spec.upgrade.approved reset: server pods already run spec.images.server")
+			}
 			return false, 0, nil
 		case !sys.Spec.Upgrade.Approved:
 			if up == nil || up.Phase != upgradePending {

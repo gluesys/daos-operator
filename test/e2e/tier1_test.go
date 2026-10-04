@@ -227,6 +227,9 @@ spec:
 		uid := jsonpath("pod", pod, ".metadata.uid")
 		mustDaos("system", "upgrade", sysName, "--yes")
 		Consistently(func() string { return jsonpath("pod", pod, ".metadata.uid") }).WithTimeout(time.Minute).Should(Equal(uid))
+		// the approval is one-shot even with nothing to upgrade (#11): a latched approval would let
+		// the next image change restart the system without a fresh one
+		Expect(jsonpath("daossystem", sysName, ".spec.upgrade.approved")).NotTo(Equal("true"), "no-op upgrade approval latched")
 		waitReadyStable(3 * time.Minute)
 
 		// a pool on the rank, so reintegrate has pool-ranks to work on (with no pool DAOS answers
