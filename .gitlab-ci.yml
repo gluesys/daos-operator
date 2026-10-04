@@ -90,7 +90,11 @@ helm:
     # this GitLab reports the registry as host:80 while it actually serves TLS on 443: drop the port
     - export REG="${CI_REGISTRY%%:*}"
     - export IMG_BASE="$REG/$CI_PROJECT_PATH"
-    - echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG"
+    # the registry rate-limits logins ("too many requests") when image jobs start together
+    - |
+      for i in 1 2 3 4 5; do
+        echo "$CI_REGISTRY_PASSWORD" | podman login --username "$CI_REGISTRY_USER" --password-stdin "$REG" && break
+        [ $i = 5 ] && exit 1; echo "login failed (attempt $i)"; sleep $((i * 15)); done
     - export VERSION=$(cat VERSION)
     # the registry's bearer token is short-lived and podman does not always refresh it on a
     # second push: log in again before every push, retry a few times
