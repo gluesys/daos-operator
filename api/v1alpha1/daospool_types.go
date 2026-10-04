@@ -85,6 +85,9 @@ type DaosPoolStatus struct {
 	// AppliedACLHash identifies the spec.acl last written with overwrite-acl.
 	AppliedACLHash string       `json:"appliedACLHash,omitempty"`
 	LastQueryTime  *metav1.Time `json:"lastQueryTime,omitempty"`
+	// DestroyAttempts counts failed dmg pool destroy runs since the DaosPool was
+	// deleted; after a few the condition turns DestroyStalled (#36).
+	DestroyAttempts int32 `json:"destroyAttempts,omitempty"`
 }
 
 // +kubebuilder:object:root=true

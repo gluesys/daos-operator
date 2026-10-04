@@ -339,6 +339,55 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(apierrors.IsNotFound(err)).To(BeTrue())
 	})
 
+	It("stops retrying a destroy that cannot succeed and says so once (#36)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		setPoolUUID()
+		p := getPool()
+		p.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, p)).To(Succeed())
+
+		// dmg pool destroy hangs while a rank holding the pool is down; the Job dies at its deadline
+		hung := &dmg.Result{Done: true, ExitCode: -1, Failure: "DeadlineExceeded: Job was active longer than specified deadline"}
+		attempt := func() reconcile.Result {
+			f.set("-dmg-destroy", &dmg.Result{})
+			poolRec(f) // job started
+			f.set("-dmg-destroy", hung)
+			return poolRec(f)
+		}
+		By("the first failures are counted and retried")
+		res := attempt()
+		p = getPool()
+		Expect(p.Status.DestroyAttempts).To(Equal(int32(1)))
+		Expect(ready(p.Status.Conditions).Reason).To(Equal("DestroyFailed"))
+		Expect(ready(p.Status.Conditions).Message).To(ContainSubstring("attempt 1/3"))
+		Expect(res.RequeueAfter).To(Equal(poolRequeueIdle))
+		Expect(f.last("-dmg-destroy").DeadlineSeconds).To(Equal(int64(destroyDeadlineSeconds)), "a hung destroy is cut short")
+		attempt()
+
+		By("the third failure stalls: a human has to look; one warning, a slow retry")
+		res = attempt()
+		p = getPool()
+		Expect(p.Status.DestroyAttempts).To(Equal(int32(3)))
+		c := ready(p.Status.Conditions)
+		Expect(c.Reason).To(Equal("DestroyStalled"))
+		Expect(c.Message).To(And(ContainSubstring("3 attempts"), ContainSubstring("DeadlineExceeded"), ContainSubstring(daosv1alpha1.AnnotationDestroyApproved)))
+		Expect(res.RequeueAfter).To(Equal(destroyStalledRetry))
+
+		By("a slow retry keeps DestroyStalled visible instead of flipping back to Destroying")
+		f.set("-dmg-destroy", &dmg.Result{})
+		poolRec(f)
+		Expect(ready(getPool().Status.Conditions).Reason).To(Equal("DestroyStalled"))
+
+		By("removing the approval releases the DaosPool and keeps the DAOS pool")
+		p = getPool()
+		delete(p.Annotations, daosv1alpha1.AnnotationDestroyApproved)
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		poolRec(f)
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, poolNN, &daosv1alpha1.DaosPool{}))).To(BeTrue())
+	})
+
 	It("creates a container with the agent sidecar Job and mirrors daos cont query", func() {
 		setPoolUUID()
 		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},

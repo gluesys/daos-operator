@@ -194,6 +194,12 @@ spec:
                   - type
                   type: object
                 type: array
+              destroyAttempts:
+                description: |-
+                  DestroyAttempts counts failed dmg pool destroy runs since the DaosPool was
+                  deleted; after a few the condition turns DestroyStalled (#36).
+                format: int32
+                type: integer
               disabledTargets:
                 format: int32
                 type: integer
