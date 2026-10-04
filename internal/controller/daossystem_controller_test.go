@@ -1052,6 +1052,49 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
 	})
 
+	It("retries a rank operation that never reached the management service, then gives up honestly (#9)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		reconcileWith(f)
+		Expect(getSys().Status.Formatted).To(BeTrue())
+
+		By("MS unreachable: the request is kept and retried, not recorded as finished")
+		f.set("system clear-exclude --ranks=0", &dmg.Result{Done: true, ExitCode: 1, Output: dmgUnreachable})
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "clear-exclude:0"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Annotations).To(HaveKey(daosv1alpha1.AnnotationRankOp), "kept for a retry")
+		Expect(sys.Status.LastRankOp.FinishedAt).To(BeNil())
+		Expect(sys.Status.LastRankOp.Message).To(ContainSubstring("retrying"))
+		first := sys.Status.LastRankOp.RequestedAt
+
+		By("the retry succeeds once the management service answers")
+		f.set("system clear-exclude --ranks=0", &dmg.Result{Done: true, Output: `{"response": {"Results": [{"Rank": 0, "Errored": false, "Msg": "", "state": "excluded"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(f.count("system clear-exclude --ranks=0")).To(Equal(2))
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeTrue())
+		Expect(sys.Status.LastRankOp.RequestedAt.Time).To(BeTemporally("==", first.Time), "the original request time is kept")
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
+
+		By("past the retry window the failure is recorded and the request dropped")
+		saved := rankOpRetryWindow
+		DeferCleanup(func() { rankOpRetryWindow = saved })
+		f.set("system exclude --ranks=1", &dmg.Result{Done: true, ExitCode: 1, Output: dmgUnreachable})
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "exclude:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(getSys().Status.LastRankOp.FinishedAt).To(BeNil())
+		rankOpRetryWindow = 0
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.LastRankOp.Succeeded).To(BeFalse())
+		Expect(sys.Status.LastRankOp.FinishedAt).NotTo(BeNil())
+		Expect(sys.Status.LastRankOp.Message).To(ContainSubstring("unable to contact the DAOS Management Service"))
+		Expect(sys.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationRankOp))
+	})
+
 	It("attaches to a DAOS system run elsewhere without managing servers (#22)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
 		sys := getSys()

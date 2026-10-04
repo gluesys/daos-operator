@@ -145,7 +145,7 @@ func TestRankOp(t *testing.T) {
 		t.Fatalf("missing ranks: %v", err)
 	}
 	a, out := newApp(t, "", true, s)
-	if err := a.run(ctx, []string{"rank", "exclude", "d1", "--ranks", "1"}); err != nil {
+	if err := a.run(ctx, []string{"rank", "exclude", "d1", "--ranks", "1", "--wait=0"}); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(out.String(), "IMMEDIATELY") || !strings.Contains(out.String(), "rank 1") {
@@ -164,6 +164,53 @@ func TestRankOp(t *testing.T) {
 	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
 	if _, ok := sys.Annotations[daosv1alpha1.AnnotationRankOp]; ok {
 		t.Fatal("nothing must be written when the operator says no")
+	}
+}
+
+// A rank operation reports the operator's result, not just that the request was written: it
+// used to return success for a clear-exclude that then failed (#9).
+func TestRankOpWaitsForTheResult(t *testing.T) {
+	ctx := context.Background()
+	saved := rankOpPoll
+	rankOpPoll = 10 * time.Millisecond
+	t.Cleanup(func() { rankOpPoll = saved })
+	// operator plays the operator: answers the request once the annotation is there
+	operator := func(a *app, ok bool, msg string) {
+		go func() {
+			for i := 0; i < 500; i++ {
+				sys := &daosv1alpha1.DaosSystem{}
+				_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+				if v := sys.Annotations[daosv1alpha1.AnnotationRankOp]; v != "" {
+					op, ranks, _ := strings.Cut(v, ":")
+					now := metav1.Now()
+					sys.Status.LastRankOp = &daosv1alpha1.RankOpStatus{Op: op, Ranks: ranks, RequestedAt: &now, FinishedAt: &now, Succeeded: ok, Message: msg}
+					_ = a.c.Status().Update(ctx, sys)
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+		}()
+	}
+	a, _ := newApp(t, "", true, sysFormatted())
+	operator(a, false, "dmg system clear-exclude 0: unable to contact the DAOS Management Service")
+	err := a.run(ctx, []string{"rank", "clear-exclude", "d1", "--ranks=0", "--wait=5s"})
+	if err == nil || !strings.Contains(err.Error(), "unable to contact") {
+		t.Fatalf("a failed operation must fail the command: %v", err)
+	}
+	a, out := newApp(t, "", true, sysFormatted())
+	operator(a, true, "dmg system clear-exclude 0: 1 rank result(s), no errors")
+	if err := a.run(ctx, []string{"rank", "clear-exclude", "d1", "--ranks=0", "--wait=5s"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "done: dmg system clear-exclude 0") {
+		t.Errorf("success must show the result: %s", out.String())
+	}
+	a, out = newApp(t, "", true, sysFormatted())
+	if err := a.run(ctx, []string{"rank", "drain", "d1", "--ranks=0", "--wait=50ms"}); err != nil {
+		t.Fatalf("no result in time is not a failure: %v", err)
+	}
+	if !strings.Contains(out.String(), "still running after 50ms") {
+		t.Errorf("timeout must say where to look: %s", out.String())
 	}
 }
 
