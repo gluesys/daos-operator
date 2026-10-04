@@ -72,12 +72,30 @@ func systemHealthy() string {
 		condStatus("Ready"), condStatus("ManagementService"), jsonpath("daossystem", sysName, ".status.ranksJoined"))
 }
 
-const healthy = "Ready=True ManagementService=True ranksJoined=1"
+// healthyWant is systemHealthy's value for a healthy system of E2E_RANKS ranks (default 1).
+func healthyWant() string {
+	return "Ready=True ManagementService=True ranksJoined=" + envOr("E2E_RANKS", "1")
+}
 
 // waitReadyStable waits for systemHealthy and then requires it to hold for a minute.
 func waitReadyStable(timeout time.Duration) {
-	EventuallyWithOffset(1, systemHealthy).WithTimeout(timeout).Should(Equal(healthy))
-	ConsistentlyWithOffset(1, systemHealthy).WithTimeout(time.Minute).Should(Equal(healthy))
+	EventuallyWithOffset(1, systemHealthy).WithTimeout(timeout).Should(Equal(healthyWant()))
+	ConsistentlyWithOffset(1, systemHealthy).WithTimeout(time.Minute).Should(Equal(healthyWant()))
+}
+
+// recordDuration reports a recovery time and appends "spec,name,seconds" to $E2E_TIMINGS (Tier 2
+// trends recovery times, not performance: doc/ci-design-2026-10-02.md 7절).
+func recordDuration(name string, d time.Duration) {
+	AddReportEntry(name, d.Round(time.Second).String())
+	path := os.Getenv("E2E_TIMINGS")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	Expect(err).NotTo(HaveOccurred())
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%q,%q,%.0f\n", CurrentSpecReport().LeafNodeText, name, d.Seconds())
+	Expect(err).NotTo(HaveOccurred())
 }
 
 // expectKnownBug runs body, which asserts the correct behaviour. While the issue is open the

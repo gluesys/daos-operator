@@ -256,7 +256,7 @@ e2e-tier1:
   needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   script:
-    - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter='!upgrade && !regression' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
+    - cd test/e2e && E2E_RESET=1 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 70m -ginkgo.v -ginkgo.label-filter='!upgrade && !regression && !tier2' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-junit.xml
   artifacts:
     when: always
     reports:

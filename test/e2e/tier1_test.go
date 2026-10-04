@@ -332,7 +332,7 @@ spec:
 			Should(ContainSubstring("Insufficient hugepages-2Mi"))
 		Expect(cond("ServersReady", "status")).To(Equal("False"))
 		AddReportEntry("daos2 ServersReady", cond("ServersReady", "message"))
-		Consistently(systemHealthy).WithTimeout(time.Minute).Should(Equal(healthy), "the first system must not notice")
+		Consistently(systemHealthy).WithTimeout(time.Minute).Should(Equal(healthyWant()), "the first system must not notice")
 	})
 
 	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:
