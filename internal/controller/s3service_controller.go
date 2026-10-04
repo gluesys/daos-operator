@@ -245,6 +245,7 @@ func (r *S3ServiceReconciler) applyDeployment(ctx context.Context, svc *daosv1al
 		p := &dep.Spec.Template.Spec
 		p.NodeSelector = svc.Spec.NodeSelector
 		p.Tolerations = svc.Spec.Tolerations
+		p.ImagePullSecrets = sys.Spec.ImagePullSecrets
 		// the client library resolves its own fabric address, like every other
 		// DAOS client the operator runs
 		p.HostNetwork = true

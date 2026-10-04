@@ -74,6 +74,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		pod := &ds.Spec.Template.Spec
 		pod.NodeSelector = sys.Spec.ClientAgent.NodeSelector
 		pod.Tolerations = sys.Spec.ClientAgent.Tolerations
+		pod.ImagePullSecrets = sys.Spec.ImagePullSecrets
 		// the agent enumerates the fabric of the namespace it runs in, and its
 		// clients must see the same interfaces: host namespace for hostNetwork
 		// clients, pod namespace for ordinary pods (see ClientAgentSpec)

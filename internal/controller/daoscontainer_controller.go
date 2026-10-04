@@ -137,7 +137,7 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 	spec := dmg.RunSpec{
 		Owner: pool, Namespace: ns, Name: jobName("cont", c.Namespace+"/"+c.Name, "daos-"+op),
 		Image: sys.Spec.Images.Client, ControlConfigMap: sys.Name + "-control",
-		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
+		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations, ImagePullSecrets: sys.Spec.ImagePullSecrets,
 		Labels:                map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name, daosv1alpha1.LabelContainer: contJobLabel(c)},
 		Env:                   []corev1.EnvVar{{Name: "DAOS_AGENT_DRPC_DIR", Value: agentSocketDir}},
 		CertsSecret:           adminCertsSecret(sys),

@@ -97,6 +97,7 @@ func (r *DaosSystemReconciler) runDmgThen(ctx context.Context, sys *daosv1alpha1
 		Then:             then,
 		NodeSelector:     sys.Spec.NodeSelector,
 		Tolerations:      sys.Spec.Tolerations,
+		ImagePullSecrets: sys.Spec.ImagePullSecrets,
 		Labels:           map[string]string{daosv1alpha1.LabelSystem: sys.Name},
 		CertsSecret:      adminCertsSecret(sys),
 		CertsFiles:       adminCertFiles(),

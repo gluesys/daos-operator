@@ -295,6 +295,10 @@ type DaosSystemSpec struct {
 	// +kubebuilder:default="daos-system"
 	Namespace string     `json:"namespace,omitempty"`
 	Images    ImagesSpec `json:"images"`
+	// ImagePullSecrets are set on every pod the operator creates for this system
+	// (servers, hostprep, client agents, dmg/daos Jobs, S3 gateways). The Secrets
+	// must exist in spec.namespace. The chart fills this from its imagePullSecrets.
+	ImagePullSecrets []corev1.LocalObjectReference `json:"imagePullSecrets,omitempty"`
 	// +kubebuilder:default=dedicated
 	Placement PlacementMode `json:"placement,omitempty"`
 	// ExternalMsReplicas attaches this DaosSystem to a DAOS system the operator
