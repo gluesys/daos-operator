@@ -1,0 +1,227 @@
+//go:build e2e
+
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Gluesys Co., Ltd.
+
+package e2e
+
+import (
+	"fmt"
+	"path/filepath"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+)
+
+// Tier 2 (doc/ci-design-2026-10-02.md 7절): what multi-rank systems do when parts of them fail.
+// Run against kdev-3rank: E2E_PROFILE=kdev-3rank E2E_RANKS=3 -ginkgo.label-filter='tier2 && resilience'.
+// Recovery times go to $E2E_TIMINGS (recordDuration) so their trend is visible night to night.
+var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, func() {
+	// rankOn returns the rank number of node's first engine, from status.ranks.
+	rankOn := func(node string) int {
+		out := jsonpath("daossystem", sysName, `.status.ranks[?(@.node=="`+node+`")].rank`)
+		f := strings.Fields(out)
+		Expect(f).NotTo(BeEmpty(), "no rank on %s", node)
+		n, err := strconv.Atoi(f[0])
+		Expect(err).NotTo(HaveOccurred())
+		return n
+	}
+	rankState := func(rank int) string {
+		return jsonpath("daossystem", sysName, fmt.Sprintf(`.status.ranks[?(@.rank==%d)].state`, rank))
+	}
+	// signalServer sends sig to daos_server inside node's server pod (STOP/CONT/KILL).
+	signalServer := func(node, sig string) {
+		out := kubectl("exec", serverPod(node), "-c", "daos-server", "--", "sh", "-c",
+			`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_server ] && kill -`+sig+` ${p#/proc/} && echo signalled ${p#/proc/}; done; true`)
+		Expect(out).To(ContainSubstring("signalled"), "no daos_server in %s", serverPod(node))
+	}
+	// reintegrateIfNeeded is the documented recovery once the engine is back: reintegrate the rank
+	// unless it rejoined on its own (kubectl daos waits for the result, daos-operator !14).
+	reintegrateIfNeeded := func(rank int) {
+		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(10 * time.Minute).Should(Equal("True"))
+		time.Sleep(90 * time.Second)
+		if rankState(rank) != "joined" {
+			out := run(envOr("KUBECTL_DAOS", "kubectl-daos"), "rank", "reintegrate", sysName,
+				fmt.Sprintf("--ranks=%d", rank), "--yes", "--wait=8m", "-n", ns)
+			Expect(out).To(ContainSubstring("done: "))
+		}
+	}
+	nodes := strings.Split(envOr("E2E_STORAGE_NODES", "exaci5-3a,exaci5-3b,exaci5-4b"), ",")
+	victim := nodes[1] // not the client node, not necessarily the MS leader
+
+	BeforeAll(func() {
+		By("a pool and a volume with a checksummed file, kept for the whole container")
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: e2epool}
+spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0}`)
+		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		apply(`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: e2e-t2}
+spec: {accessModes: [ReadWriteMany], storageClassName: daos-e2e, resources: {requests: {storage: 1Gi}}}`)
+		apply(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: e2e-t2-app}
+spec:
+  nodeSelector: {daos.gluesys.com/client: "true"}
+  containers:
+    - name: c
+      image: %s
+      command: [sh, -c, "head -c 16777216 /dev/urandom > /data/blob && sha256sum /data/blob > /data/blob.sha256 && sleep infinity"]
+      volumeMounts: [{name: d, mountPath: /data}]
+  volumes: [{name: d, persistentVolumeClaim: {claimName: e2e-t2}}]`, jsonpath("daossystem", sysName, ".spec.images.client")))
+		Eventually(func() string { return jsonpath("pod", "e2e-t2-app", ".status.phase") }).WithTimeout(15 * time.Minute).Should(Equal("Running"))
+		Eventually(func() error {
+			_, err := kubectlE("exec", "e2e-t2-app", "--", "test", "-s", "/data/blob.sha256")
+			return err
+		}).WithTimeout(2 * time.Minute).Should(Succeed())
+	})
+	checksumOK := func() {
+		out, err := kubectlE("exec", "e2e-t2-app", "--", "sha256sum", "-c", "/data/blob.sha256")
+		Expect(err).NotTo(HaveOccurred(), out)
+		Expect(out).To(ContainSubstring("OK"))
+	}
+	It("brings a rank back after its server pod is deleted", func() {
+		rank := rankOn(victim)
+		start := time.Now()
+		kubectl("delete", "pod", serverPod(victim), "--wait=false")
+		Eventually(func() string { return rankState(rank) }).WithTimeout(5 * time.Minute).ShouldNot(Equal("joined"))
+		recordDuration("rank down detected", time.Since(start))
+		reintegrateIfNeeded(rank)
+		waitReadyStable(10 * time.Minute)
+		recordDuration("rank back to healthy", time.Since(start))
+		checksumOK()
+	})
+	It("reports NoQuorum while two of three MS replicas are frozen (#34)", func() {
+		frozen := []string{nodes[1], nodes[2]}
+		DeferCleanup(func() {
+			for _, n := range frozen {
+				_, _ = kubectlE("exec", serverPod(n), "-c", "daos-server", "--", "sh", "-c",
+					`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_server ] && kill -CONT ${p#/proc/}; done; true`)
+			}
+		})
+		start := time.Now()
+		for _, n := range frozen {
+			signalServer(n, "STOP")
+		}
+		Eventually(func() string { return condReason("ManagementService") }).WithTimeout(5 * time.Minute).Should(Equal("NoQuorum"))
+		recordDuration("NoQuorum reported", time.Since(start))
+		for _, n := range frozen {
+			signalServer(n, "CONT")
+		}
+		start = time.Now()
+		waitReadyStable(10 * time.Minute)
+		recordDuration("quorum back to healthy", time.Since(start))
+	})
+	It("elects a new MS leader after the leader's daos_server is killed", func() {
+		leaderRe := regexp.MustCompile(`leader ([0-9.]+):`)
+		leaderIP := func() string {
+			m := leaderRe.FindStringSubmatch(jsonpath("daossystem", sysName, `.status.conditions[?(@.type=="ManagementService")].message`))
+			if m == nil {
+				return ""
+			}
+			return m[1]
+		}
+		old := leaderIP()
+		Expect(old).NotTo(BeEmpty())
+		node := jsonpath("daossystem", sysName, `.status.nodeConfigs[?(@.controlAddr=="`+old+`")].node`)
+		Expect(node).NotTo(BeEmpty(), "no node with control address %s", old)
+		start := time.Now()
+		signalServer(node, "KILL")
+		Eventually(func() string { return leaderIP() }).WithTimeout(2*time.Minute).
+			Should(And(Not(BeEmpty()), Not(Equal(old))), "a new leader must be reported")
+		recordDuration("new MS leader reported", time.Since(start))
+		expectKnownBug("data path stalls ~2 min after an MS leader change (design 7절)", func() {
+			out, err := kubectlE("exec", "e2e-t2-app", "--", "sh", "-c", "timeout 10 sha256sum -c /data/blob.sha256")
+			Expect(err).NotTo(HaveOccurred(), out)
+		})
+		reintegrateIfNeeded(rankOn(node))
+		waitReadyStable(10 * time.Minute)
+		recordDuration("leader kill back to healthy", time.Since(start))
+		checksumOK()
+	})
+	It("keeps a mounted volume readable across a CSI node plugin restart", func() {
+		node := jsonpath("pod", "e2e-t2-app", ".spec.nodeName")
+		plugin := kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
+			"--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
+		Expect(plugin).NotTo(BeEmpty())
+		kubectl("delete", "pod", "-n", ns, plugin, "--wait=true", "--timeout=3m")
+		Eventually(func() string {
+			return kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
+				"--field-selector", "spec.nodeName="+node, "-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+		}).WithTimeout(3 * time.Minute).Should(Equal("True"))
+		checksumOK()
+	})
+	It("keeps the pool and its data across a storage node reboot", func() {
+		rank := rankOn(victim)
+		start := time.Now()
+		run(filepath.Join(repoRoot, "hack", "ci", "node-power.sh"), "reboot", victim)
+		Eventually(func() string {
+			return kubectl("get", "node", victim, "-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`)
+		}).WithTimeout(10 * time.Minute).Should(Equal("True"))
+		recordDuration("node Ready after reboot", time.Since(start))
+		reintegrateIfNeeded(rank)
+		waitReadyStable(15 * time.Minute)
+		recordDuration("reboot back to healthy", time.Since(start))
+		Expect(jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`)).To(Equal("True"))
+		checksumOK()
+	})
+	It("recovers after a storage node is drained and uncordoned", func() {
+		rank := rankOn(victim)
+		start := time.Now()
+		DeferCleanup(func() { _, _ = kubectlE("uncordon", victim) })
+		kubectl("drain", victim, "--ignore-daemonsets", "--delete-emptydir-data", "--force", "--timeout=5m")
+		Eventually(func() string { return rankState(rank) }).WithTimeout(5 * time.Minute).ShouldNot(Equal("joined"))
+		kubectl("uncordon", victim)
+		reintegrateIfNeeded(rank)
+		waitReadyStable(10 * time.Minute)
+		recordDuration("drain/uncordon back to healthy", time.Since(start))
+		checksumOK()
+	})
+	It("formats and joins a fourth rank when a node is added (scale-out)", func() {
+		node := envOr("E2E_SCALEOUT_NODE", "exaci5-4a")
+		start := time.Now()
+		kubectl("label", "node", node, "daos.gluesys.com/role=storage", "--overwrite")
+		Eventually(func() string {
+			return jsonpath("daossystem", sysName, `.status.conditions[?(@.type=="Formatted")].message`)
+		}).WithTimeout(10 * time.Minute).Should(ContainSubstring("not formatted yet"))
+		kubectl("annotate", "daossystem", sysName, "daos.gluesys.com/format-approved=true", "--overwrite")
+		Eventually(systemHealthy).WithTimeout(15 * time.Minute).Should(Equal("Ready=True ManagementService=True ranksJoined=4"))
+		recordDuration("scale-out to 4 ranks", time.Since(start))
+		checksumOK()
+	})
+})
+
+// mixed-2engine only: `dmg storage query usage` panics daos_server 2.8 when a node mixes nvme and
+// kdev bdev lists (2026-09-15). Pinned as a known bug; the system must still come back afterwards.
+var _ = Describe("Tier 2 mixed", Label("tier2", "mixed"), func() {
+	It("runs dmg storage query usage on mixed bdev lists (known panic)", func() {
+		admin := jsonpath("daossystem", sysName, ".spec.images.admin")
+		apply(fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: e2e-usage}
+spec:
+  restartPolicy: Never
+  hostNetwork: true
+  nodeSelector: {daos.gluesys.com/role: storage}
+  containers:
+    - name: c
+      image: %s
+      command: [dmg, -j, -o, /etc/daos/daos_control.yml, storage, query, usage]
+      volumeMounts: [{name: ctl, mountPath: /etc/daos}]
+  volumes: [{name: ctl, configMap: {name: %s-control}}]`, admin, sysName))
+		DeferCleanup(func() { _, _ = kubectlE("delete", "pod", "e2e-usage", "--wait=false") })
+		Eventually(func() string { return jsonpath("pod", "e2e-usage", ".status.phase") }).WithTimeout(5 * time.Minute).
+			Should(Or(Equal("Succeeded"), Equal("Failed")))
+		expectKnownBug("dmg storage query usage panics daos_server on mixed bdev lists (2026-09-15)", func() {
+			Consistently(func() string { return condStatus("ServersReady") }).WithTimeout(2 * time.Minute).Should(Equal("True"))
+		})
+		waitReadyStable(15 * time.Minute)
+	})
+})
