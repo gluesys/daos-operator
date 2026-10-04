@@ -25,7 +25,7 @@ limitations under the License.
 //	kubectl daos system format  <sys>            # daos.gluesys.com/format-approved=true
 //	kubectl daos system upgrade <sys> [--image I] [--version V]   # spec.upgrade.approved=true
 //	kubectl daos system certs   <sys>            # daos.gluesys.com/certs-renew-approved=true
-//	kubectl daos rank drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M]
+//	kubectl daos rank drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M] [--wait=5m]
 //	kubectl daos pool destroy   <pool>           # destroy-approved=true + delete
 //	kubectl daos cont destroy   -n <ns> <cont>   # destroy-approved=true + delete
 //
@@ -129,7 +129,7 @@ func splitArgs(in []string) (global, args []string) {
 
 func subcommandFlag(name string) bool {
 	switch name {
-	case "ranks", "image", "version":
+	case "ranks", "image", "version", "wait":
 		return true
 	}
 	return false
@@ -137,7 +137,7 @@ func subcommandFlag(name string) bool {
 
 func needsValue(f string) bool {
 	switch strings.TrimLeft(f, "-") {
-	case "n", "namespace", "kubeconfig", "context", "image", "version", "ranks":
+	case "n", "namespace", "kubeconfig", "context", "image", "version", "ranks", "wait":
 		return true
 	}
 	return false
@@ -149,8 +149,9 @@ const usage = `usage: kubectl daos <command> <subcommand> <name> [--yes] [-n ns]
   system format  <sys>                         approve the one-shot storage format
   system upgrade <sys> [--image I] [--version V]  set the new server image and approve the full-stop upgrade
   system certs   <sys>                         approve replacing the transport certificates (full-stop restart)
-  rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O]
-                                               ask the operator to run one rank membership operation
+  rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O] [--wait=5m]
+                                               ask the operator to run one rank membership operation;
+                                               waits for its result and fails if it failed (--wait=0: do not wait)
   pool   destroy <pool>                        approve destruction and delete the DaosPool
   cont   destroy -n <ns> <cont>                approve destruction and delete the DaosContainer`
 
@@ -418,6 +419,7 @@ func (a *app) systemCerts(ctx context.Context, name string) error {
 func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	fs := flag.NewFlagSet("rank", flag.ContinueOnError)
 	ranks := fs.String("ranks", "", "ranks to operate on: 1 or 0,2 or 1-3")
+	wait := fs.Duration("wait", 5*time.Minute, "how long to wait for the operator's result; 0 returns once the request is written")
 	var pos []string
 	for i := 0; i < len(rest); i++ {
 		if strings.HasPrefix(rest[i], "-") {
@@ -471,11 +473,47 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 		sys.Annotations = map[string]string{}
 	}
 	sys.Annotations[daosv1alpha1.AnnotationRankOp] = op + ":" + *ranks
+	asked := time.Now().Truncate(time.Second) // status times have second precision
 	if err := a.c.Patch(ctx, sys, patch); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.out, "requested: %s=%s:%s (result: kubectl daos system status %s)\n", daosv1alpha1.AnnotationRankOp, op, *ranks, name)
-	return nil
+	if *wait <= 0 {
+		return nil
+	}
+	return a.waitRankOp(ctx, name, op, *ranks, asked, *wait)
+}
+
+// rankOpPoll is how often waitRankOp reads the DaosSystem.
+var rankOpPoll = 2 * time.Second
+
+// waitRankOp waits for the operator to record the result of the request made at
+// asked, and fails when the operation failed. Returning at once after writing
+// the annotation reported success for operations that then failed (#9).
+func (a *app) waitRankOp(ctx context.Context, name, op, ranks string, asked time.Time, d time.Duration) error {
+	deadline := time.Now().Add(d)
+	for {
+		sys := &daosv1alpha1.DaosSystem{}
+		if err := a.c.Get(ctx, types.NamespacedName{Name: name}, sys); err != nil {
+			return err
+		}
+		if lr := sys.Status.LastRankOp; lr != nil && lr.Op == op && lr.Ranks == ranks && lr.FinishedAt != nil && !lr.FinishedAt.Time.Before(asked) {
+			if !lr.Succeeded {
+				return fmt.Errorf("rank %s --ranks=%s failed: %s", op, ranks, lr.Message)
+			}
+			fmt.Fprintf(a.out, "done: %s\n", lr.Message)
+			return nil
+		}
+		if time.Now().After(deadline) {
+			fmt.Fprintf(a.out, "still running after %s; the result will appear in: kubectl daos system status %s\n", d, name)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(rankOpPoll):
+		}
+	}
 }
 
 func (a *app) poolDestroy(ctx context.Context, name string) error {

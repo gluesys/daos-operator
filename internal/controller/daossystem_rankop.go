@@ -38,11 +38,23 @@ import (
 // Draining, excluding and reintegrating a rank are decisions about where data
 // lives, so they are requests a human makes -- `kubectl daos rank ...` writes
 // daos.gluesys.com/rank-op: "<op>:<ranks>" after showing what it will do. The
-// operator runs the matching `dmg system ...` once, copies the per-rank result
+// operator runs the matching `dmg system ...` once (re-sent only while the
+// management service cannot be reached), copies the per-rank result
 // into status.lastRankOp, and drops the annotation. It never decides by itself
 // that a rank should leave or rejoin: a rank that dies is reported, not evicted.
 
 const jobRankOpSuffix = "-dmg-rankop"
+
+// DER_UNREACH: dmg could not reach the management service, so DAOS never saw
+// the request. Sent while the server pods cycle (CI, 2026-10-03), a one-shot
+// clear-exclude failed this way and the rank never came back (#9). Such a
+// request is safe to send again; anything DAOS answered is not retried.
+const dmgStatusUnreachable = -1009
+
+var (
+	rankOpRetryWindow = 3 * time.Minute
+	rankOpRetryDelay  = 20 * time.Second
+)
 
 var (
 	rankSetRe = regexp.MustCompile(`^[0-9]+(-[0-9]+)?(,[0-9]+(-[0-9]+)?)*$`)
@@ -162,8 +174,15 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 		return 0, nil
 	}
 	now := metav1.Now()
+	// when the request was first seen: kept across the job's run and its retries
+	requested := func(op, ranks string) *metav1.Time {
+		if lr := status.LastRankOp; lr != nil && lr.FinishedAt == nil && lr.Op == op && lr.Ranks == ranks && lr.RequestedAt != nil {
+			return lr.RequestedAt
+		}
+		return &now
+	}
 	record := func(op, ranks string, ok bool, msg string) (time.Duration, error) {
-		status.LastRankOp = &daosv1alpha1.RankOpStatus{Op: op, Ranks: ranks, RequestedAt: &now, FinishedAt: &now, Succeeded: ok, Message: msg}
+		status.LastRankOp = &daosv1alpha1.RankOpStatus{Op: op, Ranks: ranks, RequestedAt: requested(op, ranks), FinishedAt: &now, Succeeded: ok, Message: msg}
 		typ, reason := corev1.EventTypeNormal, "RankOpCompleted"
 		if !ok {
 			typ, reason = corev1.EventTypeWarning, "RankOpFailed"
@@ -197,7 +216,14 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 		return record(op, ranks, false, fmt.Sprintf("dmg system %s %s: %v", op, ranks, perr))
 	}
 	if env.Error != nil {
-		return record(op, ranks, false, fmt.Sprintf("dmg system %s %s: %s", op, ranks, *env.Error))
+		msg := fmt.Sprintf("dmg system %s %s: %s", op, ranks, *env.Error)
+		if since := requested(op, ranks); env.Status == dmgStatusUnreachable && time.Since(since.Time) < rankOpRetryWindow {
+			status.LastRankOp = &daosv1alpha1.RankOpStatus{Op: op, Ranks: ranks, RequestedAt: since,
+				Message: fmt.Sprintf("%s; retrying (the request never reached DAOS; gives up %s after it was made)", msg, rankOpRetryWindow)}
+			r.event(sys, corev1.EventTypeWarning, "RankOpRetrying", status.LastRankOp.Message)
+			return rankOpRetryDelay, nil
+		}
+		return record(op, ranks, false, msg)
 	}
 	results, err := dmg.RankOp(env)
 	if err != nil {

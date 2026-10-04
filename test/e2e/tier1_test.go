@@ -240,29 +240,14 @@ spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0} # >= 1 GiB NVMe per targ
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		// The documented undo of an exclude (kubectl daos rank exclude --help): the excluded rank's
 		// engine stops, so clear-exclude, restart the server pod, then reintegrate.
-		// Rank operations are one-shot and kubectl-daos returns as soon as it has set the
-		// annotation, so each step waits for status.lastRankOp. A step sent while the server is
-		// cycling fails with "unable to contact the DAOS Management Service" and is not retried by
-		// the operator (CI cluster, 2026-10-03); like a careful admin, the test re-sends only that.
+		// kubectl-daos waits for the operator's result and fails when the operation failed, and
+		// the operator re-sends a request that never reached the management service (sent while
+		// the server is cycling). Both were missing once (#9, CI cluster, 2026-10-03): the test
+		// had to poll status.lastRankOp and re-send by hand. Now one call must be enough.
 		rankOp := func(op string) {
-			for attempt := 1; ; attempt++ {
-				mustDaos("rank", op, sysName, "--ranks=0", "--yes")
-				var msg string
-				Eventually(func() string {
-					if jsonpath("daossystem", sysName, ".status.lastRankOp.op") != op {
-						return ""
-					}
-					msg = jsonpath("daossystem", sysName, ".status.lastRankOp.message")
-					return jsonpath("daossystem", sysName, ".status.lastRankOp.finishedAt")
-				}).WithTimeout(8*time.Minute).ShouldNot(BeEmpty(), "rank %s never reported a result (last message: %s)", op, msg)
-				if jsonpath("daossystem", sysName, ".status.lastRankOp.succeeded") == "true" {
-					return
-				}
-				Expect(msg).To(ContainSubstring("unable to contact"), "rank %s failed: %s", op, msg)
-				Expect(attempt).To(BeNumerically("<", 4), "rank %s: management service unreachable after %d tries: %s", op, attempt, msg)
-				AddReportEntry("rank "+op+" re-sent", msg)
-				time.Sleep(20 * time.Second)
-			}
+			out := mustDaos("rank", op, sysName, "--ranks=0", "--yes", "--wait=8m")
+			ExpectWithOffset(1, out).To(ContainSubstring("done: "), "rank %s reported no result within 8m:\n%s", op, out)
+			AddReportEntry("rank "+op, out)
 		}
 		By("rank exclude -> clear-exclude -> pod restart -> reintegrate")
 		rankOp("exclude")
