@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Tier 2 프로파일: 저장 노드 3대, 엔진당 nvme[wal,meta] + kdev[data](/dev/sdb,/dev/sdc). CRD 주석의 "출하 형태"
+# 이지만 CI·수동 검증 기록이 없던 bdevTiers 렌더링과 포맷을 본다. 설계 5절.
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: "65bcaee5"
+imagePullSecrets:
+  - name: gitlab-registry
+hostprep:
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:65bcaee5
+system:
+  create: true
+  name: daos
+  spec:
+    version: "2.8.0"
+    namespace: daos-system
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261003-g9927f7be
+      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261003-g9927f7be
+      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261003-g9927f7be
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261003-g9927f7be
+    placement: dedicated
+    nodeSelector:
+      daos.gluesys.com/role: storage
+    msReplicas: 3
+    provider: "ofi+verbs;ofi_rxm"
+    allowInsecure: true
+    systemRamReservedGiB: 8
+    nrHugepages: 2048
+    disableVFIO: true
+    engines:
+      - targets: 4
+        helpers: 0
+        fabricIface: ib0
+        scmSizeGiB: 4
+        bdevTiers:
+          - class: nvme
+            roles: [wal, meta]
+            bdevList: []        # hostprep 의 bdev-list(-0) 어노테이션
+          - class: kdev
+            roles: [data]
+            bdevList: [/dev/sdb, /dev/sdc]
+    hostPrep:
+      enabled: true
+      bindNvme: true
+csi:
+  enabled: true
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: 55f554f9
+  storageClasses:
+    - name: daos-e2e
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
