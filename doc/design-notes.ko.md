@@ -90,7 +90,7 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 이미지: `make hostprep-image HOSTPREP_BASE=<daos-server 이미지>` → daos-server 위에 정적 `hostprep` 바이너리. 기본 참조는
 `registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep`, `spec.images.hostPrep` 으로 바꿀 수 있다.
 
-`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `Certificates`, `Formatted`, `Telemetry`, `Upgrading`, `Ready`.
+`.status.conditions`: `NodesSelected`, `DriveConflict`, `ConfigRendered`(Partial 이면 nodeConfigs 의 message 에 이유), `ServersReady`, `EnginesReady`, `Certificates`, `Formatted`, `Telemetry`, `Upgrading`, `Ready`.
 렌더 결과는 `exastor/daos-images` 서버 엔트리포인트와 같은 2.8 키(`mgmt_svc_replicas`, agent `access_points`, control `hostlist`)를 쓴다.
 
 ## 서버 워크로드 (#9)
@@ -112,6 +112,8 @@ kubectl -n daos-system get cm,ds -l daos.gluesys.com/system=daos-dev
 | 삭제 | 사람이 `spec.server.enabled: false` 로 끄거나 DaosSystem 을 지울 때만. 노드가 selector 에서 빠지거나 facts 를 잃어도 워크로드는 남긴다(rank 제외 절차 #10+ 전까지 자동 정지 금지) |
 
 `.status.nodeConfigs[].workload/serverReady` 와 `ServersReady` condition(`PodsNotReady` 면 파드 상태 요약)으로 본다. 파드 상태는 30초 주기로 다시 읽는다.
+
+`ServersReady` 는 파드 Ready(제어 포트가 열림)만 뜻한다. 제어 평면은 엔진이 죽어도 포트를 열어 두므로, 엔진 생사는 `EnginesReady` 로 따로 본다(#37). 서버 파드가 Ready 인 노드마다 spec 의 엔진 수와 그 노드에서 joined 인 rank 수를 비교하고, 모자라면 `EnginesDown` 과 함께 노드·rank 상태·엔진 로그 위치(`/var/log/daos/daos_engine.*.log`)·흔한 원인(hugepages 부족, `DER_NOMEM`)을 적는다. 멤버십을 아직 모르면 Unknown 이다. 이때 `Ready` 의 `RanksNotJoined` 메시지도 `EnginesReady` 를 가리킨다.
 
 ```bash
 kubectl -n daos-system get sts,pods -l daos.gluesys.com/system=daos-dev -o wide

@@ -127,8 +127,8 @@ spec:
 	// Case 13 (#37). Only the engine dies; the conditions must say so. Seen on the CI cluster
 	// (2026-10-03): within about a minute the rank turns "errored" and Ready goes False
 	// (RanksNotJoined), while ServersReady and ManagementService stay True -- they are about
-	// pods and the MS leader, which are indeed fine. #37 asks for more than that; this case
-	// pins the part that holds today so a regression shows up.
+	// pods and the MS leader, which are indeed fine. EnginesReady (#37) is the condition that
+	// names the node whose engine is gone and where its log is.
 	It("reports an engine that died (case 13, #37)", func() {
 		pod := kubectl("get", "pod", "-l", "app.kubernetes.io/name=daos-server", "-o", "jsonpath={.items[0].metadata.name}")
 		By("killing daos_engine inside " + pod)
@@ -140,10 +140,16 @@ spec:
 		Eventually(func() string { return jsonpath("daossystem", sysName, ".status.ranks") }).WithTimeout(3*time.Minute).
 			ShouldNot(ContainSubstring(`"joined"`), "the dead rank must stop being reported as joined")
 		Expect(condStatus("Ready")).To(Equal("False"), "Ready must be False while the rank is not joined")
-		AddReportEntry("ServersReady while engine dead", condStatus("ServersReady"))
+		node := jsonpath("pod", pod, ".spec.nodeName")
+		Eventually(func() string { return condReason("EnginesReady") }).WithTimeout(3 * time.Minute).Should(Equal("EnginesDown"))
+		msg := jsonpath("daossystem", sysName, `.status.conditions[?(@.type=="EnginesReady")].message`)
+		Expect(msg).To(And(HavePrefix(node+": 0/1 engine(s) joined"), ContainSubstring("/var/log/daos/daos_engine")))
+		Expect(condStatus("ServersReady")).To(Equal("True"), "the pod is Ready: only the engine died")
+		AddReportEntry("EnginesReady while engine dead", msg)
 		By("restarting the server pod and waiting for the system to come back")
 		kubectl("delete", "pod", pod, "--wait=true", "--timeout=3m")
 		waitReadyStable(10 * time.Minute)
+		Expect(condStatus("EnginesReady")).To(Equal("True"))
 	})
 
 	// Case 3. The S3 gateway in front of a pool: a real put/list/get through versitygw.

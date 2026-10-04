@@ -234,7 +234,7 @@ func (a *app) systemStatus(ctx context.Context, name string) error {
 	}
 	fmt.Fprintf(a.out, "DaosSystem %s  version %s  image %s\n", sys.Name, sys.Spec.Version, sys.Spec.Images.Server)
 	for _, t := range []string{daosv1alpha1.ConditionNodesSelected, daosv1alpha1.ConditionDriveConflict, daosv1alpha1.ConditionConfigRendered,
-		daosv1alpha1.ConditionServersReady, daosv1alpha1.ConditionCertificates, daosv1alpha1.ConditionFormatted, daosv1alpha1.ConditionTelemetry,
+		daosv1alpha1.ConditionServersReady, daosv1alpha1.ConditionEnginesReady, daosv1alpha1.ConditionCertificates, daosv1alpha1.ConditionFormatted, daosv1alpha1.ConditionTelemetry,
 		daosv1alpha1.ConditionUpgrading, daosv1alpha1.ConditionReady} {
 		fmt.Fprintln(a.out, "  "+condLine(sys.Status.Conditions, t))
 	}
