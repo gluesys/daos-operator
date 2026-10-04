@@ -466,6 +466,11 @@ func (in *DaosSystemList) DeepCopyObject() runtime.Object {
 func (in *DaosSystemSpec) DeepCopyInto(out *DaosSystemSpec) {
 	*out = *in
 	out.Images = in.Images
+	if in.ImagePullSecrets != nil {
+		in, out := &in.ImagePullSecrets, &out.ImagePullSecrets
+		*out = make([]corev1.LocalObjectReference, len(*in))
+		copy(*out, *in)
+	}
 	if in.ExternalMsReplicas != nil {
 		in, out := &in.ExternalMsReplicas, &out.ExternalMsReplicas
 		*out = make([]string, len(*in))

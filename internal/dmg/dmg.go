@@ -61,11 +61,12 @@ type RunSpec struct {
 	Then []string
 	// Command replaces the default `dmg -j <Args>` entirely (e.g. a bash -c wrapper
 	// that writes an ACL file first, or a `daos` client invocation).
-	Command      []string
-	Env          []corev1.EnvVar
-	NodeSelector map[string]string
-	Tolerations  []corev1.Toleration
-	Labels       map[string]string
+	Command          []string
+	Env              []corev1.EnvVar
+	NodeSelector     map[string]string
+	Tolerations      []corev1.Toleration
+	ImagePullSecrets []corev1.LocalObjectReference
+	Labels           map[string]string
 	// DeadlineSeconds bounds the Job (default 600).
 	DeadlineSeconds int64
 	// Sidecar runs next to the main container as a native sidecar (initContainer
@@ -240,6 +241,7 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 				ShareProcessNamespace: shareNS,
 				NodeSelector:          s.NodeSelector,
 				Tolerations:           s.Tolerations,
+				ImagePullSecrets:      s.ImagePullSecrets,
 				Volumes:               volumes,
 				InitContainers:        inits,
 				Containers: []corev1.Container{{

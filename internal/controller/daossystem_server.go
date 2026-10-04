@@ -164,6 +164,7 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 		pod.DNSPolicy = corev1.DNSClusterFirstWithHostNet
 		pod.TerminationGracePeriodSeconds = grace
 		pod.Tolerations = sys.Spec.Tolerations
+		pod.ImagePullSecrets = sys.Spec.ImagePullSecrets
 		pod.PriorityClassName = "system-node-critical"
 		pod.Affinity = &corev1.Affinity{NodeAffinity: &corev1.NodeAffinity{
 			RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{NodeSelectorTerms: []corev1.NodeSelectorTerm{{

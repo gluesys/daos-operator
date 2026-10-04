@@ -8,6 +8,11 @@ metadata:
   annotations:
     # keep the system when the release is uninstalled: uninstall must never stop engines
     helm.sh/resource-policy: keep
+{{- /* the operator's pods pull with the release's secrets unless the system names its own */}}
+{{- $spec := deepCopy .Values.system.spec }}
+{{- if and .Values.imagePullSecrets (not (hasKey $spec "imagePullSecrets")) }}
+{{- $_ := set $spec "imagePullSecrets" .Values.imagePullSecrets }}
+{{- end }}
 spec:
-  {{- toYaml .Values.system.spec | nindent 2 }}
+  {{- toYaml $spec | nindent 2 }}
 {{- end }}

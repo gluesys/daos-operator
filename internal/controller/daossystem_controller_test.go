@@ -186,6 +186,23 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "daos-hostprep"}, &corev1.ServiceAccount{})).To(Succeed())
 	})
 
+	It("gives every pod it creates spec.imagePullSecrets, for images in a private registry", func() {
+		sys := getSys()
+		sys.Spec.ImagePullSecrets = []corev1.LocalObjectReference{{Name: "regcred"}}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		reconcileWith(f)
+		want := []corev1.LocalObjectReference{{Name: "regcred"}}
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-hostprep"}, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.ImagePullSecrets).To(Equal(want), "hostprep")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		Expect(sts.Spec.Template.Spec.ImagePullSecrets).To(Equal(want), "server")
+		Expect(f.last("-dmg-query")).NotTo(BeNil())
+		Expect(f.last("-dmg-query").ImagePullSecrets).To(Equal(want), "dmg Jobs")
+	})
+
 	It("runs one client agent per selected node when spec.clientAgent is on", func() {
 		sys := &daosv1alpha1.DaosSystem{}
 		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())

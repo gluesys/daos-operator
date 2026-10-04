@@ -142,7 +142,7 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	spec := dmg.RunSpec{
 		Owner: pool, Namespace: ns, Name: jobName("pool", pool.Name, "dmg-"+op),
 		Image: sys.Spec.Images.Admin, ControlConfigMap: sys.Name + "-control",
-		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations,
+		NodeSelector: sys.Spec.NodeSelector, Tolerations: sys.Spec.Tolerations, ImagePullSecrets: sys.Spec.ImagePullSecrets,
 		Labels:      map[string]string{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelPool: pool.Name},
 		CertsSecret: adminCertsSecret(sys), CertsFiles: adminCertFiles(),
 	}

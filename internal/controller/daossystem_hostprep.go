@@ -99,6 +99,7 @@ func (r *DaosSystemReconciler) ensureHostPrep(ctx context.Context, sys *daosv1al
 		pod.ServiceAccountName = hostPrepSAName
 		pod.NodeSelector = sys.Spec.NodeSelector
 		pod.Tolerations = sys.Spec.Tolerations
+		pod.ImagePullSecrets = sys.Spec.ImagePullSecrets
 		pod.HostNetwork = true
 		pod.HostPID = true
 		pod.PriorityClassName = "system-node-critical"
