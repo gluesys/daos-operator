@@ -299,9 +299,15 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		cfg := render.ServerConfig{Label: sys.Name, SystemName: systemName(sys), MsReplicas: msAddrs, Port: controlPortOf(sys),
 			Provider: sys.Spec.Provider, NrHugepages: hugepagesOf(sys), AllowInsecure: sys.Spec.AllowInsecure,
 			TelemetryPort: telemetryPort(sys), SystemRamReservedGiB: sys.Spec.SystemRamReservedGiB, DisableVFIO: sys.Spec.DisableVFIO}
-		var missing []string
+		var missing, fileHints []string
 		for i, e := range sys.Spec.Engines {
 			fabric, bdevs, numa, miss := discovery.Resolve(e, f)
+			// hostprep discovers NVMe and block devices, never files: a file-class
+			// engine waiting for node facts would wait forever (#16)
+			if e.BdevClass == "file" && len(e.BdevTiers) == 0 && len(bdevs) == 0 {
+				miss = withoutBdevList(miss)
+				fileHints = append(fileHints, fmt.Sprintf("spec.engines[%d].bdevList", i))
+			}
 			port := e.FabricPort
 			if port == 0 {
 				port = 31316
@@ -317,7 +323,9 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 				count = 0
 				for ti, t := range e.BdevTiers {
 					devs := discovery.ResolveTier(t, ti, f.Ann)
-					if len(devs) == 0 {
+					if len(devs) == 0 && t.Class == "file" {
+						fileHints = append(fileHints, fmt.Sprintf("spec.engines[%d].bdevTiers[%d].bdevList", i, ti))
+					} else if len(devs) == 0 {
 						miss = append(miss, fmt.Sprintf("%s%d", daosv1alpha1.AnnotationBdevListTierPrefix, ti))
 					}
 					eng.Tiers = append(eng.Tiers, render.Tier{Class: t.Class, Roles: t.Roles, Bdevs: devs, SizeGiB: t.BdevSizeGiB})
@@ -328,8 +336,16 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 			cfg.Engines = append(cfg.Engines, eng)
 			ncs.FabricIface, ncs.BdevCount = fabric, int32(count)
 		}
-		if len(missing) > 0 {
-			ncs.Message = "waiting for node facts: " + strings.Join(uniq(missing), ", ")
+		if len(missing) > 0 || len(fileHints) > 0 {
+			var why []string
+			if len(fileHints) > 0 {
+				why = append(why, "bdevClass file needs file paths, which no node fact provides: set "+strings.Join(fileHints, ", ")+
+					" (e.g. [/var/daos/bdev0]) or annotate the node with "+daosv1alpha1.AnnotationBdevList)
+			}
+			if len(missing) > 0 {
+				why = append(why, "waiting for node facts: "+strings.Join(uniq(missing), ", "))
+			}
+			ncs.Message = strings.Join(why, "; ")
 			allReady = false
 			status.NodeConfigs = append(status.NodeConfigs, ncs)
 			continue
