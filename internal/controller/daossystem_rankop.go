@@ -217,6 +217,12 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 	}
 	if env.Error != nil {
 		msg := fmt.Sprintf("dmg system %s %s: %s", op, ranks, *env.Error)
+		// drain and reintegrate act on the pools that hold the ranks; with none
+		// (no pool at all, or the ranks already enabled/disabled) DAOS has
+		// nothing to do and says so as an error (#14)
+		if (op == "drain" || op == "reintegrate") && strings.Contains(*env.Error, "no pool-ranks found to operate on") {
+			return record(op, ranks, true, fmt.Sprintf("dmg system %s %s: nothing to do, no pool has these ranks to %s", op, ranks, op))
+		}
 		if since := requested(op, ranks); env.Status == dmgStatusUnreachable && time.Since(since.Time) < rankOpRetryWindow {
 			status.LastRankOp = &daosv1alpha1.RankOpStatus{Op: op, Ranks: ranks, RequestedAt: since,
 				Message: fmt.Sprintf("%s; retrying (the request never reached DAOS; gives up %s after it was made)", msg, rankOpRetryWindow)}
