@@ -269,6 +269,12 @@ func podNotReadyMessage(p corev1.Pod) string {
 		}
 		return msg
 	}
+	// not placed: the scheduler's reason (e.g. Insufficient hugepages-2Mi) is all there is
+	for _, c := range p.Status.Conditions {
+		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Message != "" {
+			return fmt.Sprintf("server pod %s: %s: %s", p.Name, c.Reason, clip(c.Message))
+		}
+	}
 	return fmt.Sprintf("server pod %s: %s, not ready", p.Name, p.Status.Phase)
 }
 

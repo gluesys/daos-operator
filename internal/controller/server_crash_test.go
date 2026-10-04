@@ -66,3 +66,16 @@ func TestFormatFailureKeepsHostErrors(t *testing.T) {
 		}
 	}
 }
+
+// A server pod the scheduler cannot place has no container status; the reason is only in its
+// PodScheduled condition. Two systems on one node that together want more hugepages than the
+// node has ended as "Pending, not ready" with nothing to say why (case 8).
+func TestPodNotReadyMessageSaysWhyItIsUnschedulable(t *testing.T) {
+	p := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "daos2-server-n1-0"}, Status: corev1.PodStatus{Phase: corev1.PodPending,
+		Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
+			Message: "0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector."}}}}
+	want := "server pod daos2-server-n1-0: Unschedulable: 0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector."
+	if got := podNotReadyMessage(p); got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}

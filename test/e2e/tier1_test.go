@@ -297,6 +297,50 @@ spec: {poolRef: e2ekd, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyFac
 		waitGone("daospool", "e2ekd", 5*time.Minute)
 	})
 
+	// Case 8. Two systems on one node that together want more hugepages than it has: the second
+	// cannot be placed, and its condition must say why instead of "Pending, not ready" (#37
+	// family). The first system must not notice. daos2 has hostprep off (it would raise the
+	// node's hugepages and rebind the NVMe), its own ports and a file engine it never reaches.
+	It("reports a second system that does not fit the node's hugepages (case 8)", func() {
+		node := jsonpath("daossystem", sysName, `.spec.nodeSelector.kubernetes\.io/hostname`)
+		Expect(node).NotTo(BeEmpty())
+		all := jsonpath("node", node, `.status.allocatable.hugepages-2Mi`)
+		Expect(all).NotTo(BeEmpty(), "node %s has no hugepages-2Mi", node)
+		server := jsonpath("daossystem", sysName, ".spec.images.server")
+		DeferCleanup(func() {
+			_, _ = kubectlE("delete", "daossystem", "daos2", "--wait=true", "--timeout=3m")
+			_, _ = kubectlE("delete", "namespace", "daos2-system", "--ignore-not-found", "--wait=false")
+		})
+		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosSystem
+metadata: {name: daos2}
+spec:
+  version: "2.8.0"
+  namespace: daos2-system
+  images: {server: %q, agent: %q, admin: %q, client: %q}
+  nodeSelector: {kubernetes.io/hostname: %s}
+  msReplicas: 1
+  provider: "ofi+tcp"
+  controlPort: 10101
+  nrHugepages: 1024
+  allowInsecure: true
+  systemRamReservedGiB: 8
+  hostPrep: {enabled: false}
+  server: {hugepagesRequest: %s}   # all of the node's: the first system already holds some
+  engines:
+    - {targets: 1, helpers: 0, fabricIface: ens19, fabricPort: 31916, bdevClass: file, bdevList: [/var/daos/daos2-bdev0], bdevSizeGiB: 1, scmSizeGiB: 1}
+`, server, jsonpath("daossystem", sysName, ".spec.images.agent"), jsonpath("daossystem", sysName, ".spec.images.admin"),
+			jsonpath("daossystem", sysName, ".spec.images.client"), node, all))
+		cond := func(t, f string) string {
+			return jsonpath("daossystem", "daos2", fmt.Sprintf(`.status.conditions[?(@.type=="%s")].%s`, t, f))
+		}
+		Eventually(func() string { return cond("ServersReady", "message") }).WithTimeout(5 * time.Minute).
+			Should(ContainSubstring("Insufficient hugepages-2Mi"))
+		Expect(cond("ServersReady", "status")).To(Equal("False"))
+		AddReportEntry("daos2 ServersReady", cond("ServersReady", "message"))
+		Consistently(systemHealthy).WithTimeout(time.Minute).Should(Equal(healthy), "the first system must not notice")
+	})
+
 	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:
 	// "uninstall must never stop engines"), and pools and containers carry finalizers only the
 	// operator releases. So a clean removal is: tear the DAOS objects down while the operator
