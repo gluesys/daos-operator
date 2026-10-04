@@ -38,7 +38,8 @@ rbac:
 # ClusterRole "daos-hostprep" that the operator binds to the per-system hostprep ServiceAccount.
 hostprep:
   clusterRole: daos-hostprep
-  # image the operator uses when DaosSystem.spec.images.hostPrep is empty ("" = operator default)
+  # image the operator uses when DaosSystem.spec.images.hostPrep is empty ("" = daos-hostprep
+  # next to image.repository with the operator's tag, e.g. ghcr.io/gluesys/daos-hostprep:<appVersion>)
   defaultImage: ""
 
 grafana:
