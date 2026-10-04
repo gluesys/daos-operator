@@ -66,8 +66,16 @@ const (
 	poolRequeueOp     = 10 * time.Second
 	poolRequeueWait   = 30 * time.Second
 	poolRequeueFailed = 5 * time.Minute
-	aclFilePath       = "/tmp/daos-acl"
-	controlConfigPath = "/etc/daos/daos_control.yml"
+
+	// A destroy hangs, with no output, while a rank holding the pool is down;
+	// left alone the operator re-ran it every 10 minutes for days without a word
+	// (#36). It is cut short, counted, and after destroyStallAfter failures
+	// reported as DestroyStalled and retried only slowly.
+	destroyDeadlineSeconds = 240
+	destroyStallAfter      = 3
+	destroyStalledRetry    = 30 * time.Minute
+	aclFilePath            = "/tmp/daos-acl"
+	controlConfigPath      = "/etc/daos/daos_control.yml"
 
 	opCreate  = "create"
 	opExtend  = "extend"
@@ -183,6 +191,7 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		spec.Command = dmg.WithACLFile(pool.Spec.ACL, aclFilePath, append(base, "pool", "overwrite-acl", "-a", aclFilePath, label))
 	case opDestroy:
 		spec.Args = []string{"pool", "destroy", "--recursive", label}
+		spec.DeadlineSeconds = destroyDeadlineSeconds
 	}
 	return spec
 }
@@ -476,7 +485,9 @@ func (r *DaosPoolReconciler) finalize(ctx context.Context, pool *daosv1alpha1.Da
 	if !res.Done {
 		if status.Operation != opDestroy {
 			status.Operation = opDestroy
-			meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "Destroying", Message: "dmg pool destroy is running", ObservedGeneration: pool.Generation})
+			if status.DestroyAttempts < destroyStallAfter { // a slow retry keeps DestroyStalled visible
+				meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "Destroying", Message: "dmg pool destroy is running", ObservedGeneration: pool.Generation})
+			}
 			return r.updateStatus(ctx, pool, status, poolRequeueOp)
 		}
 		return ctrl.Result{RequeueAfter: poolRequeueOp}, nil
@@ -487,7 +498,21 @@ func (r *DaosPoolReconciler) finalize(ctx context.Context, pool *daosv1alpha1.Da
 	}
 	if perr != nil {
 		status.Operation = ""
-		msg := "dmg pool destroy: " + perr.Error() + "; the DaosPool stays until destroy succeeds or the annotation is removed (then the pool is kept)"
+		status.DestroyAttempts++
+		n := status.DestroyAttempts
+		if n >= destroyStallAfter {
+			msg := fmt.Sprintf("dmg pool destroy failed %d attempts in a row, last: %v. A rank holding the pool is probably down "+
+				"(kubectl daos system status). The operator now retries every %s: bring the rank back, or remove the %s "+
+				"annotation to release the DaosPool and keep the DAOS pool (uuid %s)",
+				n, perr, destroyStalledRetry, daosv1alpha1.AnnotationDestroyApproved, status.UUID)
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "DestroyStalled", Message: msg, ObservedGeneration: pool.Generation})
+			if n == destroyStallAfter { // once, not on every slow retry
+				r.event(pool, corev1.EventTypeWarning, "DestroyStalled", msg)
+			}
+			return r.updateStatus(ctx, pool, status, destroyStalledRetry)
+		}
+		msg := fmt.Sprintf("dmg pool destroy (attempt %d/%d): %v; retrying. The DaosPool stays until destroy succeeds or the annotation is removed (then the pool is kept)",
+			n, destroyStallAfter, perr)
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "DestroyFailed", Message: msg, ObservedGeneration: pool.Generation})
 		r.event(pool, corev1.EventTypeWarning, "DestroyFailed", msg)
 		return r.updateStatus(ctx, pool, status, poolRequeueIdle)

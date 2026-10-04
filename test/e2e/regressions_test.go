@@ -95,10 +95,15 @@ spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0}`)
 			Should(ContainSubstring("excluded"))
 		kubectl("annotate", "daospool", "e2estuck", "daos.gluesys.com/destroy-approved=true", "--overwrite")
 		kubectl("delete", "daospool", "e2estuck", "--wait=false")
-		expectKnownBug("#36", func() {
-			Eventually(func() string {
-				return jsonpath("daospool", "e2estuck", `.status.conditions[?(@.type=="Ready")].reason`)
-			}).WithTimeout(10 * time.Minute).Should(Equal("DestroyStalled"))
-		})
+		// three destroy runs, each cut at 240 s, with a minute between them
+		Eventually(func() string {
+			return jsonpath("daospool", "e2estuck", `.status.conditions[?(@.type=="Ready")].reason`)
+		}).WithTimeout(20 * time.Minute).WithPolling(15 * time.Second).Should(Equal("DestroyStalled"))
+		Expect(jsonpath("daospool", "e2estuck", `.status.conditions[?(@.type=="Ready")].message`)).
+			To(ContainSubstring("daos.gluesys.com/destroy-approved"), "the stall message says how to get out")
+
+		By("removing the approval releases the DaosPool and keeps the DAOS pool")
+		kubectl("annotate", "daospool", "e2estuck", "daos.gluesys.com/destroy-approved-")
+		waitGone("daospool", "e2estuck", 2*time.Minute)
 	})
 })
