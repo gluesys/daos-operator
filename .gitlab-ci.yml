@@ -207,19 +207,26 @@ image-hostprep:
 
 # e2e: ExaCI5 슬롯 3·4 VM 클러스터(doc/ci-design-2026-10-02.md). 러너 exaci5-3j, 태그 daos-k8s.
 # 한 번에 한 파이프라인만 클러스터를 쓴다. Phase A 는 롤백만 검증한다(수동).
+# LANE=a: slots 3·4 (4 workers). LANE=b: slot 5-2 (CP + 2 workers), Tier 1 only (design 8절). Each lane
+# has its own cluster lock and kubeconfig file, so one job per lane can run at once on 3J (concurrent 2).
 .daos-k8s: &daos-k8s
   stage: e2e
   tags: [daos-k8s]
   resource_group: daos-k8s-ci
   timeout: 45m
+  variables:
+    LANE: a
   before_script:
     - install -m 600 "$DAOS_CI_SSH_KEY" ~/.ssh/id_ed25519
-    - install -m 600 "$DAOS_CI_KUBECONFIG" ~/.kube/daos-ci.conf
-    - export KUBECONFIG=~/.kube/daos-ci.conf
+    - if [ "$LANE" = b ]; then KCFG_SRC=$DAOS_CI_KUBECONFIG_B; else KCFG_SRC=$DAOS_CI_KUBECONFIG; fi
+    - install -m 600 "$KCFG_SRC" ~/.kube/daos-ci-$LANE.conf
+    - export KUBECONFIG=~/.kube/daos-ci-$LANE.conf
     - export VDI_SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=no -p 9349 jenkins-ci@192.168.2.186"
     # the operator and hostprep built from this commit (image-* jobs); the profiles pin a tag
     # only for local runs. Without this, MRs tested the pinned operator, not their own code.
     - export E2E_SET="image.tag=$CI_COMMIT_SHORT_SHA,hostprep.defaultImage=${CI_REGISTRY%%:*}/$CI_PROJECT_PATH/daos-hostprep:$CI_COMMIT_SHORT_SHA"
+    # the profiles name lane A's server node; lane B's is another VM
+    - if [ "$LANE" = b ]; then export E2E_SERVER_NODE=exaci5-2a E2E_SET="$E2E_SET,system.spec.nodeSelector.kubernetes\.io/hostname=exaci5-2a"; fi
 
 # The Tier 1 suite, compiled where Go is and run on the CI cluster runner (no Go there).
 e2e-build:
@@ -242,6 +249,9 @@ e2e-build:
 # Tier 1 (doc/ci-design-2026-10-02.md 7절). allow_failure while it settles (8절: 1~2 weeks), then blocking.
 e2e-tier1:
   <<: *daos-k8s
+  resource_group: daos-k8s-ci-b
+  variables:
+    LANE: b
   needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   script:
@@ -264,6 +274,7 @@ e2e-upgrade:
   needs: [e2e-build, image-operator, image-hostprep]
   timeout: 75m
   variables:
+    LANE: a
     E2E_UPGRADE_FROM: v0.1.0-rc.4
   script:
     - git fetch -q --depth 1 origin tag "$E2E_UPGRADE_FROM"

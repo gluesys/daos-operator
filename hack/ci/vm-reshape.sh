@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Gluesys Co., Ltd.
 #
-# 슬롯 3·4 VM 6대를 설계 2절 모양으로 만든다(정지 상태로 끝난다).
+# 레인의 VM 을 설계 2절 모양으로 만든다(정지 상태로 끝난다). LANE=a: 슬롯 3·4 6대, LANE=b: 슬롯 5-2 3대.
 #   1) 정지 → `init` 롤백 → 다시 정지(init 이 실행 중 스냅샷인 VM 이 있다)
 #   2) remote-NVMe 디스크 전부 분리   3) 워커에 zvol 4개
 #   4) 코어·메모리   5) 4A 에 A2 GPU
@@ -10,7 +10,7 @@
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 
-ALL=("$RUNNER_VMID" "${CLUSTER_VMIDS[@]}")
+ALL=("${ALL_VMIDS[@]}")
 
 echo "== stop + rollback init + stop"
 for v in "${ALL[@]}"; do
@@ -39,7 +39,11 @@ for v in "${WORKER_VMIDS[@]}"; do
 done
 echo "== control plane / runner"
 qm set "$CP_VMID" --cores 8 --memory 8192 --hugepages 2 --balloon 0;      numa_pin "$CP_VMID" 8 8192
-qm set "$RUNNER_VMID" --cores 4 --memory 8192 --hugepages 2 --balloon 0;  numa_pin "$RUNNER_VMID" 4 8192
-echo "== GPU on 4A"
-qm set 112 --hostpci2 0000:b1:00.0
+if [ -n "$RUNNER_VMID" ]; then
+    qm set "$RUNNER_VMID" --cores 4 --memory 8192 --hugepages 2 --balloon 0;  numa_pin "$RUNNER_VMID" 4 8192
+fi
+if [ -n "$GPU_VMID" ]; then
+    echo "== GPU on ${VM_NAME[$GPU_VMID]}"
+    qm set "$GPU_VMID" --hostpci2 0000:b1:00.0
+fi
 echo "vm-reshape: done (VMs stopped)"

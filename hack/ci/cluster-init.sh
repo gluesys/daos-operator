@@ -11,7 +11,9 @@ here=$(dirname "$0")
 cp=${VM_IP[$CP_VMID]}
 FLANNEL=https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
 
-scp "${SSH_OPTS[@]}" "$here/kubeadm-config.yaml" "root@$cp:/root/kubeadm-config.yaml"
+# kubeadm-config.yaml 은 레인 A 값(4J)으로 적혀 있다: 레인의 CP 주소·이름으로 바꿔 보낸다
+sed -e "s/192\.168\.35\.40/$cp/" -e "s/exaci5-4j/${VM_NAME[$CP_VMID]}/" "$here/kubeadm-config.yaml" \
+    | node_ssh "$cp" "cat > /root/kubeadm-config.yaml"
 # 재실행 가능: 이미 init 된 컨트롤 플레인과 join 된 워커는 건너뛴다.
 node_ssh "$cp" "[ -f /etc/kubernetes/admin.conf ] || kubeadm init --config /root/kubeadm-config.yaml --upload-certs | tail -20"
 node_ssh "$cp" "mkdir -p /root/.kube && cp /etc/kubernetes/admin.conf /root/.kube/config"
@@ -25,12 +27,13 @@ for v in "${WORKER_VMIDS[@]}"; do
 done
 wait
 mkdir -p ~/.kube
-scp "${SSH_OPTS[@]}" "root@$cp:/etc/kubernetes/admin.conf" ~/.kube/daos-ci.conf
-export KUBECONFIG=~/.kube/daos-ci.conf PATH=$HOME/.local/bin:$PATH
+scp "${SSH_OPTS[@]}" "root@$cp:/etc/kubernetes/admin.conf" "$KCFG"
+export KUBECONFIG=$KCFG PATH=$HOME/.local/bin:$PATH
 for v in "${WORKER_VMIDS[@]}"; do kubectl wait --for=condition=Ready "node/${VM_NAME[$v]}" --timeout=300s; done
 
-kubectl label node exaci5-3a exaci5-3b exaci5-4b daos.gluesys.com/role=storage --overwrite
-kubectl label node exaci5-4a daos.gluesys.com/client=true daos.gluesys.com/gpu=true --overwrite
+kubectl label node "${STORAGE_NODES[@]}" daos.gluesys.com/role=storage --overwrite
+kubectl label node "$CLIENT_NODE" daos.gluesys.com/client=true --overwrite
+[ -n "$GPU_VMID" ] && kubectl label node "${VM_NAME[$GPU_VMID]}" daos.gluesys.com/gpu=true --overwrite
 kubectl create namespace daos-system --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n daos-system create secret docker-registry gitlab-registry \
     --docker-server=registry.gitlab.gluesys.com --docker-username="$REG_USER" --docker-password="$REG_TOKEN" \
@@ -43,4 +46,10 @@ for v in "${WORKER_VMIDS[@]}"; do
     node_ssh "${VM_IP[$v]}" "while read -r img; do [ -n \"\$img\" ] && crictl pull --creds '$REG_USER:$REG_TOKEN' \"\$img\" >/dev/null && echo \"${VM_NAME[$v]} pulled \$img\"; done" < "$here/images.txt" &
 done
 wait
-echo "cluster-init: done (KUBECONFIG=~/.kube/daos-ci.conf)"
+# 3J 러너(gitlab-runner)의 키: rollback.sh 의 wait_ssh 와 회귀 케이스의 노드 SSH 가 쓴다
+if [ -n "${CI_RUNNER_PUB:-}" ]; then
+    for v in "${CLUSTER_VMIDS[@]}"; do
+        node_ssh "${VM_IP[$v]}" "grep -qF '$CI_RUNNER_PUB' /root/.ssh/authorized_keys || echo '$CI_RUNNER_PUB' >> /root/.ssh/authorized_keys"
+    done
+fi
+echo "cluster-init: done (KUBECONFIG=$KCFG)"

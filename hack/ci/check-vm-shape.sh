@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Gluesys Co., Ltd.
-# 6대의 qm config 가 설계 2절과 일치하는지 본다. 어긋나면 그 VM 과 항목을 찍고 1 로 끝난다.
+# 레인의 qm config 가 설계 2절과 일치하는지 본다. 어긋나면 그 VM 과 항목을 찍고 1 로 끝난다.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
 fail=0
@@ -14,8 +14,8 @@ for v in "${WORKER_VMIDS[@]}"; do
     done
     qm config "$v" | grep -q 'remote-NVMe' && { echo "VM $v: remote-NVMe disk still attached"; fail=1; }
 done
-chk 112 hostpci2 0000:b1:00.0
-chk 111 cores 8;  chk 111 memory 8192; chk 111 numa0 "cpus=0-7,memory=8192,hostnodes=1,policy=bind"
-chk 108 cores 4;  chk 108 memory 8192
+[ -n "$GPU_VMID" ] && chk "$GPU_VMID" hostpci2 0000:b1:00.0
+chk "$CP_VMID" cores 8;  chk "$CP_VMID" memory 8192; chk "$CP_VMID" numa0 "cpus=0-7,memory=8192,hostnodes=1,policy=bind"
+[ -n "$RUNNER_VMID" ] && { chk "$RUNNER_VMID" cores 4;  chk "$RUNNER_VMID" memory 8192; }
 [ $fail = 0 ] && echo "check-vm-shape: OK"
 exit $fail
