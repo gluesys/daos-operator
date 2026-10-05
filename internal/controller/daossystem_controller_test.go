@@ -314,6 +314,64 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.count(start)).To(Equal(engineRestartMax + 1))
 	})
 
+	It("restarts the server pod when daos_server cannot start the engine, never one with a joined rank (§13 #24)", func() {
+		resetEngineRestarts()
+		savedGrace, savedInterval := engineRestartGrace, engineRestartInterval
+		DeferCleanup(func() { engineRestartGrace, engineRestartInterval = savedGrace, savedInterval; resetEngineRestarts() })
+		engineRestartGrace, engineRestartInterval = 0, time.Hour
+		mkPod := func() *corev1.Pod {
+			p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-server-n2-0", Labels: map[string]string{
+				daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server", daosv1alpha1.LabelNode: "n2"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: "s"}}}}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, p, client.GracePeriodSeconds(0)) })
+			return p
+		}
+		podGone := func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2-0"}, p)
+			return apierrors.IsNotFound(err) || (err == nil && !p.DeletionTimestamp.IsZero())
+		}
+		const start = "system start --ranks=1"
+		timedOut := &dmg.Result{Done: true, ExitCode: 1, Output: `{"response": null, "error": "system start failed: client: code = 510 description = \"the *control.SystemStartReq request timed out after 5m0s\"", "status": -1}`}
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}, start: timedOut}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+
+		By("another rank on the node is joined: the pod is left alone and a human is told")
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "errored", "rank": 1, "uuid": "u1", "fault_domain": "/n2"},
+		  {"addr": "10.0.0.2:10001", "state": "joined", "rank": 2, "uuid": "u2", "fault_domain": "/n2"}]}, "error": null, "status": 0}`})
+		mkPod()
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1))
+		Expect(podGone()).To(BeFalse(), "a joined engine shares the pod")
+
+		By("every rank on the node is down: the start timed out, so the pod is deleted")
+		resetEngineRestarts()
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "excluded", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(2))
+		Expect(podGone()).To(BeTrue())
+
+		By("the count survives the pod being out of the candidates while it restarts")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2"}, sts)).To(Succeed())
+		sts.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n2")
+		engineRestartInterval = 0
+		for i := 0; i < 4; i++ {
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(1 + engineRestartMax), "three attempts for this outage, not three more after the pod came back")
+	})
+
 	It("does not judge engines before the membership is known", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
 		reconcileWith(f)
