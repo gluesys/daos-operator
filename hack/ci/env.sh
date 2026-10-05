@@ -56,4 +56,7 @@ wait_ssh() {
     until ssh "${SSH_OPTS[@]}" -o ConnectTimeout=3 "root@$ip" true 2>/dev/null; do
         sleep 5; t=$((t+5)); [ $t -ge $limit ] && { echo "wait_ssh $ip: timeout" >&2; return 1; }
     done
+    # the loop's status is its body's last command ([ … ] && …, false while waiting): without this a
+    # node that answered on the second try returned 1 and set -e ended node-power.sh (2026-10-05)
+    return 0
 }
