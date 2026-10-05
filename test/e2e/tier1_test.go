@@ -36,7 +36,7 @@ var _ = Describe("Tier 1", Ordered, func() {
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2epool}
-spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0}`)
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 
@@ -161,7 +161,7 @@ stringData: {accessKey: e2eaccess, secretKey: e2esecret0123456789}`)
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2es3}
-spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0} # >= 1 GiB NVMe per target (4 targets)`)
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		// -fix28: the gateway works around #28, an object write pattern that SIGSEGVs the DAOS 2.8
@@ -244,7 +244,7 @@ spec:
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2ekd}
-spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0} # >= 1 GiB NVMe per target (4 targets)`)
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2ekd", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		// The documented undo of an exclude (kubectl daos rank exclude --help): the excluded rank's

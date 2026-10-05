@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +76,16 @@ func systemHealthy() string {
 // healthyWant is systemHealthy's value for a healthy system of E2E_RANKS ranks (default 1).
 func healthyWant() string {
 	return "Ready=True ManagementService=True ranksJoined=" + envOr("E2E_RANKS", "1")
+}
+
+// poolSize is 8 GiB per rank. DAOS wants at least 1 GiB per target (code 605 "requested NVMe
+// capacity too small"), and a fixed 8 GiB fell short on 3 ranks x 4 targets (kdev-3rank, 2026-10-05).
+func poolSize() string {
+	n, err := strconv.Atoi(envOr("E2E_RANKS", "1"))
+	if err != nil || n < 1 {
+		n = 1
+	}
+	return fmt.Sprintf("%dGi", 8*n)
 }
 
 // waitReadyStable waits for systemHealthy and then requires it to hold for a minute.

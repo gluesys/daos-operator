@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Gluesys Co., Ltd.
 #
-# Tier 2 프로파일: 저장 노드 3대, 엔진당 nvme[wal,meta] + kdev[data](/dev/sdb,/dev/sdc). CRD 주석의 "출하 형태"
-# 이지만 CI·수동 검증 기록이 없던 bdevTiers 렌더링과 포맷을 본다. 설계 5절.
+# Tier 2 프로파일: 저장 노드 3대, 엔진당 nvme[wal,meta](0000:00:03.0) + nvme[data](0000:00:04.0). 계층 역할
+# 분리의 렌더링과 포맷을 본다. 처음 계획한 nvme[wal,meta] + kdev[data] 는 DAOS 2.8 이 거부한다(code 309,
+# 한 엔진에 실제 NVMe 와 에뮬레이션 계층 혼합 불가, 10-05 CI) — operator CRD 가 그 조합을 거부하게 했다.
+# QEMU NVMe 주소는 저장 노드 3대가 같다(10-05 확인). 설계 5절.
 image:
   repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
   tag: "65bcaee5"
@@ -38,10 +40,10 @@ system:
         bdevTiers:
           - class: nvme
             roles: [wal, meta]
-            bdevList: []        # hostprep 의 bdev-list(-0) 어노테이션
-          - class: kdev
+            bdevList: ["0000:00:03.0"]
+          - class: nvme
             roles: [data]
-            bdevList: [/dev/sdb, /dev/sdc]
+            bdevList: ["0000:00:04.0"]
     hostPrep:
       enabled: true
       bindNvme: true

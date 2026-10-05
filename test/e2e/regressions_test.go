@@ -85,7 +85,7 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2estuck}
-spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0}`)
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string {
 			return jsonpath("daospool", "e2estuck", `.status.conditions[?(@.type=="Ready")].status`)
 		}).
