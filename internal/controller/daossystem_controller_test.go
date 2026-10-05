@@ -372,6 +372,25 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.count(start)).To(Equal(1+engineRestartMax), "three attempts for this outage, not three more after the pod came back")
 	})
 
+	It("is not Ready while an engine never registered, even if every registered rank joined (#37)", func() {
+		// mixed-2engine on the CI cluster (2026-10-05): engine 1 of each node died before it
+		// registered, so "3 ranks joined" of 3 registered read as Ready with half the engines gone
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		sys := getSys()
+		sys.Spec.Engines = append(sys.Spec.Engines, sys.Spec.Engines[0])
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.RanksJoined).To(Equal(sys.Status.RanksTotal), "every registered rank joined")
+		Expect(cond(sys, daosv1alpha1.ConditionEnginesReady).Reason).To(Equal("EnginesDown"))
+		c := cond(sys, daosv1alpha1.ConditionReady)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("EnginesDown"))
+		Expect(c.Message).To(ContainSubstring("see condition EnginesReady"))
+	})
+
 	It("does not judge engines before the membership is known", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
 		reconcileWith(f)
