@@ -41,11 +41,9 @@ spec:
             {{- if .Values.leaderElect }}
             - --leader-elect
             {{- end }}
-          {{- if .Values.hostprep.defaultImage }}
           env:
             - name: DAOS_HOSTPREP_DEFAULT_IMAGE
-              value: {{ .Values.hostprep.defaultImage | quote }}
-          {{- end }}
+              value: {{ include "daos-operator.hostprepImage" . | quote }}
           ports:
             - name: health
               containerPort: 8081

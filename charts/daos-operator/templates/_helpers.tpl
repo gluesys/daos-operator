@@ -57,3 +57,17 @@ Usage: include "daos-operator.tag" (list .Values.image.tag .Chart.AppVersion "im
 {{- end -}}
 {{- $tag -}}
 {{- end -}}
+
+{{/*
+hostprep image the operator uses when DaosSystem.spec.images.hostPrep is empty:
+hostprep.defaultImage, else daos-hostprep next to the operator image with the same tag
+(ghcr.io/gluesys/daos-hostprep:<appVersion> for the public chart). The operator's own
+built-in default is an internal registry, so a public install failed to pull it (#15).
+*/}}
+{{- define "daos-operator.hostprepImage" -}}
+{{- if .Values.hostprep.defaultImage -}}
+{{- .Values.hostprep.defaultImage -}}
+{{- else -}}
+{{- printf "%s/daos-hostprep:%s" (dir .Values.image.repository) (include "daos-operator.tag" (list .Values.image.tag .Chart.AppVersion "image.tag")) -}}
+{{- end -}}
+{{- end -}}
