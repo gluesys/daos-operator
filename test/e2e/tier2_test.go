@@ -167,18 +167,6 @@ spec:
 		recordDuration("leader kill back to healthy", time.Since(start))
 		checksumOK()
 	})
-	It("keeps a mounted volume readable across a CSI node plugin restart", func() {
-		node := jsonpath("pod", "e2e-t2-app", ".spec.nodeName")
-		plugin := kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
-			"--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
-		Expect(plugin).NotTo(BeEmpty())
-		kubectl("delete", "pod", "-n", ns, plugin, "--wait=true", "--timeout=3m")
-		Eventually(func() string {
-			return kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
-				"--field-selector", "spec.nodeName="+node, "-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
-		}).WithTimeout(3 * time.Minute).Should(Equal("True"))
-		checksumOK()
-	})
 	It("keeps the pool and its data across a storage node reboot", func() {
 		rank := rankOn(victim)
 		start := time.Now()
@@ -216,6 +204,25 @@ spec:
 		Eventually(systemHealthy).WithTimeout(15 * time.Minute).Should(Equal("Ready=True ManagementService=True ranksJoined=4"))
 		recordDuration("scale-out to 4 ranks", time.Since(start))
 		checksumOK()
+	})
+
+	It("keeps a mounted volume readable across a CSI node plugin restart (known daos-csi bug)", func() {
+		node := jsonpath("pod", "e2e-t2-app", ".spec.nodeName")
+		plugin := kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
+			"--field-selector", "spec.nodeName="+node, "-o", "jsonpath={.items[0].metadata.name}")
+		Expect(plugin).NotTo(BeEmpty())
+		kubectl("delete", "pod", "-n", ns, plugin, "--wait=true", "--timeout=3m")
+		Eventually(func() string {
+			return kubectl("get", "pod", "-n", ns, "-l", "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node",
+				"--field-selector", "spec.nodeName="+node, "-o", `jsonpath={.items[0].status.conditions[?(@.type=="Ready")].status}`)
+		}).WithTimeout(3 * time.Minute).Should(Equal("True"))
+		// daos-csi runs dfuse inside the node plugin: the restart kills it, the new plugin mounts a
+		// fresh dfuse in its own mount namespace, and the pod's bind still points at the dead FUSE
+		// connection ("Transport endpoint is not connected", 2026-10-05). Last in the container
+		// because it leaves the volume broken.
+		expectKnownBug("daos-csi: a node plugin restart breaks every mounted volume on that node", func() {
+			checksumOK()
+		})
 	})
 })
 
