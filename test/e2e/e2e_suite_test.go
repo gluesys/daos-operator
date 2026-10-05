@@ -44,6 +44,15 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// ReportAfterEach does not see a BeforeSuite failure; without this a system that never came
+	// up left nothing to read (kdev-3rank, one rank missing, 2026-10-05)
+	setupDone := false
+	DeferCleanup(func() {
+		if !setupDone {
+			dumpDiagnostics()
+		}
+	})
+	defer func() { setupDone = !CurrentSpecReport().Failed() }()
 	wd, err := os.Getwd()
 	Expect(err).NotTo(HaveOccurred())
 	repoRoot = filepath.Clean(filepath.Join(wd, "..", ".."))

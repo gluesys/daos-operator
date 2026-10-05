@@ -128,6 +128,7 @@ func dumpDiagnostics() {
 	for _, args := range [][]string{
 		{"get", "daossystem,daospool,daoscontainer,pods,jobs,pvc", "-o", "wide"},
 		{"get", "daossystem", sysName, "-o", "jsonpath={range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{\"\\n\"}{end}"},
+		{"get", "daossystem", sysName, "-o", "jsonpath={.status.ranks}"},
 		{"logs", "deploy/" + release, "--tail=60"},
 		{"get", "events", "--sort-by=.lastTimestamp"},
 	} {
