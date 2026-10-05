@@ -216,7 +216,8 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 			Resources:       serverResources(sys, engines),
 			VolumeMounts:    mounts,
 			// the control plane listens as soon as daos_server is up, before format;
-			// no liveness probe: a slow engine must never be killed by a probe
+			// no liveness probe: a slow engine must never be killed by a probe; an engine
+			// that died is started again by the operator (daossystem_enginerestart.go)
 			ReadinessProbe: &corev1.Probe{
 				ProbeHandler:        corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(controlPortOf(sys))}},
 				InitialDelaySeconds: 10, PeriodSeconds: 10, FailureThreshold: 3,

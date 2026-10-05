@@ -453,6 +453,13 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	// 8c. engines (#37): a Ready server pod only means the control plane listens
 	setEnginesCondition(sys, &status, serversAllReady)
 
+	// 8d. start engines that died under a Ready server pod (§13 #24)
+	restartRequeue, err := r.reconcileEngineRestart(ctx, sys, ns, &status)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	requeue = minRequeue(requeue, restartRequeue)
+
 	// 9. Ready = every rendered server up, formatted, all ranks joined
 	switch {
 	case !serverEnabled(sys):

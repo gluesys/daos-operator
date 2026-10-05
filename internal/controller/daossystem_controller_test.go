@@ -19,7 +19,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -248,6 +250,68 @@ var _ = Describe("DaosSystem Controller", func() {
 		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"}]}, "error": null, "status": 0}`})
 		reconcileWith(f)
 		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(HavePrefix("n2: 0/1 engine(s) joined (no rank registered: not formatted yet, or the engine died before joining)"))
+	})
+
+	It("starts an engine that died under a Ready server pod, a bounded number of times (§13 #24)", func() {
+		resetEngineRestarts()
+		savedGrace, savedInterval := engineRestartGrace, engineRestartInterval
+		DeferCleanup(func() { engineRestartGrace, engineRestartInterval = savedGrace, savedInterval; resetEngineRestarts() })
+		members := func(state1 string) *dmg.Result {
+			return &dmg.Result{Done: true, Output: fmt.Sprintf(`{"response": {"members": [
+			  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+			  {"addr": "10.0.0.2:10001", "state": %q, "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`, state1)}
+		}
+		const start = "system start --ranks=1"
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": members("joined"),
+			start: {Done: true, Output: `{"response": {"Results": [{"Rank": 1, "Errored": false, "Msg": "", "state": "ready"}]}, "error": null, "status": 0}`}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+
+		By("inside the grace period nothing is started: the engine may still be coming up")
+		f.set("system query -v", members("errored"))
+		reconcileWith(f)
+		Expect(f.count(start)).To(BeZero())
+
+		By("past the grace period dmg system start runs for that rank only")
+		engineRestartGrace, engineRestartInterval = 0, time.Hour
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1))
+		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(ContainSubstring("engine start requested by the operator: rank 1 1/3"))
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1), "not again inside the interval")
+
+		By("after engineRestartMax starts the operator stops trying")
+		engineRestartInterval = 0
+		for i := 0; i < 4; i++ {
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("a rank that joined starts over; a stopped or admin-excluded rank is never started")
+		f.set("system query -v", members("joined"))
+		reconcileWith(f)
+		for _, st := range []string{"stopped", "adminexcluded"} {
+			f.set("system query -v", members(st))
+			reconcileWith(f)
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("nothing is started while a human rank operation is requested")
+		f.set("system query -v", members("excluded"))
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f) // the rank op job is created and still running
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("the excluded rank is started once the request is gone")
+		sys = getSys()
+		delete(sys.Annotations, daosv1alpha1.AnnotationRankOp)
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(engineRestartMax + 1))
 	})
 
 	It("does not judge engines before the membership is known", func() {
