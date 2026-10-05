@@ -219,6 +219,43 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(n3.Message).NotTo(HavePrefix("waiting for node facts"))
 	})
 
+	It("reports engines that are down while their server pods are Ready (#37)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		sys := getSys()
+		Expect(cond(sys, daosv1alpha1.ConditionEnginesReady).Status).To(Equal(metav1.ConditionTrue))
+		Expect(cond(sys, daosv1alpha1.ConditionEnginesReady).Message).To(Equal("2/2 engine(s) joined on 2 node(s)"))
+
+		By("the engine on n2 died: its pod stays Ready, EnginesReady says which node and where to look")
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "errored", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(cond(sys, daosv1alpha1.ConditionServersReady).Status).To(Equal(metav1.ConditionTrue), "pods are still Ready")
+		c := cond(sys, daosv1alpha1.ConditionEnginesReady)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("EnginesDown"))
+		Expect(c.Message).To(HavePrefix("n2: 0/1 engine(s) joined (rank 1 errored)"))
+		Expect(c.Message).NotTo(ContainSubstring("n1:"))
+		Expect(c.Message).To(And(ContainSubstring("/var/log/daos/daos_engine"), ContainSubstring("DER_NOMEM")))
+		Expect(cond(sys, daosv1alpha1.ConditionReady).Message).To(ContainSubstring("see condition EnginesReady"))
+
+		By("no rank registered for a node at all")
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(HavePrefix("n2: 0/1 engine(s) joined (no rank registered: not formatted yet, or the engine died before joining)"))
+	})
+
+	It("does not judge engines before the membership is known", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		reconcileWith(f)
+		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Status).To(Equal(metav1.ConditionUnknown))
+	})
+
 	It("runs one client agent per selected node when spec.clientAgent is on", func() {
 		sys := &daosv1alpha1.DaosSystem{}
 		Expect(k8sClient.Get(ctx, nn, sys)).To(Succeed())

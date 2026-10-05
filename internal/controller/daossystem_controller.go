@@ -425,6 +425,7 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	if upgrading {
 		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "Upgrading", status.Upgrade.Phase+": "+status.Upgrade.Message)
+		setCond(&status, daosv1alpha1.ConditionEnginesReady, metav1.ConditionUnknown, "Upgrading", "engines are stopped and restarted by the upgrade")
 		log.Info("upgrading", "system", sys.Name, "phase", status.Upgrade.Phase)
 		return r.updateStatus(ctx, sys, status, minRequeue(requeue, upRequeue))
 	}
@@ -449,6 +450,9 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 	requeue = minRequeue(requeue, rankRequeue)
 
+	// 8c. engines (#37): a Ready server pod only means the control plane listens
+	setEnginesCondition(sys, &status, serversAllReady)
+
 	// 9. Ready = every rendered server up, formatted, all ranks joined
 	switch {
 	case !serverEnabled(sys):
@@ -460,7 +464,11 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	case !status.Formatted:
 		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "FormatUnknown", "management service state unknown; see condition Formatted")
 	case status.RanksTotal == 0 || status.RanksJoined < status.RanksTotal:
-		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "RanksNotJoined", fmt.Sprintf("%d/%d ranks joined", status.RanksJoined, status.RanksTotal))
+		msg := fmt.Sprintf("%d/%d ranks joined", status.RanksJoined, status.RanksTotal)
+		if c := findCond(&status, daosv1alpha1.ConditionEnginesReady); c != nil && c.Status == metav1.ConditionFalse {
+			msg += "; see condition EnginesReady: server pods are up but engines are not"
+		}
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "RanksNotJoined", msg)
 	default:
 		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionTrue, "Ready", fmt.Sprintf("%d ranks joined", status.RanksJoined))
 	}

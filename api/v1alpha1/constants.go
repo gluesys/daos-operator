@@ -94,6 +94,11 @@ const (
 	ConditionConfigRendered = "ConfigRendered"
 	// ConditionServersReady is True when every rendered node's server pod is Ready.
 	ConditionServersReady = "ServersReady"
+	// ConditionEnginesReady is True when every node with a Ready server pod has all of
+	// its engines joined. A server pod is Ready once the control plane listens, which it
+	// does with its engine dead (#37); this condition says whether the engines run.
+	// Unknown until the management service has answered a membership query.
+	ConditionEnginesReady = "EnginesReady"
 	// ConditionFormatted mirrors what `dmg system query` says about the management
 	// service: True once formatted, False (AwaitingApproval/Formatting/FormatFailed)
 	// before, Unknown when no replica answered.
