@@ -195,7 +195,8 @@ spec:
               engines:
                 description: |-
                   Engines per node; usually one per socket. Required unless
-                  ExternalMsReplicas is set (then the engines run elsewhere).
+                  ExternalMsReplicas is set (then the engines run elsewhere). At most 8: the
+                  bound also keeps the bdevTiers validation rule within the CEL cost budget.
                 items:
                   description: |-
                     A note on defaults: a field where 0 is a meaningful value must be a pointer.
@@ -237,11 +238,14 @@ spec:
                       type: integer
                     bdevTiers:
                       description: |-
-                        BdevTiers describes the bdev stack when one tier cannot express it: the
-                        shape this hardware ships in is a small NVMe carrying [wal, meta] in
-                        front of HDDs carrying [data]. Empty keeps the single-tier behaviour
-                        (BdevClass/BdevList/BdevSizeGiB with roles [wal, meta, data]), which is
-                        what every DaosSystem written so far uses.
+                        BdevTiers describes the bdev stack when one tier cannot express it, e.g.
+                        one NVMe carrying [wal, meta] and another carrying [data]. Empty keeps the
+                        single-tier behaviour (BdevClass/BdevList/BdevSizeGiB with roles
+                        [wal, meta, data]), which is what every DaosSystem written so far uses.
+                        The tiers of one engine are all nvme or all emulated (kdev, file): DAOS 2.8
+                        refuses to start an engine that mixes them (storage code 309, "bdev tiers
+                        found with both emulated and non-emulated NVMe types"), so NVMe [wal, meta]
+                        in front of HDDs (kdev) [data] is not a shape it accepts.
                       items:
                         description: |-
                           BdevTierSpec is one bdev tier of an engine. Every role (wal, meta, data)
@@ -268,6 +272,7 @@ spec:
                             - nvme
                             - kdev
                             - file
+                            maxLength: 8
                             type: string
                           roles:
                             description: Roles are the DAOS bdev roles this tier carries.
@@ -284,6 +289,11 @@ spec:
                         type: object
                       maxItems: 3
                       type: array
+                      x-kubernetes-validations:
+                      - message: 'bdevTiers of one engine cannot mix nvme with kdev
+                          or file: DAOS 2.8 refuses that engine (storage code 309)'
+                        rule: '!(self.exists(t, t.class == ''nvme'') && self.exists(t,
+                          t.class != ''nvme''))'
                     fabricIface:
                       description: |-
                         FabricIface is the NIC name. Empty means the operator discovers it per node
@@ -318,6 +328,7 @@ spec:
                       format: int32
                       type: integer
                   type: object
+                maxItems: 8
                 type: array
               externalMsReplicas:
                 description: |-
