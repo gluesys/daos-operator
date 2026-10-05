@@ -262,16 +262,33 @@ e2e-tier1:
     reports:
       junit: dist/e2e-junit.xml
     expire_in: 14 days
+  # a change that cannot affect a running system (docs only) does not take the cluster for 20 minutes
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: &e2e-paths
+        - api/**/*
+        - cmd/**/*
+        - internal/**/*
+        - charts/**/*
+        - config/**/*
+        - images/**/*
+        - test/e2e/**/*
+        - hack/ci/**/*
+        - Dockerfile
+        - go.mod
+        - go.sum
+        - Makefile
+        - .gitlab-ci.yml
       allow_failure: true
     - if: $CI_COMMIT_BRANCH == "main"
+      changes: *e2e-paths
       allow_failure: true
 
 # Tier 1 case 6: the previous release with data in use, upgraded to HEAD (kdev profile: the old
-# release predates the NVMe binding fixes). Manual on MRs, every run on main.
+# release predates the NVMe binding fixes). Manual on MRs, nightly with Tier 2 (TIER=2 schedule): every
+# main pipeline running it took the cluster ~25 more minutes per merge.
 e2e-upgrade:
   <<: *daos-k8s
   needs: [e2e-build, image-operator, image-hostprep]
@@ -288,16 +305,16 @@ e2e-upgrade:
       junit: dist/e2e-upgrade-junit.xml
     expire_in: 14 days
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $TIER == "2"
+      allow_failure: true
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       when: manual
       allow_failure: true
-    - if: $CI_COMMIT_BRANCH == "main"
-      allow_failure: true
 
 # Tier 1 cases 9-12: test-bed failures reproduced on purpose; each resets the cluster and installs
-# its own broken system. Manual on MRs, every run on main.
+# its own broken system. Manual on MRs, nightly with Tier 2 (TIER=2 schedule), not on every main merge.
 e2e-regression:
   <<: *daos-k8s
   needs: [e2e-build, image-operator, image-hostprep]
@@ -310,12 +327,12 @@ e2e-regression:
       junit: dist/e2e-regression-junit.xml
     expire_in: 14 days
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule" && $TIER == "2"
+      allow_failure: true
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
       when: manual
-      allow_failure: true
-    - if: $CI_COMMIT_BRANCH == "main"
       allow_failure: true
 
 # Tier 2 (doc/ci-design-2026-10-02.md 7절): nightly schedule with TIER=2. Reports only (8절), never
