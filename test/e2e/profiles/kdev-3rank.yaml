@@ -17,10 +17,10 @@ system:
     version: "2.8.0"
     namespace: daos-system
     images:
-      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261003-g9927f7be
-      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261003-g9927f7be
-      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261003-g9927f7be
-      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261003-g9927f7be
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261006-g41c3647d
+      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261006-g41c3647d
+      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261006-g41c3647d
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261006-g41c3647d
     placement: dedicated
     nodeSelector:
       daos.gluesys.com/role: storage
