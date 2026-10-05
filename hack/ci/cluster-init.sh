@@ -25,12 +25,13 @@ for v in "${WORKER_VMIDS[@]}"; do
 done
 wait
 mkdir -p ~/.kube
-scp "${SSH_OPTS[@]}" "root@$cp:/etc/kubernetes/admin.conf" ~/.kube/daos-ci.conf
-export KUBECONFIG=~/.kube/daos-ci.conf PATH=$HOME/.local/bin:$PATH
+scp "${SSH_OPTS[@]}" "root@$cp:/etc/kubernetes/admin.conf" "$KCFG"
+export KUBECONFIG=$KCFG PATH=$HOME/.local/bin:$PATH
 for v in "${WORKER_VMIDS[@]}"; do kubectl wait --for=condition=Ready "node/${VM_NAME[$v]}" --timeout=300s; done
 
-kubectl label node exaci5-3a exaci5-3b exaci5-4b daos.gluesys.com/role=storage --overwrite
-kubectl label node exaci5-4a daos.gluesys.com/client=true daos.gluesys.com/gpu=true --overwrite
+kubectl label node "${STORAGE_NODES[@]}" daos.gluesys.com/role=storage --overwrite
+kubectl label node "$CLIENT_NODE" daos.gluesys.com/client=true --overwrite
+[ -n "$GPU_VMID" ] && kubectl label node "${VM_NAME[$GPU_VMID]}" daos.gluesys.com/gpu=true --overwrite
 kubectl create namespace daos-system --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n daos-system create secret docker-registry gitlab-registry \
     --docker-server=registry.gitlab.gluesys.com --docker-username="$REG_USER" --docker-password="$REG_TOKEN" \

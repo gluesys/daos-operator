@@ -7,13 +7,37 @@
 # VDI_SSH 를 바꾸면 두 경우를 모두 덮는다.
 VDI_SSH=${VDI_SSH:-"ssh -o BatchMode=yes -o ConnectTimeout=10 vdi5"}
 
-CP_VMID=111
-RUNNER_VMID=108
-CLUSTER_VMIDS=(111 109 110 112 113)
-WORKER_VMIDS=(109 110 112 113)
-
-declare -A VM_NAME=([108]=exaci5-3j [111]=exaci5-4j [109]=exaci5-3a [110]=exaci5-3b [112]=exaci5-4a [113]=exaci5-4b)
-declare -A VM_IP=([108]=192.168.35.30 [111]=192.168.35.40 [109]=192.168.35.31 [110]=192.168.35.32 [112]=192.168.35.41 [113]=192.168.35.42)
+# LANE=a (기본): 슬롯 3·4, 워커 4대 — Tier 1 이외(upgrade·regression·Tier 2).
+# LANE=b: 슬롯 5-2(Jenkins 라벨 DAOS-K8S-2), CP + 워커 2대 — Tier 1 전용(설계 8절 레인 B). 러너는 3J 공용.
+LANE=${LANE:-a}
+case $LANE in
+a)
+    CP_VMID=111
+    RUNNER_VMID=108
+    CLUSTER_VMIDS=(111 109 110 112 113)
+    WORKER_VMIDS=(109 110 112 113)
+    STORAGE_NODES=(exaci5-3a exaci5-3b exaci5-4b)
+    CLIENT_NODE=exaci5-4a
+    GPU_VMID=112
+    KCFG=$HOME/.kube/daos-ci.conf
+    declare -A VM_NAME=([108]=exaci5-3j [111]=exaci5-4j [109]=exaci5-3a [110]=exaci5-3b [112]=exaci5-4a [113]=exaci5-4b)
+    declare -A VM_IP=([108]=192.168.35.30 [111]=192.168.35.40 [109]=192.168.35.31 [110]=192.168.35.32 [112]=192.168.35.41 [113]=192.168.35.42)
+    ;;
+b)
+    CP_VMID=105
+    RUNNER_VMID=""
+    CLUSTER_VMIDS=(105 106 107)
+    WORKER_VMIDS=(106 107)
+    STORAGE_NODES=(exaci5-2a)
+    CLIENT_NODE=exaci5-2b
+    GPU_VMID=""
+    KCFG=$HOME/.kube/daos-ci-b.conf
+    declare -A VM_NAME=([105]=exaci5-2j [106]=exaci5-2a [107]=exaci5-2b)
+    declare -A VM_IP=([105]=192.168.35.20 [106]=192.168.35.21 [107]=192.168.35.22)
+    ;;
+*) echo "env.sh: unknown LANE=$LANE" >&2; exit 2 ;;
+esac
+ALL_VMIDS=(${RUNNER_VMID:+"$RUNNER_VMID"} "${CLUSTER_VMIDS[@]}")
 declare -A VM_IP2 VM_IBIP
 for v in "${!VM_IP[@]}"; do
     last=${VM_IP[$v]##*.}

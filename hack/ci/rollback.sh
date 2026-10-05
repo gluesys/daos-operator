@@ -6,7 +6,7 @@
 # 러너 VM(3J)은 건드리지 않는다. 실패하면 0 이 아닌 코드로 끝나 파이프라인을 멈춘다.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
-export KUBECONFIG=${KUBECONFIG:-$HOME/.kube/daos-ci.conf}
+export KUBECONFIG=${KUBECONFIG:-$KCFG}
 start=$(date +%s)
 for v in "${CLUSTER_VMIDS[@]}"; do
     ( qm stop "$v" --timeout 60 >/dev/null 2>&1 || true
@@ -22,7 +22,7 @@ fresh_ready() {
     kubectl get nodes -o jsonpath='{range .items[*]}{.status.conditions[?(@.type=="Ready")].status} {.status.conditions[?(@.type=="Ready")].lastHeartbeatTime}{"\n"}{end}' 2>/dev/null \
         | awk -v s="$since" '$1=="True" && $2>=s' | wc -l
 }
-until [ "$(fresh_ready)" = 5 ]; do
+until [ "$(fresh_ready)" = "${#CLUSTER_VMIDS[@]}" ]; do
     [ $(( $(date +%s) - start )) -ge 300 ] && { echo "rollback: nodes not Ready in 300s"; kubectl get nodes || true; exit 1; }
     sleep 5
 done
