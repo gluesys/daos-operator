@@ -22,7 +22,8 @@ kubectl -n daos-system get secret gitlab-registry >/dev/null || { echo "pull sec
 while read -r img; do
     [ -z "$img" ] && continue
     for v in "${WORKER_VMIDS[@]}"; do
-        node_ssh "${VM_IP[$v]}" "crictl images -q $img | grep -q ." || { echo "${VM_NAME[$v]}: missing $img"; fail=1; }
+        # </dev/null: ssh would otherwise read the rest of images.txt and end the loop after one image
+        node_ssh "${VM_IP[$v]}" "crictl images -q $img | grep -q ." </dev/null || { echo "${VM_NAME[$v]}: missing $img"; fail=1; }
     done
 done < "$(dirname "$0")/images.txt"
 [ $fail = 0 ] && echo "check-cluster: OK"
