@@ -33,11 +33,14 @@ var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, fun
 	rankState := func(rank int) string {
 		return jsonpath("daossystem", sysName, fmt.Sprintf(`.status.ranks[?(@.rank==%d)].state`, rank))
 	}
-	// signalServer sends sig to daos_server inside node's server pod (STOP/CONT/KILL).
+	// signalServer sends sig (STOP/CONT/KILL) to daos_server from the node itself. Inside the
+	// container daos_server is PID 1, and the kernel drops SIGSTOP/SIGKILL sent to a namespace's
+	// init from inside it: the first NoQuorum run froze nothing (2026-10-05).
 	signalServer := func(node, sig string) {
-		out := kubectl("exec", serverPod(node), "-c", "daos-server", "--", "sh", "-c",
-			`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_server ] && kill -`+sig+` ${p#/proc/} && echo signalled ${p#/proc/}; done; true`)
-		Expect(out).To(ContainSubstring("signalled"), "no daos_server in %s", serverPod(node))
+		ip := kubectl("get", "node", node, "-o", `jsonpath={.status.addresses[?(@.type=="InternalIP")].address}`)
+		out := run("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "root@"+ip,
+			"pkill -"+sig+" -x daos_server && echo signalled")
+		Expect(out).To(ContainSubstring("signalled"), "no daos_server on %s", node)
 	}
 	// reintegrateIfNeeded is the documented recovery once the engine is back: reintegrate the rank
 	// unless it rejoined on its own (kubectl daos waits for the result, daos-operator !14).
@@ -115,8 +118,8 @@ spec:
 		frozen := []string{nodes[1], nodes[2]}
 		DeferCleanup(func() {
 			for _, n := range frozen {
-				_, _ = kubectlE("exec", serverPod(n), "-c", "daos-server", "--", "sh", "-c",
-					`for p in /proc/[0-9]*; do [ "$(cat $p/comm 2>/dev/null)" = daos_server ] && kill -CONT ${p#/proc/}; done; true`)
+				ip := kubectl("get", "node", n, "-o", `jsonpath={.status.addresses[?(@.type=="InternalIP")].address}`)
+				_, _ = runE("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "root@"+ip, "pkill -CONT -x daos_server")
 			}
 		})
 		start := time.Now()
