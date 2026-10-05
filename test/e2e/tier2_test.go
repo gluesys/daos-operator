@@ -153,10 +153,15 @@ spec:
 		Eventually(func() string { return leaderIP() }).WithTimeout(2*time.Minute).
 			Should(And(Not(BeEmpty()), Not(Equal(old))), "a new leader must be reported")
 		recordDuration("new MS leader reported", time.Since(start))
-		expectKnownBug("data path stalls ~2 min after an MS leader change (design 7절)", func() {
-			out, err := kubectlE("exec", "e2e-t2-app", "--", "sh", "-c", "timeout 10 sha256sum -c /data/blob.sha256")
-			Expect(err).NotTo(HaveOccurred(), out)
-		})
+		// The design expected the data path to stall ~2 min after a leader change. A re-read of the
+		// file came back in under 10 s (2026-10-05), but that can be dfuse's cache. Write and fsync
+		// new data instead and record how long it takes: a stall shows as time, bounded at 5 min.
+		w := time.Now()
+		out, err := kubectlE("exec", "e2e-t2-app", "--", "sh", "-c",
+			"timeout 300 sh -c 'head -c 4194304 /dev/urandom > /data/after-leader && sync /data/after-leader' && echo WROTE")
+		Expect(err).NotTo(HaveOccurred(), out)
+		Expect(out).To(ContainSubstring("WROTE"))
+		recordDuration("write+fsync after leader change", time.Since(w))
 		reintegrateIfNeeded(rankOn(node))
 		waitReadyStable(10 * time.Minute)
 		recordDuration("leader kill back to healthy", time.Since(start))
