@@ -43,9 +43,28 @@ operator drops the annotation after one attempt, whatever the outcome.
 ## Install
 
 ```bash
-helm install daos-operator oci://<registry>/charts/daos-operator --version 0.1.0 \
+helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.1.3 \
   --namespace daos-system --create-namespace
 ```
+
+### Verify the chart signature
+
+Chart releases from 0.1.3 on are signed with cosign. The public key is `cosign.pub` at the
+root of the project repository:
+
+```text
+-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZahht5lUkAFpk1OvQtGEsU/ebjwr
+2EZOQop3sDPmmVdmLI/VN9A7RcktCWkxav0oZYbUl89MMGzuEy2ohCV/FA==
+-----END PUBLIC KEY-----
+```
+
+```bash
+cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.1.3
+```
+
+`values.schema.json` types the values the chart ships; Helm rejects a value of the wrong
+type at install time. Keys the schema does not list are accepted.
 
 The chart's default image references point at the registry this project is built
 in. Override them for your own registry:
