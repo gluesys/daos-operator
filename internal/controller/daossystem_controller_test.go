@@ -369,7 +369,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		for i := 0; i < 4; i++ {
 			reconcileWith(f)
 		}
-		Expect(f.count(start)).To(Equal(1 + engineRestartMax), "three attempts for this outage, not three more after the pod came back")
+		Expect(f.count(start)).To(Equal(1+engineRestartMax), "three attempts for this outage, not three more after the pod came back")
 	})
 
 	It("does not judge engines before the membership is known", func() {
