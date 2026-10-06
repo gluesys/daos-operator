@@ -16,7 +16,8 @@ default:
 variables:
   GIT_DEPTH: "20"
   # daos-images 의 CI 가 한 태그로 빌드한 역할 이미지(daos-images !2). render-validate 와 CI 클러스터가 쓴다.
-  DAOS_IMAGE_TAG: 2.8.0-20261003-g9927f7be
+  # 20261006: libfabric 을 DAOS 저장소 1.22.0 으로 고정(daos-images !3, 설계 13절 #24).
+  DAOS_IMAGE_TAG: 2.8.0-20261006-g41c3647d
 
 syntax:
   stage: check
