@@ -19,7 +19,9 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -248,6 +250,126 @@ var _ = Describe("DaosSystem Controller", func() {
 		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"}]}, "error": null, "status": 0}`})
 		reconcileWith(f)
 		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(HavePrefix("n2: 0/1 engine(s) joined (no rank registered: not formatted yet, or the engine died before joining)"))
+	})
+
+	It("starts an engine that died under a Ready server pod, a bounded number of times (§13 #24)", func() {
+		resetEngineRestarts()
+		savedGrace, savedInterval := engineRestartGrace, engineRestartInterval
+		DeferCleanup(func() { engineRestartGrace, engineRestartInterval = savedGrace, savedInterval; resetEngineRestarts() })
+		members := func(state1 string) *dmg.Result {
+			return &dmg.Result{Done: true, Output: fmt.Sprintf(`{"response": {"members": [
+			  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+			  {"addr": "10.0.0.2:10001", "state": %q, "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`, state1)}
+		}
+		const start = "system start --ranks=1"
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": members("joined"),
+			start: {Done: true, Output: `{"response": {"Results": [{"Rank": 1, "Errored": false, "Msg": "", "state": "ready"}]}, "error": null, "status": 0}`}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+
+		By("inside the grace period nothing is started: the engine may still be coming up")
+		f.set("system query -v", members("errored"))
+		reconcileWith(f)
+		Expect(f.count(start)).To(BeZero())
+
+		By("past the grace period dmg system start runs for that rank only")
+		engineRestartGrace, engineRestartInterval = 0, time.Hour
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1))
+		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(ContainSubstring("engine start requested by the operator: rank 1 1/3"))
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1), "not again inside the interval")
+
+		By("after engineRestartMax starts the operator stops trying")
+		engineRestartInterval = 0
+		for i := 0; i < 4; i++ {
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("a rank that joined starts over; a stopped or admin-excluded rank is never started")
+		f.set("system query -v", members("joined"))
+		reconcileWith(f)
+		for _, st := range []string{"stopped", "adminexcluded"} {
+			f.set("system query -v", members(st))
+			reconcileWith(f)
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("nothing is started while a human rank operation is requested")
+		f.set("system query -v", members("excluded"))
+		sys := getSys()
+		sys.Annotations = map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f) // the rank op job is created and still running
+		Expect(f.count(start)).To(Equal(engineRestartMax))
+
+		By("the excluded rank is started once the request is gone")
+		sys = getSys()
+		delete(sys.Annotations, daosv1alpha1.AnnotationRankOp)
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(engineRestartMax + 1))
+	})
+
+	It("restarts the server pod when daos_server cannot start the engine, never one with a joined rank (§13 #24)", func() {
+		resetEngineRestarts()
+		savedGrace, savedInterval := engineRestartGrace, engineRestartInterval
+		DeferCleanup(func() { engineRestartGrace, engineRestartInterval = savedGrace, savedInterval; resetEngineRestarts() })
+		engineRestartGrace, engineRestartInterval = 0, time.Hour
+		mkPod := func() *corev1.Pod {
+			p := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Namespace: "daos-test", Name: "t1-server-n2-0", Labels: map[string]string{
+				daosv1alpha1.LabelSystem: sysName, daosv1alpha1.LabelRole: "server", daosv1alpha1.LabelNode: "n2"}},
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: serverContainer, Image: "s"}}}}
+			Expect(k8sClient.Create(ctx, p)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, p, client.GracePeriodSeconds(0)) })
+			return p
+		}
+		podGone := func() bool {
+			p := &corev1.Pod{}
+			err := k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2-0"}, p)
+			return apierrors.IsNotFound(err) || (err == nil && !p.DeletionTimestamp.IsZero())
+		}
+		const start = "system start --ranks=1"
+		timedOut := &dmg.Result{Done: true, ExitCode: 1, Output: `{"response": null, "error": "system start failed: client: code = 510 description = \"the *control.SystemStartReq request timed out after 5m0s\"", "status": -1}`}
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}, start: timedOut}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+
+		By("another rank on the node is joined: the pod is left alone and a human is told")
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "errored", "rank": 1, "uuid": "u1", "fault_domain": "/n2"},
+		  {"addr": "10.0.0.2:10001", "state": "joined", "rank": 2, "uuid": "u2", "fault_domain": "/n2"}]}, "error": null, "status": 0}`})
+		mkPod()
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(1))
+		Expect(podGone()).To(BeFalse(), "a joined engine shares the pod")
+
+		By("every rank on the node is down: the start timed out, so the pod is deleted")
+		resetEngineRestarts()
+		f.set("system query -v", &dmg.Result{Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "excluded", "rank": 1, "uuid": "u1", "fault_domain": "/n2"}]}, "error": null, "status": 0}`})
+		reconcileWith(f)
+		Expect(f.count(start)).To(Equal(2))
+		Expect(podGone()).To(BeTrue())
+
+		By("the count survives the pod being out of the candidates while it restarts")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2"}, sts)).To(Succeed())
+		sts.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n2")
+		engineRestartInterval = 0
+		for i := 0; i < 4; i++ {
+			reconcileWith(f)
+		}
+		Expect(f.count(start)).To(Equal(1+engineRestartMax), "three attempts for this outage, not three more after the pod came back")
 	})
 
 	It("does not judge engines before the membership is known", func() {
