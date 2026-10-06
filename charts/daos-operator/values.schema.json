@@ -1,0 +1,301 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "daos-operator chart values",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "image": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "repository": {
+          "type": "string"
+        },
+        "tag": {
+          "type": "string",
+          "description": "defaults to .Chart.appVersion"
+        },
+        "pullPolicy": {
+          "type": "string"
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array"
+    },
+    "replicaCount": {
+      "type": "integer"
+    },
+    "leaderElect": {
+      "type": "boolean"
+    },
+    "metricsBindAddress": {
+      "type": "string",
+      "description": "--metrics-bind-address for the operator's own controller-runtime metrics (\"0\" = off)"
+    },
+    "logLevel": {
+      "type": "string"
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "cpu": {
+              "type": "string"
+            },
+            "memory": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "nodeSelector": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "tolerations": {
+      "type": "array"
+    },
+    "affinity": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "podAnnotations": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string",
+          "description": "defaults to the release fullname"
+        },
+        "annotations": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        }
+      }
+    },
+    "hostprep": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "clusterRole": {
+          "type": "string"
+        },
+        "defaultImage": {
+          "type": "string",
+          "description": "image the operator uses when DaosSystem.spec.images.hostPrep is empty (\"\" = operator default)"
+        }
+      },
+      "description": "ClusterRole \"daos-hostprep\" that the operator binds to the per-system hostprep ServiceAccount."
+    },
+    "grafana": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "dashboard": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "description": "ConfigMap with the upstream DAOS Grafana dashboard, labelled for the grafana sidecar"
+            },
+            "namespace": {
+              "type": "string",
+              "description": "defaults to the release namespace"
+            },
+            "label": {
+              "type": "string"
+            },
+            "labelValue": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "system": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "create": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "spec": {
+          "type": "object",
+          "description": "DaosSystem spec, passed through as-is and validated by the CRD"
+        }
+      },
+      "description": "Create one DaosSystem with the release. spec is passed through as-is (see api/v1alpha1 for the fields); the operator fills status."
+    },
+    "csi": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "system": {
+          "type": "string",
+          "description": "defaults to system.name"
+        },
+        "driverName": {
+          "type": "string"
+        },
+        "image": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "repository": {
+              "type": "string"
+            },
+            "tag": {
+              "type": "string",
+              "description": "defaults to .Chart.appVersion"
+            },
+            "pullPolicy": {
+              "type": "string"
+            }
+          }
+        },
+        "agentImage": {
+          "type": "string",
+          "description": "defaults to system.spec.images.agent"
+        },
+        "tls": {
+          "type": "boolean",
+          "description": "mount <system>-certs (agent set for the sidecar, admin set for the daos client)"
+        },
+        "sidecars": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "provisioner": {
+              "type": "string"
+            },
+            "registrar": {
+              "type": "string"
+            }
+          }
+        },
+        "kubeletDir": {
+          "type": "string"
+        },
+        "nodeSelector": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "nodes that may mount DAOS PVs (default: all)"
+        },
+        "tolerations": {
+          "type": "array"
+        },
+        "controllerResources": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "requests": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "cpu": {
+                  "type": "string"
+                },
+                "memory": {
+                  "type": "string"
+                }
+              }
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "memory": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "nodeResources": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "requests": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "cpu": {
+                  "type": "string"
+                },
+                "memory": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "storageClasses": {
+          "type": "array",
+          "description": "StorageClasses to create, one per DaosPool"
+        }
+      },
+      "description": "exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a daos_agent sidecar). One driver per DaosSystem: csi.system names the system whose <system>-agent ConfigMap (and <system>-certs when tls) the node plugin uses."
+    },
+    "vllm": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "services": {
+          "type": "array"
+        }
+      },
+      "description": "vLLM serving with LMCache writing its KV cache to a DAOS container. This is a reference workload, not part of the storage layer: it is here so a GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md. The pod runs with hostNetwork because a DAOS client must be reachable at the address it advertises; a pod-network client behind the CNI's masquerade is not (that is also why spec.clientAgent must be enabled on the GPU nodes). rdma: true 는 DAOS 가 RDMA 프로바이더(ofi+verbs 등)일 때 필요하다. 클라이언트 파드가 /dev/infiniband 를 보지 못하면 libfabric verbs 초기화가 실패한다."
+    },
+    "s3": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "services": {
+          "type": "array"
+        }
+      },
+      "description": "S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry. The operator supplies --pool/--system, the daos_agent sidecar and the certificates; see doc/adr/ADR-004-s3-gateway.md."
+    }
+  }
+}
