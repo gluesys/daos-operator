@@ -157,6 +157,24 @@ helm:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
 
+# Paths that can change what runs on a cluster. An MR touching none of them (docs only) builds no
+# image and takes no cluster; MR jobs that need the images use the same list, or the pipeline
+# would be invalid ("needs" on a job that is not created).
+.code-paths: &code-paths
+  - api/**/*
+  - cmd/**/*
+  - internal/**/*
+  - charts/**/*
+  - config/**/*
+  - images/**/*
+  - test/e2e/**/*
+  - hack/ci/**/*
+  - Dockerfile
+  - go.mod
+  - go.sum
+  - Makefile
+  - .gitlab-ci.yml
+
 # Container images. Runner "exa-build" is a shell executor with podman; the
 # job token can push to the project registry.
 .image-job: &image-job
@@ -188,7 +206,9 @@ helm:
         [ -n "$CI_MERGE_REQUEST_IID" ] && return 0
         podman tag "$1:$CI_COMMIT_SHORT_SHA" "$1:$VERSION" "$1:latest" && push "$1:$VERSION" && push "$1:latest"; }
   rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"   # the nightly Tier 2 jobs deploy these images
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: *code-paths
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_COMMIT_TAG
 
@@ -267,23 +287,10 @@ e2e-tier1:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-      changes: &e2e-paths
-        - api/**/*
-        - cmd/**/*
-        - internal/**/*
-        - charts/**/*
-        - config/**/*
-        - images/**/*
-        - test/e2e/**/*
-        - hack/ci/**/*
-        - Dockerfile
-        - go.mod
-        - go.sum
-        - Makefile
-        - .gitlab-ci.yml
+      changes: *code-paths
       allow_failure: true
     - if: $CI_COMMIT_BRANCH == "main"
-      changes: *e2e-paths
+      changes: *code-paths
       allow_failure: true
 
 # Tier 1 case 6: the previous release with data in use, upgraded to HEAD (kdev profile: the old
@@ -310,6 +317,7 @@ e2e-upgrade:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: *code-paths
       when: manual
       allow_failure: true
 
@@ -332,6 +340,7 @@ e2e-regression:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: *code-paths
       when: manual
       allow_failure: true
 
