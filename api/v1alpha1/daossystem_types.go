@@ -82,8 +82,9 @@ type EngineSpec struct {
 	// [wal, meta, data]), which is what every DaosSystem written so far uses.
 	// The tiers of one engine are all nvme or all emulated (kdev, file): DAOS 2.8
 	// refuses to start an engine that mixes them (storage code 309, "bdev tiers
-	// found with both emulated and non-emulated NVMe types"), so NVMe [wal, meta]
-	// in front of HDDs (kdev) [data] is not a shape it accepts.
+	// found with both emulated and non-emulated NVMe types"), so an SPDK nvme tier
+	// [wal, meta] in front of HDDs (kdev) [data] is not a shape it accepts. NVMe in
+	// front of HDDs works with both tiers kdev (the NVMe through the kernel, AIO).
 	// +kubebuilder:validation:MaxItems=3
 	// +kubebuilder:validation:XValidation:rule="!(self.exists(t, t.class == 'nvme') && self.exists(t, t.class != 'nvme'))",message="bdevTiers of one engine cannot mix nvme with kdev or file: DAOS 2.8 refuses that engine (storage code 309)"
 	BdevTiers []BdevTierSpec `json:"bdevTiers,omitempty"`

@@ -407,6 +407,12 @@ var _ = Describe("DaosSystem Controller", func() {
 		ok.Spec.Engines[0].BdevTiers[1] = daosv1alpha1.BdevTierSpec{Class: "nvme", Roles: []string{"data"}}
 		Expect(k8sClient.Create(ctx, ok)).To(Succeed(), "all-nvme tiers are fine")
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, ok) })
+		// NVMe in front of HDDs, both through the kernel: the shape that ran on da1~4 (2026-09-28)
+		hdd := bad.DeepCopy()
+		hdd.Name, hdd.ResourceVersion = "t1-kdevtiers", ""
+		hdd.Spec.Engines[0].BdevTiers[0] = daosv1alpha1.BdevTierSpec{Class: "kdev", Roles: []string{"wal", "meta"}, BdevList: []string{"/dev/nvme0n1"}}
+		Expect(k8sClient.Create(ctx, hdd)).To(Succeed(), "all-kdev tiers (NVMe and HDD through the kernel) are fine")
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, hdd) })
 	})
 
 	It("does not judge engines before the membership is known", func() {
