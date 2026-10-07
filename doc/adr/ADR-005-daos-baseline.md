@@ -66,6 +66,37 @@
 - **확장판은 상류 태그 위로 매번 rebase 한다.** 패치마다 "상류에 낼 것"과 "제품 전용"을 표시한다.
   쿼터·ACL 은 상류에도 비어 있는 기능이라 상류 제안을 병행한다.
 
+### CI 와 배포 구조
+1차는 상류판, 2차로 확장판을 더하는 순서를 전제로 한다. CI 와 차트는 하나로 두고 판(edition)을 변수로 고른다.
+
+**CI**
+| 위치 | 지금 | 확장판을 더하는 방법 |
+|---|---|---|
+| daos-images | `Dockerfile.base` 의 `ARG DAOS_REPO_URL`(packages.daos.io) | 같은 Dockerfile 을 확장판 RPM 저장소(ac2repo) URL 로 한 번 더 빌드한다. 태그에 판을 붙인다(예: `2.8.0-YYYYMMDD-gSHA-ext`) |
+| operator CI | `DAOS_IMAGE_TAG`, 프로파일의 이미지 태그 | e2e 를 판 변수(`EDITION`)로 실행하고 `E2E_SET` 으로 이미지 태그만 바꾼다 |
+| e2e 시험 | 공통 시험 | 공통 시험은 두 판 모두 통과해야 한다. 확장판 전용 기능(쿼터 등)은 라벨(예: `ext`)을 붙여 확장판에서만 돈다 |
+
+- MR 게이트(e2e-tier1)는 상류판만 돌린다(레인 B, 지금 속도 유지).
+- 야간은 판마다 따로 돌린다(예: 상류판 01:00, 확장판 03:00, 각각 레인 A 약 2시간). 레인이 모자라면 격일로 번갈아 돌린다.
+- 확장판 RPM 은 exa-build 에서 빌드한다(RPM 빌드는 되고, 2.8 바이너리를 실행하지 못하는 것은 이미지 빌드에 영향이 없다).
+- **DAOS 클라이언트가 들어간 이미지는 모두 판별로 만든다**: agent, client, admin, CSI(dfuse), versitygw-daos,
+  vllm-lmcache-daos. 서버만 바꾸면 위 "판은 세트로 전환한다"가 깨진다.
+- 확장판 RPM 저장소에도 libfabric 1.22.0 이 있거나 DAOS 저장소를 함께 붙여야 한다. 이미지 빌드는 1.22.0 이 아니면 실패한다(daos-images !3).
+- 이미지 빌드와 야간 e2e 가 두 배가 된다. exa-build 디스크(2026-10-06 99%)와 레지스트리 rate limit 이 더 빨리 다시 찾아온다.
+
+**Helm 차트**: 이름을 나누지 않는다.
+| 방식 | 판단 |
+|---|---|
+| 같은 차트 이름, values `edition: upstream \| extended` 로 operator·CSI·DAOS 이미지 태그를 세트로 고른다. 확장판 설정은 `editions/extended-values.yaml` 같은 파일로 준다 | **채택** |
+| 같은 이름을 배포처만 나눈다: 상류판은 `oci://ghcr.io/gluesys/charts/daos-operator`(Artifact Hub), 확장판은 비공개 레지스트리 | 위와 함께 쓴다 |
+| 다른 차트 이름(`daos-operator-enterprise` 등) | 라이선스·판매 조건이 완전히 갈릴 때만 |
+
+- **CRD 는 하나여야 한다.** 이름이 다른 두 차트가 같은 CRD(`daossystems.daos.gluesys.com`)를 설치하면 한 클러스터에서
+  서로 덮어쓴다. 확장판 전용 필드는 같은 CRD 의 선택 필드로 두고, operator 가 서버 판을 감지해 상류판이면 거부한다.
+- `edition` 값 하나가 서버와 모든 클라이언트 이미지를 함께 바꾸므로, 차트가 판 세트 전환을 보장한다.
+- 차트 버전·서명·values 스키마·Artifact Hub 페이지가 하나로 유지된다.
+- 확장판 이미지는 엔터프라이즈 구독용이라 비공개 레지스트리에 두고 pull secret 을 요구한다. 확장판 values 는 고객에게만 준다.
+
 ### 착수 전 선행 조건 (고객 데이터가 생기기 전에)
 세트 전환은 판이 섞이는 문제(아래 2)만 막는다. 1·3 은 판을 섞지 않아도 **확장판 자신이 다음 상류
 버전 위로 옮겨 갈 때** 생기는 문제라 선행 수정이 필요하다.
