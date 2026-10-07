@@ -30,6 +30,8 @@ for f in sorted(glob.glob(os.path.join(src, "*.yaml"))):
 PY
 
 fail=0
+# values.schema.json 은 values.yaml 에서 생성한다(Artifact Hub 표시, helm 의 타입 검사). 어긋나면 실패.
+python3 "$repo/hack/gen-values-schema.py" --check || fail=1
 for values in "$chart"/ci/*-values.yaml; do
     name=$(basename "$values" -values.yaml)
     helm template daos-operator "$chart" -n daos-system --include-crds -f "$values" > "$out/$name.yaml"
