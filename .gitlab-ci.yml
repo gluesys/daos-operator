@@ -378,8 +378,15 @@ e2e-tier2-kdev:
     - E2E_RESET=1 E2E_PROFILE=kdev-3rank E2E_RANKS=3 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 80m -ginkgo.v -ginkgo.focus='case [1237]\)' -ginkgo.label-filter='!upgrade && !regression && !tier2' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-tier2-kdev-t1.xml
     - E2E_RESET=1 E2E_PROFILE=kdev-3rank E2E_RANKS=3 E2E_TIMINGS=$CI_PROJECT_DIR/dist/tier2-kdev.csv KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 150m -ginkgo.v -ginkgo.label-filter='tier2 && resilience' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-tier2-kdev-res.xml
 
+# Off: mixed-2engine (an SPDK nvme engine and a kdev engine on one node) is outside what upstream
+# DAOS supports -- the 2.8 support matrix asks for identical NVMe configurations across engines
+# and calls emulated NVMe (kdev, file) test-only -- and its engine start fails on the upstream
+# RPMs (design 13절 #22, spdk_pci_device_claim). ADR-005 keeps the upstream RPMs, so this would
+# fail every night. Turn it back on with the #22 patch or a decision to support the shape.
 e2e-tier2-mixed:
   <<: *e2e-tier2
+  rules:
+    - when: never
   script:
     - cd test/e2e
     - E2E_RESET=1 E2E_PROFILE=mixed-2engine E2E_RANKS=6 KUBECTL_DAOS=$CI_PROJECT_DIR/dist/kubectl-daos ../../dist/e2e.test -test.timeout 80m -ginkgo.v -ginkgo.focus='case [1237]\)' -ginkgo.label-filter='!upgrade && !regression && !tier2' -ginkgo.junit-report=$CI_PROJECT_DIR/dist/e2e-tier2-mixed-t1.xml
