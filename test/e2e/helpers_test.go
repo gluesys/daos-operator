@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -72,12 +73,40 @@ func systemHealthy() string {
 		condStatus("Ready"), condStatus("ManagementService"), jsonpath("daossystem", sysName, ".status.ranksJoined"))
 }
 
-const healthy = "Ready=True ManagementService=True ranksJoined=1"
+// healthyWant is systemHealthy's value for a healthy system of E2E_RANKS ranks (default 1).
+func healthyWant() string {
+	return "Ready=True ManagementService=True ranksJoined=" + envOr("E2E_RANKS", "1")
+}
+
+// poolSize is 8 GiB per rank. DAOS wants at least 1 GiB per target (code 605 "requested NVMe
+// capacity too small"), and a fixed 8 GiB fell short on 3 ranks x 4 targets (kdev-3rank, 2026-10-05).
+func poolSize() string {
+	n, err := strconv.Atoi(envOr("E2E_RANKS", "1"))
+	if err != nil || n < 1 {
+		n = 1
+	}
+	return fmt.Sprintf("%dGi", 8*n)
+}
 
 // waitReadyStable waits for systemHealthy and then requires it to hold for a minute.
 func waitReadyStable(timeout time.Duration) {
-	EventuallyWithOffset(1, systemHealthy).WithTimeout(timeout).Should(Equal(healthy))
-	ConsistentlyWithOffset(1, systemHealthy).WithTimeout(time.Minute).Should(Equal(healthy))
+	EventuallyWithOffset(1, systemHealthy).WithTimeout(timeout).Should(Equal(healthyWant()))
+	ConsistentlyWithOffset(1, systemHealthy).WithTimeout(time.Minute).Should(Equal(healthyWant()))
+}
+
+// recordDuration reports a recovery time and appends "spec,name,seconds" to $E2E_TIMINGS (Tier 2
+// trends recovery times, not performance: doc/ci-design-2026-10-02.md 7절).
+func recordDuration(name string, d time.Duration) {
+	AddReportEntry(name, d.Round(time.Second).String())
+	path := os.Getenv("E2E_TIMINGS")
+	if path == "" {
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	Expect(err).NotTo(HaveOccurred())
+	defer f.Close()
+	_, err = fmt.Fprintf(f, "%q,%q,%.0f\n", CurrentSpecReport().LeafNodeText, name, d.Seconds())
+	Expect(err).NotTo(HaveOccurred())
 }
 
 // expectKnownBug runs body, which asserts the correct behaviour. While the issue is open the
@@ -99,6 +128,7 @@ func dumpDiagnostics() {
 	for _, args := range [][]string{
 		{"get", "daossystem,daospool,daoscontainer,pods,jobs,pvc", "-o", "wide"},
 		{"get", "daossystem", sysName, "-o", "jsonpath={range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{\"\\n\"}{end}"},
+		{"get", "daossystem", sysName, "-o", "jsonpath={.status.ranks}"},
 		{"logs", "deploy/" + release, "--tail=60"},
 		{"get", "events", "--sort-by=.lastTimestamp"},
 	} {

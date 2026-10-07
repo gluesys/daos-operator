@@ -22,6 +22,7 @@ import (
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
+	"github.com/onsi/ginkgo/v2/types"
 	. "github.com/onsi/gomega"
 )
 
@@ -97,5 +98,16 @@ func approveFormatAndWaitReady() {
 var _ = ReportAfterEach(func(r SpecReport) {
 	if r.Failed() {
 		dumpDiagnostics()
+	}
+})
+
+// ReportAfterEach does not see a BeforeSuite failure: a system that never came up left nothing to
+// read (kdev-3rank, one rank missing, 2026-10-05). The suite report does.
+var _ = ReportAfterSuite("diagnostics for a failed BeforeSuite", func(r Report) {
+	for _, s := range r.SpecReports {
+		if s.LeafNodeType == types.NodeTypeBeforeSuite && s.Failed() {
+			dumpDiagnostics()
+			return
+		}
 	}
 })

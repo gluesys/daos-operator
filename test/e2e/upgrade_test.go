@@ -43,7 +43,7 @@ var _ = Describe("Upgrade", Label("upgrade"), Ordered, func() {
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2epool} # the profile's StorageClass names this pool
-spec: {systemRef: daos, size: 8Gi, redundancyFactor: 0}`)
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		apply(`apiVersion: v1

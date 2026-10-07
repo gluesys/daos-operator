@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# Tier 2 프로파일: 저장 노드 3대, 노드당 엔진 2개 — engine0 nvme(QEMU NVMe, uio_pci_generic), engine1 kdev
+# (/dev/sdb). 6 rank, ib0 공유, fabric 포트 31316/31416(operator 가 엔진마다 +100). 혼합 bdev_list 에서
+# `dmg storage query usage` 패닉을 xfail 로 고정한다. 설계 5절.
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: "65bcaee5"
+imagePullSecrets:
+  - name: gitlab-registry
+hostprep:
+  defaultImage: registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:65bcaee5
+system:
+  create: true
+  name: daos
+  spec:
+    version: "2.8.0"
+    namespace: daos-system
+    images:
+      server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261006-g41c3647d
+      agent:  registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261006-g41c3647d
+      admin:  registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261006-g41c3647d
+      client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261006-g41c3647d
+    placement: dedicated
+    nodeSelector:
+      daos.gluesys.com/role: storage
+    msReplicas: 3
+    provider: "ofi+verbs;ofi_rxm"
+    allowInsecure: true
+    systemRamReservedGiB: 8
+    nrHugepages: 3072
+    disableVFIO: true
+    engines:
+      - targets: 4
+        helpers: 0
+        fabricIface: ib0
+        bdevClass: nvme
+        bdevList: []            # hostprep 이 발견한 QEMU NVMe
+        scmSizeGiB: 4
+      - targets: 4
+        helpers: 0
+        fabricIface: ib0
+        bdevClass: kdev
+        bdevList: [/dev/sdb]
+        scmSizeGiB: 4
+    hostPrep:
+      enabled: true
+      bindNvme: true
+csi:
+  enabled: true
+  image:
+    repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
+    tag: 55f554f9
+  storageClasses:
+    - name: daos-e2e
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
