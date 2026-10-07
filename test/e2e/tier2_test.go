@@ -42,16 +42,29 @@ var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, fun
 			"pkill -"+sig+" -x daos_server && echo signalled")
 		Expect(out).To(ContainSubstring("signalled"), "no daos_server on %s", node)
 	}
+	// poolLacksRank: the pool still has the rank's targets excluded. A rank that rejoins the system
+	// on its own (DAOS 2.8 does after a node reboot) stays excluded in the pools it was dropped from:
+	// the 2026-10-07 nightly saw the system Ready 3/3 and e2epool TargetsExcluded.
+	poolLacksRank := func(rank int) bool {
+		if d := jsonpath("daospool", "e2epool", ".status.disabledTargets"); d != "" && d != "0" {
+			return true
+		}
+		enabled := jsonpath("daospool", "e2epool", ".status.enabledRanks")
+		return !strings.Contains(" "+strings.Trim(strings.ReplaceAll(enabled, ",", " "), "[]")+" ", fmt.Sprintf(" %d ", rank))
+	}
 	// reintegrateIfNeeded is the documented recovery once the engine is back: reintegrate the rank
-	// unless it rejoined on its own (kubectl daos waits for the result, daos-operator !14).
+	// unless it is back in the system and in the pool on its own (kubectl daos waits for the
+	// result, daos-operator !14), then wait for the pool to finish rebuilding.
 	reintegrateIfNeeded := func(rank int) {
 		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(10 * time.Minute).Should(Equal("True"))
 		time.Sleep(90 * time.Second)
-		if rankState(rank) != "joined" {
+		if rankState(rank) != "joined" || poolLacksRank(rank) {
 			out := run(envOr("KUBECTL_DAOS", "kubectl-daos"), "rank", "reintegrate", sysName,
 				fmt.Sprintf("--ranks=%d", rank), "--yes", "--wait=8m", "-n", ns)
 			Expect(out).To(ContainSubstring("done: "))
 		}
+		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(10*time.Minute).WithPolling(10*time.Second).Should(Equal("True"), "e2epool back to Ready after rank %d", rank)
 	}
 	nodes := strings.Split(envOr("E2E_STORAGE_NODES", "exaci5-3a,exaci5-3b,exaci5-4b"), ",")
 	victim := nodes[1] // not the client node, not necessarily the MS leader
