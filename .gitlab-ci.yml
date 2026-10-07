@@ -8,6 +8,17 @@
 # Do not add a job that silently skips when its prerequisites are missing.
 stages: [check, image, e2e, release]
 
+# A scheduled run (nightly Tier 2, ~2 h on lane A) is a pipeline on main like any push, so a merge
+# to main during it made it "redundant" and auto-cancel stopped every job not yet started
+# (2026-10-07 59846: only e2e-upgrade ran). Schedules are never canceled by a new commit;
+# everything else keeps the default.
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "schedule"
+      auto_cancel:
+        on_new_commit: none
+    - when: always
+
 default:
   image: python:3.12-slim
   tags: [Flexa]
