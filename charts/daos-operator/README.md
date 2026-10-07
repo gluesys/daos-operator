@@ -107,7 +107,7 @@ See `values.yaml`. The parts most installations touch:
 |---|---|
 | `system.spec.nodeSelector` | which nodes run DAOS servers |
 | `system.spec.engines[]` | targets, SCM size, fabric port, storage tiers |
-| `system.spec.engines[].bdevTiers[]` | split roles across devices, e.g. NVMe `[wal, meta]` + HDDs `[data]` |
+| `system.spec.engines[].bdevTiers[]` | split roles across devices, e.g. NVMe `[wal, meta]` + HDDs `[data]` with both tiers `class: kdev`. The tiers of one engine are all `nvme` or all emulated (`kdev`, `file`): DAOS 2.8 refuses an SPDK `nvme` tier next to a `kdev` one |
 | `system.spec.msReplicas` | management-service replicas (3 for a redundant MS) |
 | `csi.enabled` | the CSI driver and its StorageClasses |
 | `s3.services[]` | S3 gateways, one per pool |

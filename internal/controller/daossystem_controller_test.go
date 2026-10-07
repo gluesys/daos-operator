@@ -372,6 +372,49 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.count(start)).To(Equal(1+engineRestartMax), "three attempts for this outage, not three more after the pod came back")
 	})
 
+	It("is not Ready while an engine never registered, even if every registered rank joined (#37)", func() {
+		// mixed-2engine on the CI cluster (2026-10-05): engine 1 of each node died before it
+		// registered, so "3 ranks joined" of 3 registered read as Ready with half the engines gone
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		sys := getSys()
+		sys.Spec.Engines = append(sys.Spec.Engines, sys.Spec.Engines[0])
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.RanksJoined).To(Equal(sys.Status.RanksTotal), "every registered rank joined")
+		Expect(cond(sys, daosv1alpha1.ConditionEnginesReady).Reason).To(Equal("EnginesDown"))
+		c := cond(sys, daosv1alpha1.ConditionReady)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("EnginesDown"))
+		Expect(c.Message).To(ContainSubstring("see condition EnginesReady"))
+	})
+
+	It("refuses bdev tiers that mix real NVMe with emulated devices, which DAOS 2.8 rejects", func() {
+		// daos_server: storage: code = 309 "bdev tiers found with both emulated and non-emulated NVMe
+		// types specified" (src/control/server/storage/config.go). The tiers profile crash-looped on it.
+		bad := &daosv1alpha1.DaosSystem{ObjectMeta: metav1.ObjectMeta{Name: "t1-mixtiers"},
+			Spec: daosv1alpha1.DaosSystemSpec{Version: "2.8.0", Images: daosv1alpha1.ImagesSpec{Server: "s", Agent: "a", Admin: "d"},
+				Engines: []daosv1alpha1.EngineSpec{{Targets: 4, ScmSizeGiB: 4, BdevTiers: []daosv1alpha1.BdevTierSpec{
+					{Class: "nvme", Roles: []string{"wal", "meta"}},
+					{Class: "kdev", Roles: []string{"data"}, BdevList: []string{"/dev/sdb"}}}}}}}
+		err := k8sClient.Create(ctx, bad)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("cannot mix nvme with kdev or file"))
+		ok := bad.DeepCopy()
+		ok.ResourceVersion = ""
+		ok.Spec.Engines[0].BdevTiers[1] = daosv1alpha1.BdevTierSpec{Class: "nvme", Roles: []string{"data"}}
+		Expect(k8sClient.Create(ctx, ok)).To(Succeed(), "all-nvme tiers are fine")
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, ok) })
+		// NVMe in front of HDDs, both through the kernel: the shape that ran on da1~4 (2026-09-28)
+		hdd := bad.DeepCopy()
+		hdd.Name, hdd.ResourceVersion = "t1-kdevtiers", ""
+		hdd.Spec.Engines[0].BdevTiers[0] = daosv1alpha1.BdevTierSpec{Class: "kdev", Roles: []string{"wal", "meta"}, BdevList: []string{"/dev/nvme0n1"}}
+		Expect(k8sClient.Create(ctx, hdd)).To(Succeed(), "all-kdev tiers (NVMe and HDD through the kernel) are fine")
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, hdd) })
+	})
+
 	It("does not judge engines before the membership is known", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
 		reconcileWith(f)

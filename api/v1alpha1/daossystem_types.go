@@ -76,12 +76,17 @@ type EngineSpec struct {
 	BdevSizeGiB int32 `json:"bdevSizeGiB,omitempty"`
 	// PinnedNumaNode pins the engine; nil lets DAOS choose.
 	PinnedNumaNode *int32 `json:"pinnedNumaNode,omitempty"`
-	// BdevTiers describes the bdev stack when one tier cannot express it: the
-	// shape this hardware ships in is a small NVMe carrying [wal, meta] in
-	// front of HDDs carrying [data]. Empty keeps the single-tier behaviour
-	// (BdevClass/BdevList/BdevSizeGiB with roles [wal, meta, data]), which is
-	// what every DaosSystem written so far uses.
+	// BdevTiers describes the bdev stack when one tier cannot express it, e.g.
+	// one NVMe carrying [wal, meta] and another carrying [data]. Empty keeps the
+	// single-tier behaviour (BdevClass/BdevList/BdevSizeGiB with roles
+	// [wal, meta, data]), which is what every DaosSystem written so far uses.
+	// The tiers of one engine are all nvme or all emulated (kdev, file): DAOS 2.8
+	// refuses to start an engine that mixes them (storage code 309, "bdev tiers
+	// found with both emulated and non-emulated NVMe types"), so an SPDK nvme tier
+	// [wal, meta] in front of HDDs (kdev) [data] is not a shape it accepts. NVMe in
+	// front of HDDs works with both tiers kdev (the NVMe through the kernel, AIO).
 	// +kubebuilder:validation:MaxItems=3
+	// +kubebuilder:validation:XValidation:rule="!(self.exists(t, t.class == 'nvme') && self.exists(t, t.class != 'nvme'))",message="bdevTiers of one engine cannot mix nvme with kdev or file: DAOS 2.8 refuses that engine (storage code 309)"
 	BdevTiers []BdevTierSpec `json:"bdevTiers,omitempty"`
 }
 
@@ -90,6 +95,7 @@ type EngineSpec struct {
 type BdevTierSpec struct {
 	// Class is the DAOS storage class of this tier: nvme, kdev or file.
 	// +kubebuilder:validation:Enum=nvme;kdev;file
+	// +kubebuilder:validation:MaxLength=8
 	// +kubebuilder:default=nvme
 	Class string `json:"class,omitempty"`
 	// Roles are the DAOS bdev roles this tier carries.
@@ -339,7 +345,9 @@ type DaosSystemSpec struct {
 	// +kubebuilder:default=10001
 	ControlPort int32 `json:"controlPort,omitempty"`
 	// Engines per node; usually one per socket. Required unless
-	// ExternalMsReplicas is set (then the engines run elsewhere).
+	// ExternalMsReplicas is set (then the engines run elsewhere). At most 8: the
+	// bound also keeps the bdevTiers validation rule within the CEL cost budget.
+	// +kubebuilder:validation:MaxItems=8
 	Engines []EngineSpec `json:"engines,omitempty"`
 	// AllowInsecure disables TLS between dmg/agent and servers. Phase 0 only.
 	AllowInsecure bool             `json:"allowInsecure,omitempty"`
