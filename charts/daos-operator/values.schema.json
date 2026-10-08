@@ -286,7 +286,7 @@
           "type": "array"
         }
       },
-      "description": "vLLM serving with LMCache writing its KV cache to a DAOS container. This is a reference workload, not part of the storage layer: it is here so a GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md. The pod runs with hostNetwork because a DAOS client must be reachable at the address it advertises; a pod-network client behind the CNI's masquerade is not (that is also why spec.clientAgent must be enabled on the GPU nodes). rdma: true 는 DAOS 가 RDMA 프로바이더(ofi+verbs 등)일 때 필요하다. 클라이언트 파드가 /dev/infiniband 를 보지 못하면 libfabric verbs 초기화가 실패한다. RDMA device plugin 이 있는 클러스터라면 rdma 대신 rdmaResource 를 쓰는 편이 낫다. 플러그인이 필요한 verbs 장치만 주입하므로 /dev/infiniband hostPath 와 privileged 를 둘 다 뗄 수 있고(IPC_LOCK 만 남는다), 속도는 그대로다 — 400G RoCE 에서 64 MiB 왕복 쓰기 2777 MB/s · 읽기 12162 MB/s 실측. 둘 다 설정하면 rdmaResource 가 우선한다. rdmaResource: rdma/rdma_shared_device_a   # NVIDIA Network Operator 가 광고하는 이름 rdmaResourceCount: 1 아래 예시의 vllm-lmcache-daos 이미지는 사내 레지스트리 전용이다 — 10 GB 라 공개 미러를 두지 않는다. 빌드 레시피는 공개돼 있으니 직접 빌드해서 쓰면 된다: github.com/gluesys/daos-images 의 images/vllm-lmcache-daos/."
+      "description": "vLLM serving with LMCache writing its KV cache to a DAOS container. This is a reference workload, not part of the storage layer: it is here so a GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md. The pod runs with hostNetwork because a DAOS client must be reachable at the address it advertises; a pod-network client behind the CNI's masquerade is not (that is also why spec.clientAgent must be enabled on the GPU nodes). rdma: true is needed when DAOS runs on an RDMA provider (ofi+verbs and the like): without /dev/infiniband the client pod cannot initialise the libfabric verbs provider. On a cluster with an RDMA device plugin, prefer rdmaResource over rdma. The plugin injects only the verbs devices the pod asks for, which drops both the /dev/infiniband hostPath and privileged and leaves IPC_LOCK, at the same speed -- measured on 400G RoCE, 64 MiB round trip: 2777 MB/s write, 12162 MB/s read. If both are set, rdmaResource wins. rdmaResource: rdma/rdma_shared_device_a   # the name the NVIDIA Network Operator advertises rdmaResourceCount: 1 The vllm-lmcache-daos image in the example below lives in our internal registry only -- at 10 GB we do not mirror it publicly. The build recipe is public, so build your own: images/vllm-lmcache-daos/ in github.com/gluesys/daos-images."
     },
     "s3": {
       "type": "object",
@@ -296,7 +296,7 @@
           "type": "array"
         }
       },
-      "description": "S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry. The operator supplies --pool/--system, the daos_agent sidecar and the certificates; see doc/adr/ADR-004-s3-gateway.md. versitygw-daos 이미지는 사내 레지스트리 전용이다 — 소스가 공개되지 않은 fork 를 담고 있어 공개 미러를 두지 않는다. 빌드 레시피는 공개돼 있다: github.com/gluesys/daos-images 의 images/versitygw/."
+      "description": "S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry. The operator supplies --pool/--system, the daos_agent sidecar and the certificates; see doc/adr/ADR-004-s3-gateway.md. The versitygw-daos image lives in our internal registry only: it carries a fork whose source is not public, so we do not mirror it. The build recipe is public: images/versitygw/ in github.com/gluesys/daos-images."
     }
   }
 }

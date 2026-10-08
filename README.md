@@ -15,7 +15,7 @@ vLLM + LMCache workload uses a DAOS container as its KV cache.
 
 ```bash
 helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
-  --version 0.1.4 --namespace daos-system --create-namespace
+  --version 0.1.5 --namespace daos-system --create-namespace
 ```
 
 Images are public at `ghcr.io/gluesys/daos-{operator,csi,server,agent,admin,client}`.
@@ -87,7 +87,7 @@ operator, bring the operator back alone and then delete it:
 
 ```bash
 helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
-  --version 0.1.4 -n daos-system --set system.create=false
+  --version 0.1.5 -n daos-system --set system.create=false
 kubectl delete daossystem <name> --wait
 helm uninstall daos-operator -n daos-system
 ```

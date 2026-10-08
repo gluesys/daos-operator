@@ -43,7 +43,7 @@ operator drops the annotation after one attempt, whatever the outcome.
 ## Install
 
 ```bash
-helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.1.4 \
+helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.1.5 \
   --namespace daos-system --create-namespace
 ```
 
@@ -60,7 +60,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZahht5lUkAFpk1OvQtGEsU/ebjwr
 ```
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.1.4
+cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.1.5
 ```
 
 `values.schema.json` types the values the chart ships; Helm rejects a value of the wrong
