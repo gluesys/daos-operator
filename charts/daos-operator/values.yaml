@@ -125,10 +125,13 @@ csi:
 # 쓰기 2777 MB/s · 읽기 12162 MB/s 실측. 둘 다 설정하면 rdmaResource 가 우선한다.
 #   rdmaResource: rdma/rdma_shared_device_a   # NVIDIA Network Operator 가 광고하는 이름
 #   rdmaResourceCount: 1
+# 아래 예시의 vllm-lmcache-daos 이미지는 사내 레지스트리 전용이다 — 10 GB 라 공개
+# 미러를 두지 않는다. 빌드 레시피는 공개돼 있으니 직접 빌드해서 쓰면 된다:
+# github.com/gluesys/daos-images 의 images/vllm-lmcache-daos/.
 vllm:
   services: []
   #  - name: vllm-daos
-  #    image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20260927
+  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # 사내: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20260927
   #    # KV cache target: an existing DaosPool and DaosContainer (POSIX, chunk 4 MiB)
   #    poolRef: podpool
   #    containerRef: kvlmc
@@ -154,11 +157,15 @@ vllm:
 # S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry.
 # The operator supplies --pool/--system, the daos_agent sidecar and the certificates;
 # see doc/adr/ADR-004-s3-gateway.md.
+#
+# versitygw-daos 이미지는 사내 레지스트리 전용이다 — 소스가 공개되지 않은 fork 를
+# 담고 있어 공개 미러를 두지 않는다. 빌드 레시피는 공개돼 있다:
+# github.com/gluesys/daos-images 의 images/versitygw/.
 s3:
   services: []
   #  - name: s3
   #    poolRef: kv                    # an existing DaosPool
-  #    image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923-fix28   # not the plain tag: it crashes the DAOS 2.8 engine (#28)
+  #    image: <your-registry>/versitygw-daos:2.8.0-fix28   # 사내: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923-fix28 — plain 태그는 DAOS 2.8 엔진을 죽인다(#28)
   #    replicas: 1
   #    port: 7070
   #    region: kr-1
