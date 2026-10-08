@@ -36,8 +36,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/dmg"
 )
 
 func mkNode(ctx context.Context, name, ip string, ann map[string]string) {

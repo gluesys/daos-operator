@@ -24,7 +24,7 @@ import (
 	"testing"
 	"time"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 )
 
 func fakeNVMe(t *testing.T, root, pci, driver string, dsnHi, dsnLo uint32, blk string, part bool) {

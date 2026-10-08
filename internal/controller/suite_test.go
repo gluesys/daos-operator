@@ -33,7 +33,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 

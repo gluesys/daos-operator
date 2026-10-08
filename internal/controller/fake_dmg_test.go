@@ -22,7 +22,7 @@ import (
 	"strings"
 	"sync"
 
-	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/dmg"
 )
 
 // fakeDmg scripts dmg output per argument list ("system query -v", "storage format").

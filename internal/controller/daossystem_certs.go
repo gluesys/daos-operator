@@ -30,8 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/certs"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/certs"
 )
 
 // Transport certificates (#16). With spec.allowInsecure=false DAOS requires a

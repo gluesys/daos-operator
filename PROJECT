@@ -7,7 +7,7 @@ domain: gluesys.com
 layout:
 - go.kubebuilder.io/v4
 projectName: daos-operator
-repo: gitlab.gluesys.com/exastor/daos-operator
+repo: github.com/gluesys/daos-operator
 resources:
 - api:
     crdVersion: v1
@@ -16,7 +16,7 @@ resources:
   domain: gluesys.com
   group: daos
   kind: DaosSystem
-  path: gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1
+  path: github.com/gluesys/daos-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -25,7 +25,7 @@ resources:
   domain: gluesys.com
   group: daos
   kind: DaosPool
-  path: gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1
+  path: github.com/gluesys/daos-operator/api/v1alpha1
   version: v1alpha1
 - api:
     crdVersion: v1
@@ -34,6 +34,6 @@ resources:
   domain: gluesys.com
   group: daos
   kind: DaosContainer
-  path: gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1
+  path: github.com/gluesys/daos-operator/api/v1alpha1
   version: v1alpha1
 version: "3"

@@ -27,8 +27,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/render"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/render"
 )
 
 // reconcileExternal handles spec.externalMsReplicas: a DAOS system somebody

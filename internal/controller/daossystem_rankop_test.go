@@ -29,7 +29,7 @@ import (
 	"strings"
 	"testing"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 )
 
 // The gate exists to refuse a reintegrate that would only time out. It must not

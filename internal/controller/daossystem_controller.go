@@ -43,10 +43,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/discovery"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/render"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/discovery"
+	"github.com/gluesys/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/render"
 )
 
 // DaosSystemReconciler reconciles a DaosSystem object.

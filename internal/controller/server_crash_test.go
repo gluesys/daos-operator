@@ -4,7 +4,7 @@
 package controller
 
 import (
-	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/dmg"
 	"strings"
 	"testing"
 
