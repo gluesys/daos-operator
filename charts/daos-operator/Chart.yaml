@@ -4,7 +4,7 @@ apiVersion: v2
 name: daos-operator
 description: DAOS on Kubernetes - operator (DaosSystem/DaosPool/DaosContainer), host preparation, telemetry, Grafana dashboard
 type: application
-version: 0.1.4
+version: 0.1.5
 appVersion: "v0.1.0-rc.4"
 # native sidecars (initContainers[].restartPolicy) for the daos_agent in DaosContainer Jobs
 kubeVersion: ">=1.29.0-0"
