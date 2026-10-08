@@ -40,7 +40,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
-	"gitlab.gluesys.com/exastor/daos-operator/internal/hostprep"
+	"github.com/gluesys/daos-operator/internal/hostprep"
 )
 
 func main() {

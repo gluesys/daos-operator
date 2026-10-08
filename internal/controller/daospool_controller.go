@@ -41,8 +41,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
-	"gitlab.gluesys.com/exastor/daos-operator/internal/dmg"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/dmg"
 )
 
 // DaosPoolReconciler drives `dmg pool ...` through Jobs (#11).

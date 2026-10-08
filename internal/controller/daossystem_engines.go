@@ -24,7 +24,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 )
 
 // engineDownHint is where the cause of a dead engine is: daos_server keeps running and the

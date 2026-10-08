@@ -1,4 +1,4 @@
-module gitlab.gluesys.com/exastor/daos-operator
+module github.com/gluesys/daos-operator
 
 go 1.26.0
 

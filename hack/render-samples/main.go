@@ -29,7 +29,7 @@ import (
 
 	"k8s.io/utils/ptr"
 
-	"gitlab.gluesys.com/exastor/daos-operator/internal/render"
+	"github.com/gluesys/daos-operator/internal/render"
 )
 
 func main() {

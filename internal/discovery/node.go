@@ -27,7 +27,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
-	daosv1alpha1 "gitlab.gluesys.com/exastor/daos-operator/api/v1alpha1"
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 )
 
 // NodeFacts is what the operator knows about one node.
