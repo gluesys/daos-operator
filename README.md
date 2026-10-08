@@ -15,7 +15,7 @@ vLLM + LMCache workload uses a DAOS container as its KV cache.
 
 ```bash
 helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
-  --version 0.1.0 --namespace daos-system --create-namespace
+  --version 0.1.4 --namespace daos-system --create-namespace
 ```
 
 Images are public at `ghcr.io/gluesys/daos-{operator,csi,server,agent,admin,client}`.
@@ -39,6 +39,58 @@ Upgrading the release replaces the operator; it does not restart the engines. A 
 starts when you approve it with `kubectl daos system upgrade <system> [--image I] --yes`, after
 draining clients. The approval is consumed whatever happens, including when there
 is nothing to upgrade.
+
+## Uninstall
+
+**Delete the custom resources before the release, while the operator is still
+running to act on them.** The chart marks `DaosSystem` with
+`helm.sh/resource-policy: keep`, so `helm uninstall` on its own leaves the system
+and its server pods behind and takes away the operator that could clean them up.
+Everything the system owns — the server StatefulSet, the agent and `hostprep`
+DaemonSets, its ConfigMaps, Secrets and Services — is garbage-collected with it,
+so deleting the `DaosSystem` first is what actually stops the pods.
+
+```bash
+# 1. stop whatever is using the storage (workloads, PVCs)
+# 2. containers and pools, if you want the DAOS data gone
+kubectl annotate daoscontainer <name> daos.gluesys.com/destroy-approved=true
+kubectl delete daoscontainer <name> --wait
+kubectl annotate daospool <name> daos.gluesys.com/destroy-approved=true
+kubectl delete daospool <name> --wait
+# 3. the system, while the operator is still there
+kubectl delete daossystem <name> --wait
+# 4. the release
+helm uninstall daos-operator -n daos-system
+# 5. optional: Helm never removes crds/
+kubectl delete crd daossystems.daos.gluesys.com daospools.daos.gluesys.com \
+  daoscontainers.daos.gluesys.com s3services.daos.gluesys.com
+```
+
+What this does and does not remove:
+
+- **Deleting a `DaosSystem` does not touch the data.** The operator does no wipe
+  and no reformat on deletion; the DAOS data on the devices stays as it was.
+- **Deleting a `DaosPool` or `DaosContainer` does not destroy it either**, unless
+  you set `daos.gluesys.com/destroy-approved=true` first. Without the annotation
+  the DAOS object is kept, the Kubernetes object just forgets it, and the operator
+  emits `PoolOrphaned` / `ContainerOrphaned` telling you what to destroy by hand
+  if that is what you meant. Step 2 above is the destructive path — skip it to
+  keep the data for a later system.
+- **`hostprep` does not revert what it changed on the nodes.** It raises
+  `vm.nr_hugepages`, and with `hostPrep.bindNvme: true` it hands unused NVMe to
+  SPDK. Neither is undone by uninstalling. The default is `bindNvme: false`, so a
+  default install leaves only the raised hugepages. The node annotation
+  `daos.gluesys.com/hostprep-status` records what the last run did.
+
+If you already ran `helm uninstall` and are left with a `DaosSystem` and no
+operator, bring the operator back alone and then delete it:
+
+```bash
+helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
+  --version 0.1.4 -n daos-system --set system.create=false
+kubectl delete daossystem <name> --wait
+helm uninstall daos-operator -n daos-system
+```
 
 ## Custom resources
 
