@@ -172,6 +172,13 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		for _, k := range keys {
 			props = append(props, k+":"+pool.Spec.Properties[k])
 		}
+		// Without redundancy, DAOS's default reintegration (data_sync) discards the returning
+		// targets' data and rebuilds it from replicas that do not exist: a node reboot followed
+		// by the documented `rank reintegrate` loses everything that was on it (Tier 2,
+		// 2026-10-08/10, sha256sum EIO). incremental keeps that data. An explicit choice wins.
+		if _, set := pool.Spec.Properties["reintegration"]; rdFac == 0 && !set {
+			props = append(props, "reintegration:incremental")
+		}
 		// dmg parses sizes with humanize; plain bytes avoid Gi/GiB ambiguity
 		args := []string{"pool", "create", "-z", fmt.Sprintf("%dB", pool.Spec.Size.Value()), "-P", strings.Join(props, ",")}
 		if r := pool.Spec.MemRatioPercent; r != nil {
