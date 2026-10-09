@@ -314,7 +314,7 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		setC(metav1.ConditionUnknown, "ProbeFailed", err.Error())
 		return r.updateStatus(ctx, c, status, poolRequeueWait)
 	}
-	now := metav1.Now()
+	now := metav1.NewTime(res.QueriedAt(time.Now())) // when the query ran, not when it was read
 	status.UUID, status.PoolUUID, status.Health, status.Type, status.LastQueryTime = info.UUID, info.PoolUUID, info.Health, info.Type, &now
 	if h := aclHash(c.Spec.ACL); h != "" && h != status.AppliedACLHash {
 		if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); !(cond != nil && cond.Reason == "AclFailed" && status.ObservedGeneration == c.Generation) {

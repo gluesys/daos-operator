@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sort"
 	"strings"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -97,6 +98,18 @@ type Result struct {
 	Output string
 	// Failure describes a Job-level failure (deadline, unschedulable) when Output is empty.
 	Failure string
+	// Started is when the dmg container started, i.e. when the answer was taken; zero when unknown.
+	// The result is read on a later reconcile -- after an operator restart, minutes later -- so
+	// "now" at read time is not when the system looked like this.
+	Started time.Time
+}
+
+// QueriedAt is when the result describes the system: Started when known, else fallback.
+func (r *Result) QueriedAt(fallback time.Time) time.Time {
+	if r == nil || r.Started.IsZero() {
+		return fallback
+	}
+	return r.Started
 }
 
 // Runner runs dmg. The controller depends on this interface so tests can script outputs.
@@ -144,6 +157,7 @@ func (j *JobRunner) Run(ctx context.Context, s RunSpec) (*Result, error) {
 		for _, cs := range p.Status.ContainerStatuses {
 			if cs.Name == container && cs.State.Terminated != nil {
 				res.ExitCode = cs.State.Terminated.ExitCode
+				res.Started = cs.State.Terminated.StartedAt.Time
 			}
 		}
 		if j.Kube != nil {

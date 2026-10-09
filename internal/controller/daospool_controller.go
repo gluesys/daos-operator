@@ -285,7 +285,8 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		setC(metav1.ConditionUnknown, "ProbeFailed", err.Error())
 		return r.updateStatus(ctx, pool, status, poolRequeueWait)
 	}
-	now := metav1.Now()
+	// when dmg answered, not now: a result read after an operator restart is minutes old (2026-10-09)
+	now := metav1.NewTime(res.QueriedAt(time.Now()))
 	status.UUID, status.State, status.RebuildState, status.DisabledTargets = info.UUID, info.State, info.Rebuild.State, info.DisabledTargets
 	status.Label = poolLabel(pool)
 	status.TotalBytes, status.FreeBytes = info.Totals()
