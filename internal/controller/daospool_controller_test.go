@@ -225,7 +225,24 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
 		poolRec(f)
 		poolRec(f)
-		Expect(strings.Join(f.last("-dmg-create").Command, " ")).To(ContainSubstring("rd_fac:0"))
+		create := strings.Join(f.last("-dmg-create").Command, " ")
+		Expect(create).To(ContainSubstring("rd_fac:0"))
+		Expect(create).To(ContainSubstring("reintegration:incremental"),
+			"without redundancy the default data_sync reintegration discards the returning rank's data")
+	})
+
+	It("keeps an explicit reintegration property on a pool without redundancy", func() {
+		p := getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(0))
+		p.Spec.Properties = map[string]string{"reintegration": "data_sync"}
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		create := strings.Join(f.last("-dmg-create").Command, " ")
+		Expect(create).To(ContainSubstring("reintegration:data_sync"))
+		Expect(create).NotTo(ContainSubstring("incremental"))
 	})
 
 	It("passes spec.memRatioPercent to dmg so RAM stops being the ceiling on pool size (#29)", func() {

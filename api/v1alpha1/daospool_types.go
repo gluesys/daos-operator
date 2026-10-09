@@ -36,6 +36,8 @@ type DaosPoolSpec struct {
 	// RedundancyFactor is rd_fac. Unset means 2; 0 is valid and means "no
 	// redundancy", which is what a pool on a single fault domain needs. It is a
 	// pointer because with a default an omitted 0 would come back as the default.
+	// With 0 the pool is created with reintegration:incremental unless Properties
+	// sets reintegration: DAOS's default would discard a returning rank's data.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=4
 	RedundancyFactor *int32 `json:"redundancyFactor,omitempty"`
