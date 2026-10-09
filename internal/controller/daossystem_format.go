@@ -258,7 +258,7 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 		setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "ProbeFailed", err.Error())
 		return requeueSlow, nil
 	}
-	now := metav1.Now()
+	now := metav1.NewTime(res.QueriedAt(time.Now())) // when the query ran, not when it was read
 	status.Formatted, status.LastQueryTime = true, &now
 	status.Ranks = nil
 	joined, awaiting := 0, 0

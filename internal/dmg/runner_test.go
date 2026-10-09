@@ -21,6 +21,7 @@ import (
 	"context"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"testing"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -151,5 +152,41 @@ func TestJobPodsRequestCPU(t *testing.T) {
 	}
 	if got := job.Spec.Template.Spec.InitContainers[0].Resources.Requests[corev1.ResourceCPU]; got.String() != "1" {
 		t.Errorf("caller's sidecar CPU request overwritten: %s", got.String())
+	}
+}
+
+// A result is read on a later reconcile, possibly minutes after dmg answered (an operator
+// restart, 2026-10-09); Started carries when the container ran so callers can stamp that.
+func TestJobRunnerReportsWhenDmgRan(t *testing.T) {
+	ctx := context.Background()
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
+	started := metav1.NewTime(time.Date(2026, 10, 9, 14, 5, 39, 0, time.UTC))
+	job := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-p1-dmg-query", Namespace: "ns"},
+		Status:     batchv1.JobStatus{Conditions: []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pool-p1-dmg-query-x", Namespace: "ns", Labels: map[string]string{"job-name": "pool-p1-dmg-query"}},
+		Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  container,
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0, StartedAt: started}},
+		}}},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner, job, pod).WithStatusSubresource(job, pod).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+
+	res, err := r.Run(ctx, RunSpec{Owner: owner, Namespace: "ns", Name: "pool-p1-dmg-query"})
+	if err != nil || !res.Done {
+		t.Fatalf("finished job: %+v %v", res, err)
+	}
+	if !res.Started.Equal(started.Time) {
+		t.Errorf("Started = %v, want %v", res.Started, started.Time)
+	}
+	late := started.Add(2 * time.Minute)
+	if got := res.QueriedAt(late); !got.Equal(started.Time) {
+		t.Errorf("QueriedAt = %v, want the time dmg ran (%v), not the read time", got, started.Time)
+	}
+	if got := (&Result{}).QueriedAt(late); !got.Equal(late) {
+		t.Errorf("unknown start must fall back, got %v", got)
 	}
 }

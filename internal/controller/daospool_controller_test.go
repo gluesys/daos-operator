@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"strings"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -139,6 +140,15 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(p.Status.LastQueryTime).NotTo(BeNil())
 		Expect(res.RequeueAfter).To(Equal(poolRequeueIdle))
 		Expect(f.count("-dmg-create")).To(Equal(3), "create ran once (start + running poll + done poll)")
+
+		By("a result read late is stamped with when dmg answered, not when it was read")
+		// 2026-10-09: an operator restarted after a node reboot read a query Job that had run
+		// before the rank was excluded and stamped it "now"; the status looked fresh but was stale.
+		answered := time.Now().Add(-2 * time.Minute).Truncate(time.Second)
+		f.set("-dmg-query", &dmg.Result{Done: true, Output: dmgPoolQuery, Started: answered})
+		poolRec(f)
+		Expect(getPool().Status.LastQueryTime.Time.Equal(answered)).To(BeTrue(), "lastQueryTime %v, dmg answered %v", getPool().Status.LastQueryTime, answered)
+		p = getPool()
 
 		By("adding a rank -> dmg pool extend with only the missing rank")
 		p.Spec.Ranks = []int32{0, 1, 2}
