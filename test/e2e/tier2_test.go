@@ -52,19 +52,42 @@ var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, fun
 		enabled := jsonpath("daospool", "e2epool", ".status.enabledRanks")
 		return !strings.Contains(" "+strings.Trim(strings.ReplaceAll(enabled, ",", " "), "[]")+" ", fmt.Sprintf(" %d ", rank))
 	}
+	// poolQueriedAfter: the operator has queried e2epool after t, so the status read
+	// next describes the pool as it is now. The idle refresh is 60 s: the 2026-10-09 nightly read a
+	// status queried just before DAOS excluded the rebooted rank's targets, skipped the reintegrate,
+	// saw Ready=True, and failed a minute later on TargetsExcluded.
+	poolQueriedAfter := func(t time.Time) bool {
+		q, err := time.Parse(time.RFC3339, jsonpath("daospool", "e2epool", ".status.lastQueryTime"))
+		return err == nil && q.After(t)
+	}
+	waitPoolQueriedAfter := func(t time.Time) {
+		Eventually(func() bool { return poolQueriedAfter(t) }).WithTimeout(5*time.Minute).WithPolling(5*time.Second).
+			Should(BeTrue(), "e2epool queried after %s", t.Format(time.RFC3339))
+	}
+	poolReady := func() string {
+		return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`)
+	}
 	// reintegrateIfNeeded is the documented recovery once the engine is back: reintegrate the rank
 	// unless it is back in the system and in the pool on its own (kubectl daos waits for the
 	// result, daos-operator !14), then wait for the pool to finish rebuilding.
 	reintegrateIfNeeded := func(rank int) {
 		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(10 * time.Minute).Should(Equal("True"))
 		time.Sleep(90 * time.Second)
+		decided := time.Now()
+		waitPoolQueriedAfter(decided)
 		if rankState(rank) != "joined" || poolLacksRank(rank) {
 			out := run(envOr("KUBECTL_DAOS", "kubectl-daos"), "rank", "reintegrate", sysName,
 				fmt.Sprintf("--ranks=%d", rank), "--yes", "--wait=8m", "-n", ns)
 			Expect(out).To(ContainSubstring("done: "))
+			decided = time.Now()
 		}
-		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
-			WithTimeout(10*time.Minute).WithPolling(10*time.Second).Should(Equal("True"), "e2epool back to Ready after rank %d", rank)
+		// Ready only counts from a query made after the decision (or the reintegrate).
+		Eventually(func() string {
+			if !poolQueriedAfter(decided) {
+				return "stale"
+			}
+			return poolReady()
+		}).WithTimeout(10*time.Minute).WithPolling(10*time.Second).Should(Equal("True"), "e2epool back to Ready after rank %d", rank)
 	}
 	nodes := strings.Split(envOr("E2E_STORAGE_NODES", "exaci5-3a,exaci5-3b,exaci5-4b"), ",")
 	victim := nodes[1] // not the client node, not necessarily the MS leader
@@ -191,7 +214,9 @@ spec:
 		reintegrateIfNeeded(rank)
 		waitReadyStable(15 * time.Minute)
 		recordDuration("reboot back to healthy", time.Since(start))
-		Expect(jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`)).To(Equal("True"))
+		settled := time.Now()
+		waitPoolQueriedAfter(settled)
+		Expect(poolReady()).To(Equal("True"), "e2epool after the system held Ready")
 		checksumOK()
 	})
 	It("recovers after a storage node is drained and uncordoned", func() {
