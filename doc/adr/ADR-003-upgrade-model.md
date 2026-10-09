@@ -1,26 +1,42 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
-# ADR-003: 업그레이드 모델 — 3.0 이전에는 "전체 중단 업그레이드"를 1급 절차로
+# ADR-003: Upgrade model — before 3.0, treat the full-stop upgrade as the first-class procedure
 
-- 상태: **승인** (2026-09-29, kpkim)
-- 날짜: 2026-09-14 (승인 2026-09-29)
-- 승인 근거: 전체 중단 재기동(dmg system stop/start)과 노드 추가·rank 장애 복구를 데이터 무손실로 확인
+- Status: **accepted** (2026-09-29)
+- Date: 2026-09-14 (accepted 2026-09-29)
+- Evidence for acceptance: a full-stop restart (`dmg system stop` / `start`), adding a node, and
+  recovering a failed rank all completed without data loss
 
-## 배경
-DAOS 재단 공식 문구: "3.0 expects a communications protocol change which will not allow backward
-compatibility with older versions." 2.8 은 클라이언트 유지만 지원하고 서버는 일괄 업그레이드해야 한다.
-서버 롤링 업그레이드는 3.0 목표(tech preview). HPE K3000 의 CSC 도 같은 방식(전 서버 stop → upgrade → start)을 자동화했다.
+> This is the English record of the decision. The internal Korean original
+> (`ADR-003-upgrade-model.ko.md`) also carries commercial context that is not part
+> of the technical decision.
 
-## 결정
-- operator 는 `DaosSystem.spec.version` 변경 시 **전체 중단 업그레이드**를 정직하게 1급 절차로 수행한다:
-  클라이언트 드레인 확인 → `dmg system stop` → 이미지 태그 교체 → 순차 기동 → `dmg system start` → 검증.
-- 파괴적 단계(format, wipe)는 절대 포함하지 않는다. 승인 어노테이션 없이 버전 필드만 바뀌면 `Pending` 상태로 멈춘다.
-- 2.8→3.0 은 별도 마이그레이션 절차(데이터 export/import 또는 upstream 도구)로 다루며 Phase 4 에서 설계한다.
-- 첫 유료 배포는 3.0 이후로 잡거나, 2.8 계약서에 전면 재설치 업그레이드를 명시한다.
+## Context
 
-## 근거
-Lombardi DUG25 "Rolling Upgrade Preparation", 허브 문서 §1.3.
+From the DAOS Foundation: *"3.0 expects a communications protocol change which will not allow
+backward compatibility with older versions."* 2.8 supports keeping clients across an upgrade, but
+the servers have to move together. A rolling server upgrade is a 3.0 goal and a tech preview at
+that. HPE's K3000 CSC automates the same shape — stop every server, upgrade, start.
 
-## 재검토 조건
-3.0 에서 롤링 업그레이드가 GA 되면 `strategy: Rolling` 추가.
+Pretending otherwise would mean shipping a "rolling upgrade" that silently is not one.
+
+## Decision
+
+- When `DaosSystem.spec.version` changes, the operator performs a **full-stop upgrade**, and says so:
+  confirm clients are drained → `dmg system stop` → swap the image tag → start the servers in order →
+  `dmg system start` → verify.
+- **No destructive step is ever part of it.** No format, no wipe. If the version field changes
+  without the approval annotation, the system stops at `Pending` and waits.
+- 2.8 → 3.0 is *not* this procedure. It needs a separate migration (data export/import, or whatever
+  upstream tooling exists by then) and is designed in Phase 4.
+
+## Consequences and trade-offs
+
+The honest procedure is an outage, and it is visible as one. That is the point: an operator that
+reports `Pending` and waits for a human is easier to trust than one that reports success while the
+protocol underneath it changed.
+
+## Revisit when
+
+Rolling upgrade reaches GA in 3.0 — then add `strategy: Rolling`.

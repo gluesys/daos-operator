@@ -153,7 +153,9 @@ KV-cache workload failed outright: the fabric is not an implementation detail.
 - [`doc/deploy-gpu-k8s.md`](doc/deploy-gpu-k8s.md) — deploying the vLLM KV-cache
   path on common GPU setups, with the traps each one hides
 - [`doc/adr/`](doc/adr/) — the decisions behind the deployment, device-binding and
-  upgrade models, with the evidence that approved them *(Korean)*
+  upgrade models, with the evidence that approved them. ADR-001 and ADR-003 are in
+  English; the rest are Korean and [`doc/adr/README.md`](doc/adr/README.md) says
+  which is which
 - [`doc/testbed-*.md`](doc/) — what was run on real hardware and what broke *(Korean)*
 - [`doc/ci-design-2026-10-02.md`](doc/ci-design-2026-10-02.md) — the CI design: a six-VM
   cluster on ExaCI5 slots 3/4, snapshot-rollback resets, nvme/kdev/mixed profiles, tier

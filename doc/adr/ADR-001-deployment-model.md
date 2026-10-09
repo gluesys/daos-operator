@@ -1,29 +1,40 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 <!-- Copyright 2026 Gluesys Co., Ltd. -->
 
-# ADR-001: 배포 모델 — 전용 스토리지 노드 기본, GPU 노드 HCI는 옵션
+# ADR-001: Deployment model — dedicated storage nodes by default, GPU-node HCI as an option
 
-- 상태: **승인** (2026-09-29, kpkim)
-- 날짜: 2026-09-14 (승인 2026-09-29)
-- 승인 근거: 전용 스토리지 노드(da1~4) 4 rank + GPU 노드 클라이언트 구성이 실장비에서 동작 (doc/testbed-da-ib-verbs.md)
-- 결정자: 별동대(미정)
+- Status: **accepted** (2026-09-29)
+- Date: 2026-09-14 (accepted 2026-09-29)
+- Evidence for acceptance: four ranks on dedicated storage nodes (da1~4) with GPU-node clients
+  worked on real hardware (`doc/testbed-da-ib-verbs.md`)
 
-## 배경
-DAOS 엔진은 SSD당 target xstream 을 코어에 고정해 폴링하고, MD-on-SSD 메타데이터를 tmpfs 에 두며,
-SPDK/VFIO 로 NVMe 를 독점한다. GPU 노드에 상주시키면 DRAM(LMCache G2 계층과 경쟁)과 코어를 상시 점유하고,
-GPU 노드 재부팅마다 rank 제외/rebuild 가 발생한다. 총판 인센티브도 전용 노드 쪽에 있다(허브 문서 §2.2).
+> This is the English record of the decision. The internal Korean original
+> (`ADR-001-deployment-model.ko.md`) also carries commercial context that is not
+> part of the technical decision.
 
-## 결정
-- `DaosSystem` 의 기본 배치는 `nodeSelector` 로 지정한 **전용 스토리지 노드**(3노드 이상, MS 복제본 홀수).
-- GPU 노드 HCI 는 `spec.placement.mode: hyperconverged` 옵션으로만 제공하고, taint/toleration 과
-  memory/cpu request 를 강제한다. 문서에 "지원 범위 외 성능"으로 표기.
+## Context
 
-## 근거
-Mooncake 비교(허브 §1.4), DGX B200 자원 계산, 총판 채널 분석.
+A DAOS engine pins one target xstream per SSD to a core and polls it, keeps MD-on-SSD metadata in
+tmpfs, and takes NVMe exclusively through SPDK/VFIO. Put that on a GPU node and it holds DRAM — the
+same DRAM an LMCache G2 tier wants — and cores for as long as it runs. Worse, every GPU-node reboot
+becomes a rank exclusion and a rebuild, because the node is rebooted for reasons that have nothing
+to do with storage.
 
-## 결과와 트레이드오프
-- 최소 3노드 요구가 소규모 PoC 진입 장벽이 된다. Phase 0 은 MS 복제본 1개(비 HA)로 시험한다.
-- HCI 옵션은 유지하되 기본값이 아니므로 마케팅 문구와 일치시켜야 한다.
+## Decision
 
-## 재검토 조건
-8-GPU 실측에서 HCI 모드의 DRAM 점유가 10% 이하로 확인되면 기본값 재검토.
+- A `DaosSystem` is placed by default on **dedicated storage nodes** selected with `nodeSelector`:
+  three or more nodes, an odd number of management-service replicas.
+- GPU-node hyperconvergence is offered **only** through `spec.placement.mode: hyperconverged`, and
+  that path enforces taints/tolerations and memory/cpu requests. It is documented as performance
+  outside the supported envelope.
+
+## Consequences and trade-offs
+
+- The three-node minimum is a barrier for a small proof of concept. Phase 0 runs with a single
+  management-service replica (no HA) for that reason.
+- The HCI option stays, but it is not the default, so anything that describes the product has to say
+  the same thing.
+
+## Revisit when
+
+An eight-GPU measurement shows HCI mode holding 10% or less of node DRAM.
