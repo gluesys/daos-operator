@@ -516,7 +516,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		setPool("incremental", 0, ranAt.Add(-time.Minute))
 		rec()
 		Expect(f.count("-daos-heal")).To(BeZero())
-		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("queried after this container query"))
+		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("waiting for a pool status queried after " + ranAt.UTC().Format(time.RFC3339)))
 
 		By("incremental, whole, rebuilt, and queried after: clear the status")
 		setPool("incremental", 0, time.Now())
@@ -533,5 +533,70 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f.set("-daos-query", &dmg.Result{Done: true, Output: daosContQuery})
 		rec()
 		Expect(get().Status.Ready).To(BeTrue())
+	})
+
+	It("waits on the DER_RF query for a fresher pool status instead of querying again, for a bounded time", func() {
+		setPoolUUID()
+		setPool := func(queried time.Time) {
+			p := getPool()
+			p.Status.ReintegrationMode, p.Status.DisabledTargets = "incremental", 0
+			p.Status.State, p.Status.RebuildState = "Ready", "done"
+			t := metav1.NewTime(queried)
+			p.Status.LastQueryTime = &t
+			Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		}
+		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},
+			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, RedundancyFactor: ptr.To(int32(0))}}
+		Expect(k8sClient.Create(ctx, c)).To(Succeed())
+		DeferCleanup(func() { rfPendingClear(contKey(c)) })
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		rec := func() reconcile.Result {
+			r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: contNN})
+			Expect(err).NotTo(HaveOccurred())
+			return res
+		}
+		get := func() *daosv1alpha1.DaosContainer {
+			Expect(k8sClient.Get(ctx, contNN, c)).To(Succeed())
+			return c
+		}
+		rec() // finalizer
+
+		By("the pool was queried 1 s before the container query (CI lane A, 2026-10-10)")
+		ranAt := time.Now().Add(-20 * time.Second).Truncate(time.Second)
+		f.set("-daos-query", &dmg.Result{Done: true, ExitCode: 1, Output: daosContRFExceeded, Started: ranAt})
+		setPool(ranAt.Add(-time.Second))
+		Expect(rec().RequeueAfter).To(Equal(poolRequeueOp))
+		queries := f.count("-daos-query")
+		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("pool last queried " + ranAt.Add(-time.Second).UTC().Format(time.RFC3339)))
+
+		By("still stale: re-read the pool, no new container query")
+		rec()
+		Expect(f.count("-daos-query")).To(Equal(queries))
+		Expect(f.count("-daos-heal")).To(BeZero())
+
+		By("the next pool status counts against the remembered query and clears the container")
+		setPool(ranAt.Add(15 * time.Second))
+		rec()
+		Expect(f.count("-daos-query")).To(Equal(queries))
+		Expect(f.last("-daos-heal")).NotTo(BeNil())
+		Expect(get().Status.Operation).To(Equal(opHeal))
+		_, pending := rfPendingSince(contKey(c))
+		Expect(pending).To(BeFalse())
+
+		By("past rfPendingMax without a fresher pool status: give up and query again")
+		f.set("-daos-heal", &dmg.Result{Done: true, Output: `{"response": null, "error": null, "status": 0}`})
+		rec()
+		Expect(get().Status.Operation).To(BeEmpty())
+		old := time.Now().Add(-rfPendingMax - time.Minute).Truncate(time.Second)
+		rfPendingSet(contKey(c), old)
+		setPool(old.Add(-time.Second))
+		Expect(rec().RequeueAfter).To(Equal(poolRequeueWait))
+		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("querying the container again"))
+		_, pending = rfPendingSince(contKey(c))
+		Expect(pending).To(BeFalse())
+		queries = f.count("-daos-query")
+		rec()
+		Expect(f.count("-daos-query")).To(Equal(queries + 1))
 	})
 })

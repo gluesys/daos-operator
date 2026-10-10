@@ -136,9 +136,10 @@ spec:
 	})
 	// checksumOK waits for the DaosContainers first: every case that excludes a rank leaves an
 	// rd_fac 0 container at "failures exceed RF" until the operator clears it, and the drain case
-	// read EIO before that (2026-10-10).
+	// read EIO before that (2026-10-10). 8 min: the operator waits up to 3 min for a pool status
+	// newer than its DER_RF query, then queries again (rfPendingMax), ~4m40s in the worst case.
 	checksumOK := func() {
-		Eventually(containersReady).WithTimeout(5*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
+		Eventually(containersReady).WithTimeout(8*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
 			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools)")
 		out, err := kubectlE("exec", "e2e-t2-app", "--", "sha256sum", "-c", "/data/blob.sha256")
 		Expect(err).NotTo(HaveOccurred(), out)

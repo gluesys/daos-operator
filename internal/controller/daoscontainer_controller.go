@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -260,6 +261,7 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{Requeue: true}, r.Update(ctx, c)
 	}
 	if !c.DeletionTimestamp.IsZero() {
+		rfPendingClear(contKey(c))
 		return r.finalize(ctx, c, pool, sys, ns, status)
 	}
 	if pool.Status.UUID == "" {
@@ -270,6 +272,11 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.pollOp(ctx, c, pool, sys, ns, status)
 	}
 
+	// A DER_RF query still waiting for a fresher pool status is decided on that query: a new one
+	// would move the mark past the pool status again (see rfPending).
+	if queried, ok := rfPendingSince(contKey(c)); ok {
+		return r.rfExceeded(ctx, c, pool, sys, ns, status, queried)
+	}
 	if !r.DisableProbeHold {
 		if wait := holdFor(contKey(c)); wait > 0 {
 			return ctrl.Result{RequeueAfter: wait}, nil
@@ -351,6 +358,7 @@ func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha
 	ps := pool.Status
 	manual := fmt.Sprintf("daos cont set-prop %s %s --properties status:healthy", poolLabel(pool), contLabel(c))
 	why := ""
+	rfPendingClear(contKey(c)) // set again below only while the pool status is the one thing missing
 	switch {
 	case ps.ReintegrationMode != "incremental":
 		why = fmt.Sprintf("pool reintegration mode is %q, not incremental: a reintegrate may have discarded data", ps.ReintegrationMode)
@@ -359,18 +367,62 @@ func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha
 	case ps.RebuildState != "done" && ps.RebuildState != "idle":
 		why = "pool rebuild is " + ps.RebuildState
 	case ps.LastQueryTime == nil || ps.LastQueryTime.Time.Before(queried):
-		why = "waiting for a pool status queried after this container query"
+		last := "never"
+		if ps.LastQueryTime != nil {
+			last = ps.LastQueryTime.UTC().Format(time.RFC3339)
+		}
+		at := queried.UTC().Format(time.RFC3339)
+		if time.Since(queried) < rfPendingMax {
+			rfPendingSet(contKey(c), queried)
+			why = fmt.Sprintf("waiting for a pool status queried after %s (pool last queried %s)", at, last)
+			break
+		}
+		why = fmt.Sprintf("no pool status queried after %s within %s (pool last queried %s); querying the container again", at, rfPendingMax, last)
 	}
 	if why != "" {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: "FailuresExceedRF", Message: "DAOS refuses to open the container (DER_RF, failures exceed its redundancy factor); " + why +
 				". Once the ranks are back and the data is known to be intact: " + manual, ObservedGeneration: c.Generation})
 		status.Ready = false
+		if _, ok := rfPendingSince(contKey(c)); ok {
+			return r.updateStatus(ctx, c, status, poolRequeueOp)
+		}
 		return r.updateStatus(ctx, c, status, poolRequeueWait)
 	}
 	r.event(c, corev1.EventTypeWarning, "ContainerUnclean", "DAOS reports failures exceed RF; pool "+poolLabel(pool)+
 		" is whole again (incremental reintegration, 0 disabled targets, rebuild "+ps.RebuildState+"), clearing the container status")
 	return r.startOp(ctx, c, pool, sys, ns, status, opHeal)
+}
+
+// rfPending holds, per container, the time of a DER_RF query that waits only for a pool status
+// queried after it. Container and pool probes both run about every 35 s; when each wait started
+// a new container query, the mark moved past the pool status every time and the container was
+// never cleared (CI lane A, 2026-10-10: pool queried 1-4 s before each container query). The
+// wait re-reads the DaosPool every poolRequeueOp and gives up after rfPendingMax.
+var (
+	rfMu      sync.Mutex
+	rfPending = map[string]time.Time{}
+)
+
+const rfPendingMax = 3 * time.Minute
+
+func rfPendingSince(key string) (time.Time, bool) {
+	rfMu.Lock()
+	defer rfMu.Unlock()
+	t, ok := rfPending[key]
+	return t, ok
+}
+
+func rfPendingSet(key string, t time.Time) {
+	rfMu.Lock()
+	rfPending[key] = t
+	rfMu.Unlock()
+}
+
+func rfPendingClear(key string) {
+	rfMu.Lock()
+	delete(rfPending, key)
+	rfMu.Unlock()
 }
 
 func (r *DaosContainerReconciler) startOp(ctx context.Context, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerStatus, op string) (ctrl.Result, error) {
