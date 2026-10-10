@@ -248,3 +248,17 @@ func TestRankOpBothShapes(t *testing.T) {
 		t.Fatalf("empty response: %+v %v", r, err)
 	}
 }
+
+func TestRFExceeded(t *testing.T) {
+	unclean := "2026/10/10 00:17:16 exaci5-4a DAOS[90/90/0] dfs  ERR  src/client/dfs/common.c:886 open_sb() Failed to fetch SB info, DER_RF(-2031): 'Failures exceed RF'\n" +
+		`{"response": null, "error": "failed to query container c1: failed to mount container: errno 5 (Input/output error)", "status": -1}`
+	if !RFExceeded(unclean) {
+		t.Error("DER_RF on stderr must be recognised")
+	}
+	if RFExceeded(`{"response": null, "error": "failed to open container: DER_NONEXIST(-1005): The specified entity does not exist", "status": -1005}`) {
+		t.Error("a missing container is not an RF failure")
+	}
+	if RFExceeded(`{"response": null, "error": "failed to mount container: errno 5 (Input/output error)", "status": -1}`) {
+		t.Error("errno 5 alone is not enough to call it DER_RF")
+	}
+}

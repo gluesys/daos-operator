@@ -127,6 +127,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(p.Status.UUID).To(Equal("8a9ca36d-495a-4d50-a0d2-f111b80d5d9d"))
 		Expect(p.Status.EnabledRanks).To(Equal([]int32{0, 1}))
 		Expect(p.Status.AppliedACLHash).To(Equal(aclHash(p.Spec.ACL)))
+		Expect(p.Status.ReintegrationMode).To(Equal("data_sync"), "rd_fac 2 keeps DAOS's default and says so")
 
 		By("query mirrors state, sizes, rebuild and ranks")
 		f.set("-dmg-query", &dmg.Result{Done: true, Output: dmgPoolQuery})
@@ -468,5 +469,69 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		rec()
 		Expect(f.count("-daos-destroy")).To(BeZero())
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, contNN, &daosv1alpha1.DaosContainer{}))).To(BeTrue())
+	})
+
+	It("clears a container stuck at failures-exceed-RF only when the pool is whole and was reintegrated incrementally", func() {
+		setPoolUUID()
+		setPool := func(mode string, disabled int32, queried time.Time) {
+			p := getPool()
+			p.Status.ReintegrationMode, p.Status.DisabledTargets = mode, disabled
+			p.Status.State, p.Status.RebuildState = "Ready", "done"
+			t := metav1.NewTime(queried)
+			p.Status.LastQueryTime = &t
+			Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		}
+		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},
+			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, RedundancyFactor: ptr.To(int32(0))}}
+		Expect(k8sClient.Create(ctx, c)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		rec := func() {
+			r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: contNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		get := func() *daosv1alpha1.DaosContainer {
+			Expect(k8sClient.Get(ctx, contNN, c)).To(Succeed())
+			return c
+		}
+		rec() // finalizer
+		ranAt := time.Now().Add(-time.Minute).Truncate(time.Second)
+		f.set("-daos-query", &dmg.Result{Done: true, ExitCode: 1, Output: daosContRFExceeded, Started: ranAt})
+
+		By("a data_sync pool may have dropped the data on reintegration: report, do not clear")
+		setPool("data_sync", 0, time.Now())
+		rec()
+		Expect(f.count("-daos-heal")).To(BeZero())
+		cond := ready(get().Status.Conditions)
+		Expect(cond.Reason).To(Equal("FailuresExceedRF"))
+		Expect(cond.Message).To(And(ContainSubstring("data_sync"), ContainSubstring("daos cont set-prop p1 c1 --properties status:healthy")))
+
+		By("an incremental pool still missing targets: wait")
+		setPool("incremental", 4, time.Now())
+		rec()
+		Expect(f.count("-daos-heal")).To(BeZero())
+		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("4 disabled target(s)"))
+
+		By("a pool status older than the container query does not count")
+		setPool("incremental", 0, ranAt.Add(-time.Minute))
+		rec()
+		Expect(f.count("-daos-heal")).To(BeZero())
+		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("queried after this container query"))
+
+		By("incremental, whole, rebuilt, and queried after: clear the status")
+		setPool("incremental", 0, time.Now())
+		rec()
+		h := f.last("-daos-heal")
+		Expect(h).NotTo(BeNil())
+		Expect(h.Command[2]).To(HaveSuffix("exec daos -j -G 'daos_server' 'cont' 'set-prop' 'p1' 'c1' '--properties' 'status:healthy'"))
+		Expect(get().Status.Operation).To(Equal(opHeal))
+
+		By("set-prop done -> refresh; a healthy query makes it Ready again")
+		f.set("-daos-heal", &dmg.Result{Done: true, Output: `{"response": null, "error": null, "status": 0}`})
+		rec()
+		Expect(get().Status.Operation).To(BeEmpty())
+		f.set("-daos-query", &dmg.Result{Done: true, Output: daosContQuery})
+		rec()
+		Expect(get().Status.Ready).To(BeTrue())
 	})
 })

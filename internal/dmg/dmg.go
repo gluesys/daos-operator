@@ -440,6 +440,15 @@ func Classify(msg string) ErrorKind {
 	}
 }
 
+// RFExceeded reports a container that DAOS refuses to open because more of its fault
+// domains failed than its redundancy factor allows (DER_RF, health UNCLEAN). The JSON
+// error only says "errno 5 (Input/output error)"; the client's ERR log line on stderr,
+// which is part of the Job output, names DER_RF.
+func RFExceeded(output string) bool {
+	m := strings.ToLower(output)
+	return strings.Contains(m, "der_rf(") || strings.Contains(m, "failures exceed rf")
+}
+
 // Member is one row of `dmg -j system query -v`.
 type Member struct {
 	Rank        int32  `json:"rank"`

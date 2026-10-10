@@ -87,6 +87,11 @@ type DaosPoolStatus struct {
 	// AppliedACLHash identifies the spec.acl last written with overwrite-acl.
 	AppliedACLHash string       `json:"appliedACLHash,omitempty"`
 	LastQueryTime  *metav1.Time `json:"lastQueryTime,omitempty"`
+	// ReintegrationMode is the reintegration property this operator created the
+	// pool with (data_sync, incremental, no_data_sync); empty when unknown (a pool
+	// created by an older operator or adopted). Containers are only cleared of
+	// "Failures exceed RF" automatically on incremental pools.
+	ReintegrationMode string `json:"reintegrationMode,omitempty"`
 	// DestroyAttempts counts failed dmg pool destroy runs since the DaosPool was
 	// deleted; after a few the condition turns DestroyStalled (#36).
 	DestroyAttempts int32 `json:"destroyAttempts,omitempty"`

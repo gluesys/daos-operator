@@ -207,6 +207,8 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 		spec.Command = clientCommand(systemName(sys), c.Spec.ACL, "cont", "overwrite-acl", pl, cl, "--acl-file", aclFilePath)
 	case opDestroy:
 		spec.Command = clientCommand(systemName(sys), nil, "cont", "destroy", pl, cl)
+	case opHeal:
+		spec.Command = clientCommand(systemName(sys), nil, "cont", "set-prop", pl, cl, "--properties", "status:healthy")
 	}
 	return spec
 }
@@ -286,6 +288,9 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !r.DisableProbeHold {
 		setHold(contKey(c), poolRequeueWait)
 	}
+	if dmg.RFExceeded(res.Output) {
+		return r.rfExceeded(ctx, c, pool, sys, ns, status, res.QueriedAt(time.Now()))
+	}
 	env, perr := parseResult(res)
 	if perr != nil {
 		setC(metav1.ConditionUnknown, "ProbeFailed", perr.Error())
@@ -328,6 +333,44 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 	log.Info("container", "name", c.Name, "namespace", c.Namespace, "health", info.Health)
 	return r.updateStatus(ctx, c, status, poolRequeueIdle)
+}
+
+// rfExceeded handles a container DAOS refuses to open with DER_RF ("Failures exceed RF",
+// health UNCLEAN). DAOS marks it so while more of its fault domains are out than its rd_fac
+// allows -- with rd_fac 0, any rank exclusion, e.g. a node reboot -- and in DAOS 2.8 it can
+// stay so after the ranks are reintegrated and the pool is whole again: on CI lane A
+// (2026-10-10) the pool had 0 disabled targets for 4.5 h while every open, dfuse included,
+// still failed, and `set-prop status:healthy` brought back data that checksummed OK.
+//
+// The operator clears it only when it can tell no data was dropped on the way back: the pool
+// was created with reintegration incremental (data_sync discards the returning targets'
+// data), every target is back, rebuild is finished, and that pool status was queried after
+// this container query ran -- an older status describes the pool as it was before. Anything
+// else is left to a human, with the command in the condition.
+func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerStatus, queried time.Time) (ctrl.Result, error) {
+	ps := pool.Status
+	manual := fmt.Sprintf("daos cont set-prop %s %s --properties status:healthy", poolLabel(pool), contLabel(c))
+	why := ""
+	switch {
+	case ps.ReintegrationMode != "incremental":
+		why = fmt.Sprintf("pool reintegration mode is %q, not incremental: a reintegrate may have discarded data", ps.ReintegrationMode)
+	case ps.DisabledTargets != 0 || ps.State != "Ready":
+		why = fmt.Sprintf("pool is %s with %d disabled target(s)", ps.State, ps.DisabledTargets)
+	case ps.RebuildState != "done" && ps.RebuildState != "idle":
+		why = "pool rebuild is " + ps.RebuildState
+	case ps.LastQueryTime == nil || ps.LastQueryTime.Time.Before(queried):
+		why = "waiting for a pool status queried after this container query"
+	}
+	if why != "" {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
+			Reason: "FailuresExceedRF", Message: "DAOS refuses to open the container (DER_RF, failures exceed its redundancy factor); " + why +
+				". Once the ranks are back and the data is known to be intact: " + manual, ObservedGeneration: c.Generation})
+		status.Ready = false
+		return r.updateStatus(ctx, c, status, poolRequeueWait)
+	}
+	r.event(c, corev1.EventTypeWarning, "ContainerUnclean", "DAOS reports failures exceed RF; pool "+poolLabel(pool)+
+		" is whole again (incremental reintegration, 0 disabled targets, rebuild "+ps.RebuildState+"), clearing the container status")
+	return r.startOp(ctx, c, pool, sys, ns, status, opHeal)
 }
 
 func (r *DaosContainerReconciler) startOp(ctx context.Context, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerStatus, op string) (ctrl.Result, error) {
@@ -377,6 +420,8 @@ func (r *DaosContainerReconciler) pollOp(ctx context.Context, c *daosv1alpha1.Da
 	case opACL:
 		status.AppliedACLHash = aclHash(c.Spec.ACL)
 		r.event(c, corev1.EventTypeNormal, "ContainerACLApplied", "ACL overwritten from spec.acl")
+	case opHeal:
+		r.event(c, corev1.EventTypeNormal, "ContainerHealthRestored", "container status set to healthy after the pool was reintegrated")
 	}
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "daos cont " + op + " succeeded; refreshing", ObservedGeneration: c.Generation})
 	clearHold(contKey(c))

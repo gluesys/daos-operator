@@ -115,9 +115,13 @@ const (
 	dmgPoolQuery    = `{"response": {"state": "Ready", "uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "total_targets": 2, "active_targets": 2, "disabled_targets": 0,
 	  "rebuild": {"status": 0, "state": "idle"}, "tier_stats": [{"total": 486539264, "free": 443035176, "media_type": "scm"}, {"total": 7520000000, "free": 7456817152, "media_type": "nvme"}],
 	  "enabled_ranks": "[0-1]", "disabled_ranks": []}, "error": null, "status": 0}`
-	dmgPoolCreate    = `{"response": {"uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "svc_ldr": 0, "svc_reps": [0], "tgt_ranks": [0, 1], "tier_bytes": [644245094, 10093475840]}, "error": null, "status": 0}`
-	dmgPoolTooSmall  = `{"response": null, "error": "pool create failed: server: code = 605 description = \"requested NVMe capacity too small (min 1.0 GiB per target)\"", "status": -1025}`
-	dmgOK            = `{"response": null, "error": null, "status": 0}`
+	dmgPoolCreate   = `{"response": {"uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "svc_ldr": 0, "svc_reps": [0], "tgt_ranks": [0, 1], "tier_bytes": [644245094, 10093475840]}, "error": null, "status": 0}`
+	dmgPoolTooSmall = `{"response": null, "error": "pool create failed: server: code = 605 description = \"requested NVMe capacity too small (min 1.0 GiB per target)\"", "status": -1025}`
+	dmgOK           = `{"response": null, "error": null, "status": 0}`
+	// daos -j cont query on an UNCLEAN container (CI lane A, 2026-10-10): the JSON only says errno 5,
+	// the client's ERR line on stderr names DER_RF.
+	daosContRFExceeded = `2026/10/10 00:17:16.613680 exaci5-4a DAOS[90/90/0] dfs  ERR  src/client/dfs/common.c:886 open_sb() Failed to fetch SB info, DER_RF(-2031): 'Failures exceed RF'
+{"response": null, "error": "failed to query container c1: failed to query DFS attributes: failed to mount container: errno 5 (Input/output error)", "status": -1}`
 	daosContNotFound = `{"response": null, "error": "failed to open container: DER_NONEXIST(-1005): The specified entity does not exist", "status": -1005}`
 	daosContQuery    = `{"response": {"pool_uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "container_uuid": "e4d6c5b3-efd6-4891-9526-3a263925212d", "container_label": "c1",
 	  "redundancy_factor": 1, "container_type": "POSIX", "health": "HEALTHY", "chunk_size": 4194304, "dir_object_class": "RP_2G1", "file_object_class": "RP_2GX"}, "error": null, "status": 0}`
