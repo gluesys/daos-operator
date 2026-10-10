@@ -40,7 +40,7 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 			args = append(args, "-f", profiles(overlay))
 		}
 		if s := os.Getenv("E2E_SET"); s != "" {
-			args = append(args, "--set", s)
+			args = append(args, "--set-string", s)
 		}
 		run("helm", args...)
 		run("kubectl", "-n", ns, "rollout", "status", "deploy/"+release, "--timeout=5m")

@@ -79,7 +79,7 @@ spec:
 		run("kubectl", "apply", "--server-side", "--force-conflicts", "-f", filepath.Join(repoRoot, "charts", "daos-operator", "crds"))
 		args := []string{"upgrade", release, filepath.Join(repoRoot, "charts", "daos-operator"), "-n", ns, "-f", toValues}
 		if s := os.Getenv("E2E_SET"); s != "" {
-			args = append(args, "--set", s)
+			args = append(args, "--set-string", s)
 		}
 		run("helm", args...)
 		run("kubectl", "-n", ns, "rollout", "status", "deploy/"+release, "--timeout=5m")
