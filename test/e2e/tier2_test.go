@@ -134,7 +134,12 @@ spec:
 			return err
 		}).WithTimeout(2 * time.Minute).Should(Succeed())
 	})
+	// checksumOK waits for the DaosContainers first: every case that excludes a rank leaves an
+	// rd_fac 0 container at "failures exceed RF" until the operator clears it, and the drain case
+	// read EIO before that (2026-10-10).
 	checksumOK := func() {
+		Eventually(containersReady).WithTimeout(5*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
+			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools)")
 		out, err := kubectlE("exec", "e2e-t2-app", "--", "sha256sum", "-c", "/data/blob.sha256")
 		Expect(err).NotTo(HaveOccurred(), out)
 		Expect(out).To(ContainSubstring("OK"))
@@ -230,10 +235,8 @@ spec:
 		settled := time.Now()
 		waitPoolQueriedAfter(settled)
 		Expect(poolReady()).To(Equal("True"), "e2epool after the system held Ready")
-		Eventually(containersReady).WithTimeout(5*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
-			"DaosContainers Ready again after the reboot (the operator clears failures-exceed-RF on incremental pools)")
-		recordDuration("reboot to container Ready", time.Since(start))
 		checksumOK()
+		recordDuration("reboot to container Ready", time.Since(start))
 	})
 	It("recovers after a storage node is drained and uncordoned", func() {
 		rank := rankOn(victim)
