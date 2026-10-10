@@ -110,6 +110,43 @@ Two rules the operator does not break:
   state is the DAOS management service. The operator only compares the two and
   reports what it sees.
 
+### A pool with no redundancy stops serving when a rank leaves
+
+`redundancyFactor: 0` is a valid choice — it is what a pool on a single fault
+domain needs — but it has a consequence that is easy to meet by accident and
+hard to read when you do.
+
+**When a rank leaves (a node reboot, a drain, an engine failure), every
+container in that pool becomes UNCLEAN and refuses to open**: `DER_RF`, *failures
+exceed RF*. A dfuse mount of it returns `EIO` for everything. **DAOS 2.8 does not
+clear that state on its own, even after the rank is reintegrated and the pool is
+whole again.**
+
+The data is still there. What is lost is permission to open it.
+
+- **Pools the operator created with incremental reintegration** (the default at
+  `redundancyFactor: 0`) are cleared automatically once reintegration and
+  rebuild finish. Watch for the `ContainerUnclean` and `ContainerHealthRestored`
+  events.
+- **Any other pool** stops with `Ready=False` and reason `FailuresExceedRF`, and
+  the status message carries the command. Check the data first, then clear it by
+  hand:
+
+  ```bash
+  daos cont set-prop <pool> <cont> --properties status:healthy
+  ```
+
+  Pools created before this behaviour existed still use DAOS 2.8's default
+  `data_sync` reintegration. `dmg pool set-prop <pool> reintegration:incremental`
+  switches one over; it does not touch data and takes effect at the next
+  reintegration.
+
+> **Upgrading:** this relies on a `status` field that Helm will not add to an
+> existing install, because Helm never upgrades `crds/`. Apply the CRDs first
+> (see [Upgrade](#upgrade)) or the automatic clearing silently does not happen —
+> the containers simply sit at `FailuresExceedRF` and wait for the manual
+> command.
+
 ## Requirements
 
 - Kubernetes 1.29+ (native sidecars)
