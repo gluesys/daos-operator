@@ -64,6 +64,19 @@ var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, fun
 		Eventually(func() bool { return poolQueriedAfter(t) }).WithTimeout(5*time.Minute).WithPolling(5*time.Second).
 			Should(BeTrue(), "e2epool queried after %s", t.Format(time.RFC3339))
 	}
+	// containersReady: every DaosContainer reports Ready. With rd_fac 0 a rank exclusion leaves
+	// the container at "failures exceed RF" until the operator clears it (incremental pools only),
+	// and until then dfuse returns EIO on the whole mount (2026-10-10).
+	containersReady := func() bool {
+		out := kubectl("get", "daoscontainer", "-n", ns, "-o", `jsonpath={range .items[*]}{.status.conditions[?(@.type=="Ready")].status}{" "}{end}`)
+		f := strings.Fields(out)
+		for _, s := range f {
+			if s != "True" {
+				return false
+			}
+		}
+		return len(f) > 0
+	}
 	poolReady := func() string {
 		return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`)
 	}
@@ -217,6 +230,9 @@ spec:
 		settled := time.Now()
 		waitPoolQueriedAfter(settled)
 		Expect(poolReady()).To(Equal("True"), "e2epool after the system held Ready")
+		Eventually(containersReady).WithTimeout(5*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
+			"DaosContainers Ready again after the reboot (the operator clears failures-exceed-RF on incremental pools)")
+		recordDuration("reboot to container Ready", time.Since(start))
 		checksumOK()
 	})
 	It("recovers after a storage node is drained and uncordoned", func() {

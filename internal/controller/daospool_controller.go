@@ -81,6 +81,7 @@ const (
 	opExtend  = "extend"
 	opACL     = "acl"
 	opDestroy = "destroy"
+	opHeal    = "heal" // daos cont set-prop status:healthy
 )
 
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools,verbs=get;list;watch;create;update;patch;delete
@@ -172,11 +173,7 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		for _, k := range keys {
 			props = append(props, k+":"+pool.Spec.Properties[k])
 		}
-		// Without redundancy, DAOS's default reintegration (data_sync) discards the returning
-		// targets' data and rebuilds it from replicas that do not exist: a node reboot followed
-		// by the documented `rank reintegrate` loses everything that was on it (Tier 2,
-		// 2026-10-08/10, sha256sum EIO). incremental keeps that data. An explicit choice wins.
-		if _, set := pool.Spec.Properties["reintegration"]; rdFac == 0 && !set {
+		if _, set := pool.Spec.Properties["reintegration"]; !set && reintegrationMode(pool) == "incremental" {
 			props = append(props, "reintegration:incremental")
 		}
 		// dmg parses sizes with humanize; plain bytes avoid Gi/GiB ambiguity
@@ -408,6 +405,21 @@ func humanBytes(b int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+// reintegrationMode is the reintegration property a pool is created with. Without
+// redundancy, DAOS's default (data_sync) discards the returning targets' data and rebuilds
+// it from replicas that do not exist: a node reboot followed by the documented `rank
+// reintegrate` would lose everything that was on it. incremental keeps that data. An
+// explicit spec.properties.reintegration wins.
+func reintegrationMode(pool *daosv1alpha1.DaosPool) string {
+	if m, set := pool.Spec.Properties["reintegration"]; set {
+		return m
+	}
+	if pool.Spec.RedundancyFactor != nil && *pool.Spec.RedundancyFactor == 0 {
+		return "incremental"
+	}
+	return "data_sync"
+}
+
 func parseResult(res *dmg.Result) (*dmg.Envelope, error) {
 	if res.Failure != "" && res.Output == "" {
 		return nil, fmt.Errorf("job failed: %s", res.Failure)
@@ -459,6 +471,7 @@ func (r *DaosPoolReconciler) pollOp(ctx context.Context, pool *daosv1alpha1.Daos
 			return failed(err.Error())
 		}
 		status.UUID, status.Label, status.EnabledRanks = uuid, poolLabel(pool), ranks
+		status.ReintegrationMode = reintegrationMode(pool)
 		status.AppliedACLHash = aclHash(pool.Spec.ACL) // create wrote the ACL file
 		r.event(pool, corev1.EventTypeNormal, "PoolCreated", "pool "+poolLabel(pool)+" created, uuid "+uuid)
 	case opACL:

@@ -9,7 +9,8 @@
 //
 //	E2E_PROFILE   profile name (default nvme-1rank)
 //	E2E_RESET=1   run hack/ci/rollback.sh first (CI cluster only)
-//	E2E_SET       extra helm --set values, comma separated (CI image tags)
+//	E2E_SET       extra helm --set-string values, comma separated (CI image tags; a short SHA
+//	              can be all digits, which --set would turn into a number)
 //	E2E_UPGRADE_FROM  git tag of the release to upgrade from; run with -ginkgo.label-filter=upgrade
 //	E2E_NO_INSTALL=1  skip the suite install; run with -ginkgo.label-filter=regression
 package e2e
@@ -71,7 +72,7 @@ func installChart() {
 	args := []string{"upgrade", "--install", release, filepath.Join(repoRoot, "charts", "daos-operator"),
 		"-n", ns, "--create-namespace", "-f", profile}
 	if s := os.Getenv("E2E_SET"); s != "" {
-		args = append(args, "--set", s)
+		args = append(args, "--set-string", s)
 	}
 	// No --wait: helm 4 also waits for custom resources, and the DaosSystem cannot become
 	// ready before the suite approves the format below.
