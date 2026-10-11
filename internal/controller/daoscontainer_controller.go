@@ -378,6 +378,7 @@ func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha
 			break
 		}
 		why = fmt.Sprintf("no pool status queried after %s within %s (pool last queried %s); querying the container again", at, rfPendingMax, last)
+		r.event(c, corev1.EventTypeWarning, "RFPendingDeadlineExceeded", fmt.Sprintf("no pool status queried after the DER_RF query at %s within %s (pool last queried %s); querying the container again", at, rfPendingMax, last))
 	}
 	if why != "" {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
