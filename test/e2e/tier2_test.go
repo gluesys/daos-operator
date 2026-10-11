@@ -134,6 +134,32 @@ spec:
 			return err
 		}).WithTimeout(2 * time.Minute).Should(Succeed())
 	})
+	// healEvents reports this spec's DaosContainer auto-heal events once they are Ready: ContainerUnclean
+	// (heal started), ContainerHealthRestored, and RFPendingDeadlineExceeded (the operator gave up
+	// waiting for a pool status newer than its DER_RF query and queried again). A 4 min heal can
+	// be either path; this says which one it was.
+	healEvents := func() {
+		out, err := kubectlE("get", "events", "--field-selector", "involvedObject.kind=DaosContainer", "-o",
+			`jsonpath={range .items[*]}{.reason}{" "}{.involvedObject.name}{" x"}{.count}{" "}{.firstTimestamp}{" "}{.lastTimestamp}{"\n"}{end}`)
+		if err != nil {
+			AddReportEntry("container heal events", "kubectl get events: "+out)
+			return
+		}
+		since := CurrentSpecReport().StartTime
+		deadline, lines := false, []string{}
+		for _, l := range strings.Split(out, "\n") {
+			f := strings.Fields(l)
+			if len(f) != 5 || (f[0] != "ContainerUnclean" && f[0] != "ContainerHealthRestored" && f[0] != "RFPendingDeadlineExceeded") {
+				continue
+			}
+			if last, err := time.Parse(time.RFC3339, f[4]); err != nil || last.Before(since) {
+				continue
+			}
+			deadline = deadline || f[0] == "RFPendingDeadlineExceeded"
+			lines = append(lines, l)
+		}
+		AddReportEntry("container heal events", fmt.Sprintf("RFPendingDeadlineExceeded=%t\n%s", deadline, strings.Join(lines, "\n")))
+	}
 	// checksumOK waits for the DaosContainers first: every case that excludes a rank leaves an
 	// rd_fac 0 container at "failures exceed RF" until the operator clears it, and the drain case
 	// read EIO before that (2026-10-10). 8 min: the operator waits up to 3 min for a pool status
@@ -141,6 +167,7 @@ spec:
 	checksumOK := func() {
 		Eventually(containersReady).WithTimeout(8*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
 			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools)")
+		healEvents()
 		out, err := kubectlE("exec", "e2e-t2-app", "--", "sha256sum", "-c", "/data/blob.sha256")
 		Expect(err).NotTo(HaveOccurred(), out)
 		Expect(out).To(ContainSubstring("OK"))

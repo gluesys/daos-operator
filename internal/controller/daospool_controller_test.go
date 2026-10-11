@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -550,8 +551,9 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(k8sClient.Create(ctx, c)).To(Succeed())
 		DeferCleanup(func() { rfPendingClear(contKey(c)) })
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		events := record.NewFakeRecorder(32)
 		rec := func() reconcile.Result {
-			r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+			r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
 			res, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: contNN})
 			Expect(err).NotTo(HaveOccurred())
 			return res
@@ -567,6 +569,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f.set("-daos-query", &dmg.Result{Done: true, ExitCode: 1, Output: daosContRFExceeded, Started: ranAt})
 		setPool(ranAt.Add(-time.Second))
 		Expect(rec().RequeueAfter).To(Equal(poolRequeueOp))
+		Expect(drain(events)).NotTo(ContainElement(ContainSubstring("RFPendingDeadlineExceeded")))
 		queries := f.count("-daos-query")
 		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("pool last queried " + ranAt.Add(-time.Second).UTC().Format(time.RFC3339)))
 
@@ -593,6 +596,8 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		setPool(old.Add(-time.Second))
 		Expect(rec().RequeueAfter).To(Equal(poolRequeueWait))
 		Expect(ready(get().Status.Conditions).Message).To(ContainSubstring("querying the container again"))
+		Expect(drain(events)).To(ContainElement(SatisfyAll(HavePrefix("Warning RFPendingDeadlineExceeded"),
+			ContainSubstring(old.UTC().Format(time.RFC3339)), ContainSubstring("pool last queried "+old.Add(-time.Second).UTC().Format(time.RFC3339)))))
 		_, pending = rfPendingSince(contKey(c))
 		Expect(pending).To(BeFalse())
 		queries = f.count("-daos-query")
@@ -600,3 +605,16 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(f.count("-daos-query")).To(Equal(queries + 1))
 	})
 })
+
+// drain returns the events recorded so far.
+func drain(r *record.FakeRecorder) []string {
+	var out []string
+	for {
+		select {
+		case e := <-r.Events:
+			out = append(out, e)
+		default:
+			return out
+		}
+	}
+}
