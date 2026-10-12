@@ -160,6 +160,20 @@ spec:
 		}
 		AddReportEntry("container heal events", fmt.Sprintf("RFPendingDeadlineExceeded=%t\n%s", deadline, strings.Join(lines, "\n")))
 	}
+	// firstRead reads one byte from each 1 MiB chunk of the blob (DFS chunks, striped over every
+	// target, so some land on any rank that was out) and reports how long the first contact took
+	// apart from the checksum, with the pool rebuild state at that moment. After a node reboot
+	// the checksum alone took 3m17s-3m18s with rebuild done (2026-10-12, 60449 and 60526) while
+	// the container heal took 6 s: this keeps the data path's share out of the operator's.
+	firstRead := func() {
+		rebuild := jsonpath("daospool", "e2epool", ".status.rebuildState")
+		start := time.Now()
+		out, err := kubectlE("exec", "e2e-t2-app", "--", "sh", "-c",
+			`for i in $(seq 0 15); do s=$(date +%s.%N); dd if=/data/blob of=/dev/null bs=1 count=1 skip=$((i*1048576)) 2>/dev/null || echo "chunk $i failed"; echo "$i $s $(date +%s.%N)" | awk '{printf "chunk %d %.1f\n", $1, $3-$2}'; done`)
+		recordDuration("first read after container Ready", time.Since(start))
+		AddReportEntry("first read per chunk (s), pool rebuild "+rebuild, out)
+		Expect(err).NotTo(HaveOccurred(), out)
+	}
 	// checksumOK waits for the DaosContainers first: every case that excludes a rank leaves an
 	// rd_fac 0 container at "failures exceed RF" until the operator clears it, and the drain case
 	// read EIO before that (2026-10-10). 8 min: the operator waits up to 3 min for a pool status
@@ -168,7 +182,10 @@ spec:
 		Eventually(containersReady).WithTimeout(8*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
 			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools)")
 		healEvents()
+		firstRead()
+		start := time.Now()
 		out, err := kubectlE("exec", "e2e-t2-app", "--", "sha256sum", "-c", "/data/blob.sha256")
+		recordDuration("checksum after the first read", time.Since(start))
 		Expect(err).NotTo(HaveOccurred(), out)
 		Expect(out).To(ContainSubstring("OK"))
 	}
