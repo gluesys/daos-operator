@@ -43,7 +43,7 @@ operator drops the annotation after one attempt, whatever the outcome.
 ## Install
 
 ```bash
-helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.1.5 \
+helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.1.6 \
   --namespace daos-system --create-namespace
 ```
 
@@ -60,7 +60,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZahht5lUkAFpk1OvQtGEsU/ebjwr
 ```
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.1.5
+cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.1.6
 ```
 
 `values.schema.json` types the values the chart ships; Helm rejects a value of the wrong
@@ -111,7 +111,7 @@ See `values.yaml`. The parts most installations touch:
 | `system.spec.msReplicas` | management-service replicas (3 for a redundant MS) |
 | `csi.enabled` | the CSI driver and its StorageClasses |
 | `s3.services[]` | S3 gateways, one per pool |
-| `vllm.services[]` | reference serving workload; `rdma: true` on an RDMA fabric |
+| `vllm.services[]` | reference serving workload; `rdma: true` on an RDMA fabric; `accelerator: nvidia\|rbln\|custom` picks the device resource and KV connector |
 
 Per-node facts that differ between hosts (NIC name, device paths) come from node
 annotations, not from the chart: `daos.gluesys.com/fabric-iface`,

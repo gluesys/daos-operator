@@ -24,10 +24,47 @@ privileged, and keeps IPC_LOCK for memory registration. Measured on a 400G RoCE
 link with no loss of speed -- 64 MiB round trip, 2777 MB/s write and
 12162 MB/s read without privileged (doc/deploy-gpu-k8s.md). It takes precedence
 over rdma when both are set.
+
+accelerator picks the device the server runs on and the defaults that go with
+it; every default can be overridden on its own:
+
+  accelerator  resource            kvConnector             notes
+  nvidia       nvidia.com/gpu      LMCacheConnectorV1      the default; adds
+                                                           --gpu-memory-utilization
+                                                           and the flashinfer guard
+  rbln         rebellions.ai/npu   RBLNLMCacheConnectorV1  Rebellions NPU via the
+                                                           vllm-rbln plugin
+  custom       (required)          (required)
+
+rbln: the connector comes from lmcache-rbln, which only the vllm-rbln 0.12
+line ships (not on PyPI); lmcache-daos plugs in behind it as a
+remote_storage_plugins entry, so the image has to carry vllm-rbln,
+lmcache-rbln and lmcache-daos together. Older RBLN device plugins advertise
+rebellions.ai/ATOM instead of rebellions.ai/npu -- set acceleratorResource to
+what `kubectl describe node` shows. The RBLN device plugin injects the NPUs
+through CDI, so no runtimeClassName is needed there.
 */}}
 {{- range .Values.vllm.services }}
 {{- $ns := $.Values.system.spec.namespace | default "daos-system" }}
 {{- $port := .port | default 8100 }}
+{{- $acc := .accelerator | default "nvidia" }}
+{{- $presets := dict
+      "nvidia" (dict "resource" "nvidia.com/gpu" "kvConnector" "LMCacheConnectorV1")
+      "rbln" (dict "resource" "rebellions.ai/npu" "kvConnector" "RBLNLMCacheConnectorV1")
+      "custom" (dict) }}
+{{- if not (hasKey $presets $acc) }}
+{{- fail (printf "vllm.services[%s].accelerator must be nvidia, rbln or custom, not %q" .name $acc) }}
+{{- end }}
+{{- $preset := get $presets $acc }}
+{{- $accResource := .acceleratorResource | default (get $preset "resource") }}
+{{- $kvConnector := .kvConnector | default (get $preset "kvConnector") }}
+{{- if not $accResource }}
+{{- fail (printf "vllm.services[%s]: accelerator %s needs acceleratorResource" .name $acc) }}
+{{- end }}
+{{- if not $kvConnector }}
+{{- fail (printf "vllm.services[%s]: accelerator %s needs kvConnector" .name $acc) }}
+{{- end }}
+{{- $accCount := .acceleratorCount | default .gpus | default 1 }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -84,7 +121,12 @@ spec:
       containers:
         - name: vllm
           image: {{ required "vllm.services[].image is required" .image }}
+          {{- with .command }}
+          command:
+            {{- toYaml . | nindent 12 }}
+          {{- else }}
           command: ["python3.12", "-m", "vllm.entrypoints.openai.api_server"]
+          {{- end }}
           args:
             - --model={{ required "vllm.services[].model.path is required" .model.path }}
             {{- with .model.servedName }}
@@ -94,8 +136,10 @@ spec:
             - --port={{ $port }}
             - --dtype={{ .dtype | default "bfloat16" }}
             - --max-model-len={{ .maxModelLen | default 16384 }}
+            {{- if or (eq $acc "nvidia") .gpuMemoryUtilization }}
             - --gpu-memory-utilization={{ .gpuMemoryUtilization | default "0.90" }}
-            - --kv-transfer-config={"kv_connector":"LMCacheConnectorV1","kv_role":"kv_both"}
+            {{- end }}
+            - --kv-transfer-config={"kv_connector":"{{ $kvConnector }}","kv_role":"kv_both"}
             {{- range .extraArgs }}
             - {{ . }}
             {{- end }}
@@ -104,8 +148,10 @@ spec:
             - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
             # lmcache-daos keys are hashed per process; they must match across restarts
             - {name: PYTHONHASHSEED, value: "0"}
+            {{- if eq $acc "nvidia" }}
             # no CUDA toolchain in the image: the flashinfer sampler would try to JIT-compile
             - {name: VLLM_USE_FLASHINFER_SAMPLER, value: "0"}
+            {{- end }}
             {{- if .model.cacheHostPath }}
             - {name: HF_HOME, value: /data/hf_cache}
             - {name: HF_HUB_OFFLINE, value: "1"}
@@ -125,7 +171,7 @@ spec:
             - {name: http, containerPort: {{ $port }}}
           resources:
             limits:
-              nvidia.com/gpu: {{ .gpus | default 1 }}
+              {{ $accResource }}: {{ $accCount }}
               {{- if .rdmaResource }}
               {{ .rdmaResource }}: {{ .rdmaResourceCount | default 1 }}
               {{- end }}

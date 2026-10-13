@@ -31,3 +31,12 @@ vllm:
       gpus: 1
       rdma: true
       nodeSelector: {nvidia.com/gpu.present: "true"}
+    - name: vllm-daos-rbln
+      image: registry.example.com/vllm-rbln-lmcache-daos:test
+      accelerator: rbln
+      acceleratorCount: 1
+      poolRef: podpool
+      containerRef: kvlmc
+      model: {path: /data/hf_cache/model, servedName: test-rbln, cacheHostPath: /mnt/hf_cache}
+      port: 8101
+      rdma: true
