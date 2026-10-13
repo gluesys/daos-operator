@@ -67,6 +67,21 @@ const (
 	// annotation; `kubectl daos rank ...` writes it after showing the impact.
 	AnnotationRankOp = "daos.gluesys.com/rank-op"
 
+	// AnnotationRankOpDiscardData lets a reintegrate run on ranks that hold an
+	// rd_fac 0 pool with data_sync reintegration. DAOS discards the returning
+	// ranks' data before it rebuilds, and such a pool has no other copy, so the
+	// operator refuses unless this names the same ranks as the rank-op request.
+	// Removed together with AnnotationRankOp.
+	AnnotationRankOpDiscardData = "daos.gluesys.com/rank-op-discard-data"
+
+	// AnnotationAutoClearUnclean set to "true" on a DaosPool lets the operator
+	// clear its containers' UNCLEAN status (DER_RF, "failures exceed RF") once
+	// the pool is whole again. Without it the operator only reports the state:
+	// DAOS keeps UNCLEAN sticky for rd_fac 0 by design, and the reintegration
+	// the clearing relied on (incremental) is not functional in DAOS 2.8
+	// according to its maintainers (daos@daos.groups.io, 2026-10-12).
+	AnnotationAutoClearUnclean = "daos.gluesys.com/auto-clear-unclean"
+
 	// AnnotationDestroyApproved on a DaosPool or DaosContainer lets the operator
 	// run `dmg pool destroy` / `daos cont destroy` when the object is deleted.
 	// Without it, deleting the Kubernetes object only forgets the DAOS object

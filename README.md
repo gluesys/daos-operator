@@ -118,34 +118,47 @@ hard to read when you do.
 
 **When a rank leaves (a node reboot, a drain, an engine failure), every
 container in that pool becomes UNCLEAN and refuses to open**: `DER_RF`, *failures
-exceed RF*. A dfuse mount of it returns `EIO` for everything. **DAOS 2.8 does not
-clear that state on its own, even after the rank is reintegrated and the pool is
-whole again.**
+exceed RF*. A dfuse mount of it returns `EIO` for everything. **This is sticky by
+design: DAOS does not clear it, even after the rank is reintegrated and the pool
+is whole again.** (The DAOS user docs say otherwise for rd_fac 0; the DAOS
+maintainers confirmed the docs are wrong.)
 
-The data is still there. What is lost is permission to open it.
+**Getting the rank back can destroy the data.** Under DAOS 2.8's default
+reintegration mode, `data_sync`, reintegration first discards everything on the
+returning rank and then rebuilds it from other copies — and a pool with no
+redundancy has none. The operator therefore **refuses to reintegrate a rank that
+holds a `redundancyFactor: 0` pool with `data_sync` reintegration** (or a pool
+whose mode it does not know). If the data on that rank is expendable, say so
+explicitly:
 
-- **Pools the operator created with incremental reintegration** (the default at
-  `redundancyFactor: 0`) are cleared automatically once reintegration and
-  rebuild finish. Watch for the `ContainerUnclean` and `ContainerHealthRestored`
-  events.
-- **Any other pool** stops with `Ready=False` and reason `FailuresExceedRF`, and
-  the status message carries the command. Check the data first, then clear it by
-  hand:
+```bash
+kubectl daos rank reintegrate <sys> --ranks=<N> --discard-data
+```
 
-  ```bash
-  daos cont set-prop <pool> <cont> --properties status:healthy
-  ```
+The operator creates `redundancyFactor: 0` pools with `reintegration:incremental`,
+which does not discard the returning rank's data. Be aware that the DAOS
+maintainers describe incremental reintegration as **not functional in DAOS
+2.8**; in our reboot tests the data was intact afterwards, but that is not a
+guarantee from DAOS.
 
-  Pools created before this behaviour existed still use DAOS 2.8's default
-  `data_sync` reintegration. `dmg pool set-prop <pool> reintegration:incremental`
-  switches one over; it does not touch data and takes effect at the next
-  reintegration.
+After the rank is back, the containers stop with `Ready=False` and reason
+`FailuresExceedRF`, and the status message carries the command. **Check the data
+first**, then clear it by hand:
 
-> **Upgrading:** this relies on a `status` field that Helm will not add to an
-> existing install, because Helm never upgrades `crds/`. Apply the CRDs first
-> (see [Upgrade](#upgrade)) or the automatic clearing silently does not happen —
-> the containers simply sit at `FailuresExceedRF` and wait for the manual
-> command.
+```bash
+daos cont set-prop <pool> <cont> --properties status:healthy
+```
+
+If you accept that risk for a pool, annotate the DaosPool with
+`daos.gluesys.com/auto-clear-unclean: "true"`. The operator then clears its
+containers itself, but only when the pool uses incremental reintegration, every
+target is back and rebuild has finished. Watch for the `ContainerUnclean` and
+`ContainerHealthRestored` events.
+
+> **Upgrading:** automatic clearing used to be on for every incremental pool; it
+> is now off unless the pool carries the annotation above. It also relies on a
+> `status` field that Helm will not add to an existing install, because Helm
+> never upgrades `crds/`. Apply the CRDs first (see [Upgrade](#upgrade)).
 
 ## Requirements
 

@@ -107,9 +107,12 @@ var _ = Describe("Tier 2 resilience", Label("tier2", "resilience"), Ordered, fun
 
 	BeforeAll(func() {
 		By("a pool and a volume with a checksummed file, kept for the whole container")
+		// auto-clear-unclean: the cases below exclude a rank and then check the data, which needs
+		// the rd_fac 0 container cleared of failures-exceed-RF; the operator does that only on
+		// pools that opt in
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
-metadata: {name: e2epool}
+metadata: {name: e2epool, annotations: {daos.gluesys.com/auto-clear-unclean: "true"}}
 spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
@@ -180,7 +183,7 @@ spec:
 	// newer than its DER_RF query, then queries again (rfPendingMax), ~4m40s in the worst case.
 	checksumOK := func() {
 		Eventually(containersReady).WithTimeout(8*time.Minute).WithPolling(10*time.Second).Should(BeTrue(),
-			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools)")
+			"DaosContainers Ready before the checksum (the operator clears failures-exceed-RF on incremental pools that opt in)")
 		healEvents()
 		firstRead()
 		start := time.Now()

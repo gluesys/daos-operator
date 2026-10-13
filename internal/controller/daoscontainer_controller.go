@@ -349,17 +349,22 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 // (2026-10-10) the pool had 0 disabled targets for 4.5 h while every open, dfuse included,
 // still failed, and `set-prop status:healthy` brought back data that checksummed OK.
 //
-// The operator clears it only when it can tell no data was dropped on the way back: the pool
-// was created with reintegration incremental (data_sync discards the returning targets'
-// data), every target is back, rebuild is finished, and that pool status was queried after
-// this container query ran -- an older status describes the pool as it was before. Anything
-// else is left to a human, with the command in the condition.
+// DAOS keeps UNCLEAN sticky for rd_fac 0 by design, and its maintainers say incremental
+// reintegration is not functional in 2.8 (daos@daos.groups.io, 2026-10-12), so by default
+// the operator only reports it and leaves the decision to a human, with the command in the
+// condition. A DaosPool annotated auto-clear-unclean=true opts in to clearing, and even then
+// only when it can tell no data was dropped on the way back: the pool was created with
+// reintegration incremental (data_sync discards the returning targets' data), every target
+// is back, rebuild is finished, and that pool status was queried after this container query
+// ran -- an older status describes the pool as it was before.
 func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerStatus, queried time.Time) (ctrl.Result, error) {
 	ps := pool.Status
 	manual := fmt.Sprintf("daos cont set-prop %s %s --properties status:healthy", poolLabel(pool), contLabel(c))
 	why := ""
 	rfPendingClear(contKey(c)) // set again below only while the pool status is the one thing missing
 	switch {
+	case pool.Annotations[daosv1alpha1.AnnotationAutoClearUnclean] != "true":
+		why = fmt.Sprintf("the operator does not clear it unless DaosPool %s has %s=true", pool.Name, daosv1alpha1.AnnotationAutoClearUnclean)
 	case ps.ReintegrationMode != "incremental":
 		why = fmt.Sprintf("pool reintegration mode is %q, not incremental: a reintegrate may have discarded data", ps.ReintegrationMode)
 	case ps.DisabledTargets != 0 || ps.State != "Ready":

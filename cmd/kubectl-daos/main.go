@@ -25,7 +25,7 @@ limitations under the License.
 //	kubectl daos system format  <sys>            # daos.gluesys.com/format-approved=true
 //	kubectl daos system upgrade <sys> [--image I] [--version V]   # spec.upgrade.approved=true
 //	kubectl daos system certs   <sys>            # daos.gluesys.com/certs-renew-approved=true
-//	kubectl daos rank drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M] [--wait=5m]
+//	kubectl daos rank drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M] [--wait=5m] [--discard-data]
 //	kubectl daos pool destroy   <pool>           # destroy-approved=true + delete
 //	kubectl daos cont destroy   -n <ns> <cont>   # destroy-approved=true + delete
 //
@@ -129,7 +129,7 @@ func splitArgs(in []string) (global, args []string) {
 
 func subcommandFlag(name string) bool {
 	switch name {
-	case "ranks", "image", "version", "wait":
+	case "ranks", "image", "version", "wait", "discard-data":
 		return true
 	}
 	return false
@@ -149,9 +149,10 @@ const usage = `usage: kubectl daos <command> <subcommand> <name> [--yes] [-n ns]
   system format  <sys>                         approve the one-shot storage format
   system upgrade <sys> [--image I] [--version V]  set the new server image and approve the full-stop upgrade
   system certs   <sys>                         approve replacing the transport certificates (full-stop restart)
-  rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O] [--wait=5m]
+  rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O] [--wait=5m] [--discard-data]
                                                ask the operator to run one rank membership operation;
-                                               waits for its result and fails if it failed (--wait=0: do not wait)
+                                               waits for its result and fails if it failed (--wait=0: do not wait);
+                                               --discard-data lets a reintegrate empty rd_fac 0 data_sync pools
   pool   destroy <pool>                        approve destruction and delete the DaosPool
   cont   destroy -n <ns> <cont>                approve destruction and delete the DaosContainer`
 
@@ -420,6 +421,7 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	fs := flag.NewFlagSet("rank", flag.ContinueOnError)
 	ranks := fs.String("ranks", "", "ranks to operate on: 1 or 0,2 or 1-3")
 	wait := fs.Duration("wait", 5*time.Minute, "how long to wait for the operator's result; 0 returns once the request is written")
+	discard := fs.Bool("discard-data", false, "reintegrate only: accept that rd_fac 0 pools with data_sync reintegration lose the data on these ranks")
 	var pos []string
 	for i := 0; i < len(rest); i++ {
 		if strings.HasPrefix(rest[i], "-") {
@@ -436,6 +438,9 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	}
 	if *ranks == "" {
 		return fmt.Errorf("--ranks is required (e.g. --ranks=2 or --ranks=1,3-4)")
+	}
+	if *discard && op != "reintegrate" {
+		return fmt.Errorf("--discard-data only applies to reintegrate")
 	}
 	name := pos[0]
 	sys := &daosv1alpha1.DaosSystem{}
@@ -454,11 +459,16 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 			"  2. kubectl -n <ns> delete pod <sys>-server-<node>-0   (so the engine starts and rejoins)\n" +
 			"  3. kubectl daos rank reintegrate <sys> --ranks=<N>\n" +
 			"Calling reintegrate before the engine is back only waits out a 5 minute drain timeout and fails.",
-		"reintegrate":   "The ranks rejoin their pools and data rebuilds back onto them.",
+		"reintegrate": "The ranks rejoin their pools and data rebuilds back onto them.\n" +
+			"A pool with redundancyFactor 0 and data_sync reintegration has no other copy: DAOS empties these ranks first,\n" +
+			"so their data in that pool is LOST. The operator refuses such a reintegrate unless --discard-data is given.",
 		"clear-exclude": "An administrative exclusion is cleared so the ranks may rejoin. Nothing moves until they are reintegrated.",
 	}[op]
 	var b strings.Builder
 	fmt.Fprintf(&b, "About to ask DaosSystem %s to run: dmg system %s --ranks=%s\n%s\n", name, op, *ranks, impact)
+	if *discard {
+		b.WriteString("--discard-data: the data on these ranks in rd_fac 0 data_sync pools will be discarded.\n")
+	}
 	if len(sys.Status.Ranks) > 0 {
 		b.WriteString("current membership:\n")
 		for _, r := range sys.Status.Ranks {
@@ -473,6 +483,11 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 		sys.Annotations = map[string]string{}
 	}
 	sys.Annotations[daosv1alpha1.AnnotationRankOp] = op + ":" + *ranks
+	if *discard {
+		sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData] = *ranks
+	} else {
+		delete(sys.Annotations, daosv1alpha1.AnnotationRankOpDiscardData)
+	}
 	asked := time.Now().Truncate(time.Second) // status times have second precision
 	if err := a.c.Patch(ctx, sys, patch); err != nil {
 		return err

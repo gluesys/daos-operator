@@ -167,6 +167,38 @@ func TestRankOp(t *testing.T) {
 	}
 }
 
+// --discard-data names the ranks whose loss is accepted, next to the request; without it a
+// reintegrate warns about rd_fac 0 data_sync pools and leaves the acceptance out.
+func TestRankReintegrateDiscardData(t *testing.T) {
+	ctx := context.Background()
+	s := sysPending()
+	s.Status.Formatted, s.Status.PendingFormat = true, false
+	a, out := newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "reintegrate", "d1", "--ranks", "1", "--wait=0"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "LOST") || !strings.Contains(out.String(), "--discard-data") {
+		t.Errorf("prompt must warn about rd_fac 0 data_sync pools: %s", out.String())
+	}
+	sys := &daosv1alpha1.DaosSystem{}
+	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+	if _, ok := sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData]; ok {
+		t.Fatal("no acceptance without --discard-data")
+	}
+	a, _ = newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "reintegrate", "d1", "--discard-data", "--ranks=1-2", "--wait=0"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = a.c.Get(ctx, types.NamespacedName{Name: "d1"}, sys)
+	if sys.Annotations[daosv1alpha1.AnnotationRankOp] != "reintegrate:1-2" || sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData] != "1-2" {
+		t.Fatalf("annotations: %v", sys.Annotations)
+	}
+	a, _ = newApp(t, "", true, s)
+	if err := a.run(ctx, []string{"rank", "drain", "d1", "--ranks", "1", "--discard-data"}); err == nil || !strings.Contains(err.Error(), "only applies to reintegrate") {
+		t.Fatalf("drain --discard-data: %v", err)
+	}
+}
+
 // A rank operation reports the operator's result, not just that the request was written: it
 // used to return success for a clear-exclude that then failed (#9).
 func TestRankOpWaitsForTheResult(t *testing.T) {

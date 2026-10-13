@@ -94,6 +94,14 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		p.Status.UUID = "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d"
 		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
 	}
+	optInAutoClear := func() {
+		p := getPool()
+		if p.Annotations == nil {
+			p.Annotations = map[string]string{}
+		}
+		p.Annotations[daosv1alpha1.AnnotationAutoClearUnclean] = "true"
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+	}
 
 	It("creates a missing pool from spec, mirrors dmg pool query, extends and rewrites the ACL on drift", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
@@ -499,11 +507,21 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		ranAt := time.Now().Add(-time.Minute).Truncate(time.Second)
 		f.set("-daos-query", &dmg.Result{Done: true, ExitCode: 1, Output: daosContRFExceeded, Started: ranAt})
 
+		By("without the pool's opt-in, even a whole incremental pool is only reported")
+		setPool("incremental", 0, time.Now())
+		rec()
+		Expect(f.count("-daos-heal")).To(BeZero())
+		cond := ready(get().Status.Conditions)
+		Expect(cond.Reason).To(Equal("FailuresExceedRF"))
+		Expect(cond.Message).To(And(ContainSubstring(daosv1alpha1.AnnotationAutoClearUnclean+"=true"),
+			ContainSubstring("daos cont set-prop p1 c1 --properties status:healthy")))
+		optInAutoClear()
+
 		By("a data_sync pool may have dropped the data on reintegration: report, do not clear")
 		setPool("data_sync", 0, time.Now())
 		rec()
 		Expect(f.count("-daos-heal")).To(BeZero())
-		cond := ready(get().Status.Conditions)
+		cond = ready(get().Status.Conditions)
 		Expect(cond.Reason).To(Equal("FailuresExceedRF"))
 		Expect(cond.Message).To(And(ContainSubstring("data_sync"), ContainSubstring("daos cont set-prop p1 c1 --properties status:healthy")))
 
@@ -550,6 +568,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, RedundancyFactor: ptr.To(int32(0))}}
 		Expect(k8sClient.Create(ctx, c)).To(Succeed())
 		DeferCleanup(func() { rfPendingClear(contKey(c)) })
+		optInAutoClear()
 		f := &fakeDmg{script: map[string]*dmg.Result{}}
 		events := record.NewFakeRecorder(32)
 		rec := func() reconcile.Result {
