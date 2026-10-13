@@ -537,6 +537,34 @@ func PoolQuery(e *Envelope) (*PoolInfo, error) {
 	return &p, nil
 }
 
+// PoolProp returns one property from `dmg -j pool get-prop <pool> <name>`, whose
+// response is a list of {name, description, value}. Enumerated properties such as
+// reintegration come back as their names ("incremental"); found is false when the
+// response does not carry name.
+func PoolProp(e *Envelope, name string) (value string, found bool, err error) {
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return "", false, fmt.Errorf("pool get-prop: empty response")
+	}
+	var props []struct {
+		Name  string          `json:"name"`
+		Value json.RawMessage `json:"value"`
+	}
+	if err := json.Unmarshal(e.Response, &props); err != nil {
+		return "", false, fmt.Errorf("pool get-prop response: %w", err)
+	}
+	for _, p := range props {
+		if p.Name != name {
+			continue
+		}
+		var str string
+		if json.Unmarshal(p.Value, &str) == nil {
+			return str, true, nil
+		}
+		return string(p.Value), true, nil
+	}
+	return "", false, nil
+}
+
 // Ranks decodes a rank set that dmg emits either as a JSON array or as a
 // range string such as "[0-3,5]".
 func Ranks(raw json.RawMessage) []int32 {

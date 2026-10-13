@@ -255,6 +255,114 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(create).NotTo(ContainSubstring("incremental"))
 	})
 
+	// the query Job runs `pool query` then `pool get-prop <pool> reintegration` in one pod
+	queryWithMode := func(mode string) *dmg.Result {
+		return &dmg.Result{Done: true, Output: dmgPoolQuery + "\n" + strings.Replace(dmgPoolGetPropReint, "incremental", mode, 1)}
+	}
+
+	It("pins the reintegration mode of a pool without redundancy and sets it back when DAOS drifts", func() {
+		p := getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(0))
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		events := record.NewFakeRecorder(32)
+		rec := func(f *fakeDmg) {
+			r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithMode("incremental")}}
+		rec(f) // finalizer
+		rec(f)
+		Expect(f.last("-dmg-query").Then).To(Equal([]string{"pool", "get-prop", "p1", "reintegration"}))
+		Expect(getPool().Status.ReintegrationMode).To(Equal("incremental"), "status is what DAOS reports")
+		Expect(f.count("-dmg-reintmode")).To(BeZero())
+
+		By("someone ran dmg pool set-prop reintegration:data_sync -> set back to incremental")
+		f.set("-dmg-query", queryWithMode("data_sync"))
+		rec(f)
+		p = getPool()
+		Expect(p.Status.ReintegrationMode).To(Equal("data_sync"))
+		Expect(p.Status.Operation).To(Equal(opReintMode))
+		Expect(f.last("-dmg-reintmode").Args).To(Equal([]string{"pool", "set-prop", "p1", "reintegration:incremental"}))
+		Expect(events.Events).To(Receive(ContainSubstring("ReintegrationModeDrift")))
+		f.set("-dmg-reintmode", &dmg.Result{Done: true, Output: dmgOK})
+		rec(f)
+		p = getPool()
+		Expect(p.Status.Operation).To(BeEmpty())
+		Expect(p.Status.ReintegrationMode).To(Equal("incremental"))
+
+		By("a query whose get-prop did not answer keeps the last known mode and starts nothing")
+		f.set("-dmg-query", &dmg.Result{Done: true, Output: dmgPoolQuery})
+		rec(f)
+		Expect(getPool().Status.ReintegrationMode).To(Equal("incremental"))
+		Expect(f.count("-dmg-reintmode")).To(Equal(2), "only the one set-prop (start + done poll)")
+	})
+
+	It("keeps an rd_fac 0 pool on data_sync when the spec chose it", func() {
+		p := getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(0))
+		p.Spec.Properties, p.Spec.ACL = map[string]string{"reintegration": "data_sync"}, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithMode("incremental")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(f.last("-dmg-reintmode").Args).To(Equal([]string{"pool", "set-prop", "p1", "reintegration:data_sync"}))
+	})
+
+	It("leaves the reintegration mode of a redundant pool to DAOS when the spec does not set it", func() {
+		p := getPool()
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithMode("incremental")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(getPool().Status.ReintegrationMode).To(Equal("incremental"))
+		Expect(f.count("-dmg-reintmode")).To(BeZero())
+	})
+
+	It("refuses reintegration settings that cannot work and changes of redundancy or mode once the pool exists", func() {
+		bad := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "p-bad"},
+			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("1Gi"), RedundancyFactor: ptr.To(int32(0)),
+				Properties: map[string]string{"reintegration": "no_data_sync"}}}
+		err := k8sClient.Create(ctx, bad)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("no_data_sync refuses every write"))
+		bad.Spec.Properties["reintegration"] = "lazy"
+		err = k8sClient.Create(ctx, bad)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("must be data_sync, incremental or no_data_sync"))
+
+		By("before the pool exists the spec may still change")
+		p := getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+
+		By("once it exists, redundancy and the reintegration mode are fixed")
+		setPoolUUID()
+		p = getPool()
+		p.Spec.RedundancyFactor = ptr.To(int32(0))
+		err = k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("redundancyFactor cannot change once the pool exists"))
+		p = getPool()
+		p.Spec.RedundancyFactor = nil
+		Expect(k8sClient.Update(ctx, p)).NotTo(Succeed(), "dropping it would turn 1 into the default 2")
+		p = getPool()
+		p.Spec.Properties = map[string]string{"ec_cell_sz": "131072", "reintegration": "incremental"}
+		err = k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("properties.reintegration cannot change once the pool exists"))
+
+		By("other fields still change")
+		p = getPool()
+		p.Spec.ACL = []string{"A::OWNER@:rw"}
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+	})
+
 	It("passes spec.memRatioPercent to dmg so RAM stops being the ceiling on pool size (#29)", func() {
 		p := getPool()
 		p.Spec.MemRatioPercent = ptr.To(int32(10))
