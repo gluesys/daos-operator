@@ -115,6 +115,36 @@ func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus)
 	return ""
 }
 
+// unprotectedPools names the pools a reintegrate of ranks would empty: rd_fac 0 with
+// data_sync reintegration (or a mode the operator does not know, DAOS's default being
+// data_sync) on any of those ranks. DAOS discards the returning ranks' data and rebuilds it
+// from other copies, and these pools have none; its maintainers say such a reintegration
+// should not be attempted (daos@daos.groups.io, 2026-10-12).
+func unprotectedPools(ranks string, pools []daosv1alpha1.DaosPool) []string {
+	want := parseRankSet(ranks)
+	var out []string
+	for _, p := range pools {
+		if p.Spec.RedundancyFactor == nil || *p.Spec.RedundancyFactor != 0 {
+			continue
+		}
+		if m := p.Status.ReintegrationMode; m != "" && m != "data_sync" {
+			continue
+		}
+		on := len(p.Spec.Ranks) == 0 // empty = every rank
+		for _, rk := range p.Spec.Ranks {
+			on = on || want[rk]
+		}
+		if on {
+			mode := p.Status.ReintegrationMode
+			if mode == "" {
+				mode = "unknown, DAOS default data_sync"
+			}
+			out = append(out, fmt.Sprintf("%s (reintegration %s)", p.Name, mode))
+		}
+	}
+	return out
+}
+
 // parseRankSet expands "0,2-3" into a set.
 func parseRankSet(ranks string) map[int32]bool {
 	out := map[int32]bool{}
@@ -163,6 +193,7 @@ func (r *DaosSystemReconciler) clearRankOp(ctx context.Context, sys *daosv1alpha
 	}
 	patch := client.MergeFrom(sys.DeepCopy())
 	delete(sys.Annotations, daosv1alpha1.AnnotationRankOp)
+	delete(sys.Annotations, daosv1alpha1.AnnotationRankOpDiscardData)
 	return r.Patch(ctx, sys, patch)
 }
 
@@ -199,6 +230,24 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 	}
 	if why := rankOpPrecondition(op, ranks, status); why != "" {
 		return record(op, ranks, false, why)
+	}
+	if op == "reintegrate" && sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData] != ranks {
+		pools := &daosv1alpha1.DaosPoolList{}
+		if err := r.List(ctx, pools); err != nil {
+			return 0, fmt.Errorf("list pools: %w", err)
+		}
+		var mine []daosv1alpha1.DaosPool
+		for _, p := range pools.Items {
+			if p.Spec.SystemRef == sys.Name {
+				mine = append(mine, p)
+			}
+		}
+		if names := unprotectedPools(ranks, mine); len(names) > 0 {
+			return record(op, ranks, false, fmt.Sprintf("refused: reintegrating rank(s) %s would discard their data in pool(s) %s: "+
+				"DAOS empties the returning ranks before it rebuilds, and rd_fac 0 has no other copy. To accept that loss, "+
+				"set %s=%s with the request (kubectl daos rank reintegrate %s --ranks=%s --discard-data)",
+				ranks, strings.Join(names, ", "), daosv1alpha1.AnnotationRankOpDiscardData, ranks, sys.Name, ranks))
+		}
 	}
 
 	res, err := r.runDmg(ctx, sys, ns, jobRankOpSuffix, "system", op, "--ranks="+ranks)

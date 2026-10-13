@@ -1218,6 +1218,50 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.count("system reintegrate --ranks=1")).To(Equal(1))
 	})
 
+	It("refuses to reintegrate ranks of an rd_fac 0 data_sync pool unless the loss is accepted for those ranks", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers},
+			"system reintegrate --ranks=1": {Done: true, Output: `{"response": {"responses": [{"id": "kv", "results": [{"rank": 1, "errored": false, "msg": ""}]}]}, "error": null, "status": 0}`}}}
+		reconcileWith(f)
+		Expect(getSys().Status.Formatted).To(BeTrue())
+		pool := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "rf0"},
+			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("1Gi"), RedundancyFactor: ptr.To(int32(0))}}
+		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
+		pool.Status.ReintegrationMode = "data_sync"
+		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
+		request := func(ann map[string]string) {
+			sys := getSys()
+			sys.Annotations = ann
+			Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+			reconcileWith(f)
+		}
+
+		By("data_sync would empty rank 1 before rebuilding from copies that do not exist")
+		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"})
+		op := getSys().Status.LastRankOp
+		Expect(op.Succeeded).To(BeFalse())
+		Expect(op.Message).To(And(ContainSubstring("rf0 (reintegration data_sync)"), ContainSubstring("--discard-data")))
+		Expect(f.count("system reintegrate --ranks=1")).To(BeZero(), "never sent to dmg")
+
+		By("an acceptance for other ranks does not count")
+		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1", daosv1alpha1.AnnotationRankOpDiscardData: "2"})
+		Expect(f.count("system reintegrate --ranks=1")).To(BeZero())
+
+		By("an incremental pool is not emptied: no refusal")
+		pool.Status.ReintegrationMode = "incremental"
+		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
+		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"})
+		Expect(f.count("system reintegrate --ranks=1")).To(Equal(1))
+
+		By("data_sync with the loss accepted for rank 1: sent, and both annotations dropped")
+		pool.Status.ReintegrationMode = "data_sync"
+		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
+		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1", daosv1alpha1.AnnotationRankOpDiscardData: "1"})
+		Expect(f.count("system reintegrate --ranks=1")).To(Equal(2))
+		Expect(getSys().Status.LastRankOp.Succeeded).To(BeTrue())
+		Expect(getSys().Annotations).NotTo(Or(HaveKey(daosv1alpha1.AnnotationRankOp), HaveKey(daosv1alpha1.AnnotationRankOpDiscardData)))
+	})
+
 	It("runs a requested rank operation once and reports each rank's result (#20)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
 		reconcileWith(f) // formatted = true after the membership query
