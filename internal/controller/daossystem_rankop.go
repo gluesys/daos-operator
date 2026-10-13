@@ -119,7 +119,8 @@ func rankOpPrecondition(op, ranks string, status *daosv1alpha1.DaosSystemStatus)
 // data_sync reintegration (or a mode the operator does not know, DAOS's default being
 // data_sync) on any of those ranks. DAOS discards the returning ranks' data and rebuilds it
 // from other copies, and these pools have none; its maintainers say such a reintegration
-// should not be attempted (daos@daos.groups.io, 2026-10-12).
+// should not be attempted (daos@daos.groups.io, 2026-10-12). A pool whose spec chose
+// properties.reintegration: data_sync accepted that loss when it was created.
 func unprotectedPools(ranks string, pools []daosv1alpha1.DaosPool) []string {
 	want := parseRankSet(ranks)
 	var out []string
@@ -128,6 +129,9 @@ func unprotectedPools(ranks string, pools []daosv1alpha1.DaosPool) []string {
 			continue
 		}
 		if m := p.Status.ReintegrationMode; m != "" && m != "data_sync" {
+			continue
+		}
+		if p.Spec.Properties["reintegration"] == "data_sync" && p.Status.ReintegrationMode == "data_sync" {
 			continue
 		}
 		on := len(p.Spec.Ranks) == 0 // empty = every rank

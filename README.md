@@ -141,6 +141,25 @@ maintainers describe incremental reintegration as **not functional in DAOS
 2.8**; in our reboot tests the data was intact afterwards, but that is not a
 guarantee from DAOS.
 
+A pool whose data is expendable (a cache, scratch) can choose the supported path
+instead and declare the loss once, at creation:
+
+```yaml
+spec:
+  redundancyFactor: 0
+  properties: {reintegration: data_sync}   # a returning rank comes back empty
+```
+
+Such a pool is reintegrated without `--discard-data`. `no_data_sync` is refused
+for these pools: it rejects every write.
+
+**The choice is fixed.** Once the pool exists, `spec.redundancyFactor` and
+`spec.properties.reintegration` cannot be edited (create a new DaosPool
+instead), and the operator keeps the pool on that mode: if it is changed in
+DAOS (`dmg pool set-prop`), the operator sets it back and emits
+`ReintegrationModeDrift`. A redundant pool without the property is left on
+whatever DAOS has. `kubectl get daospool -o wide` shows the mode DAOS reports.
+
 After the rank is back, the containers stop with `Ready=False` and reason
 `FailuresExceedRF`, and the status message carries the command. **Check the data
 first**, then clear it by hand:

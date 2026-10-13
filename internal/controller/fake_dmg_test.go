@@ -118,6 +118,8 @@ const (
 	dmgPoolCreate   = `{"response": {"uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "svc_ldr": 0, "svc_reps": [0], "tgt_ranks": [0, 1], "tier_bytes": [644245094, 10093475840]}, "error": null, "status": 0}`
 	dmgPoolTooSmall = `{"response": null, "error": "pool create failed: server: code = 605 description = \"requested NVMe capacity too small (min 1.0 GiB per target)\"", "status": -1025}`
 	dmgOK           = `{"response": null, "error": null, "status": 0}`
+	// dmg -j pool get-prop e2epool reintegration on CI lane A (2026-10-13)
+	dmgPoolGetPropReint = `{"response": [{"name": "reintegration", "description": "Reintegration mode", "value": "incremental"}], "error": null, "status": 0}`
 	// daos -j cont query on an UNCLEAN container (CI lane A, 2026-10-10): the JSON only says errno 5,
 	// the client's ERR line on stderr names DER_RF.
 	daosContRFExceeded = `2026/10/10 00:17:16.613680 exaci5-4a DAOS[90/90/0] dfs  ERR  src/client/dfs/common.c:886 open_sb() Failed to fetch SB info, DER_RF(-2031): 'Failures exceed RF'

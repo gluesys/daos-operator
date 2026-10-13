@@ -82,6 +82,8 @@ const (
 	opACL     = "acl"
 	opDestroy = "destroy"
 	opHeal    = "heal" // daos cont set-prop status:healthy
+	// opReintMode sets the reintegration property back to the one the spec pins
+	opReintMode = "reintmode"
 )
 
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools,verbs=get;list;watch;create;update;patch;delete
@@ -159,6 +161,7 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	switch op {
 	case "query":
 		spec.Args = []string{"pool", "query", "--show-enabled", label}
+		spec.Then = []string{"pool", "get-prop", label, "reintegration"}
 	case opCreate:
 		rdFac := int32(2)
 		if pool.Spec.RedundancyFactor != nil {
@@ -191,6 +194,9 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		spec.Command = dmg.WithACLFile(pool.Spec.ACL, aclFilePath, append(base, args...))
 	case opExtend:
 		spec.Args = []string{"pool", "extend", "--ranks=" + ranksCSV(missingRanks(pool.Spec.Ranks, pool.Status.EnabledRanks)), label}
+	case opReintMode:
+		want, _ := pinnedReintegration(pool)
+		spec.Args = []string{"pool", "set-prop", label, "reintegration:" + want}
 	case opACL:
 		spec.Command = dmg.WithACLFile(pool.Spec.ACL, aclFilePath, append(base, "pool", "overwrite-acl", "-a", aclFilePath, label))
 	case opDestroy:
@@ -296,6 +302,9 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	status.TotalBytes, status.FreeBytes = info.Totals()
 	status.EnabledRanks = dmg.Ranks(info.EnabledRanks)
 	status.LastQueryTime = &now
+	if mode, ok := queriedReintegration(res.Output); ok {
+		status.ReintegrationMode = mode
+	}
 	// space: one number that decides for every container and PV in this pool.
 	// Reported on every successful query, even when an operation follows.
 	r.checkSpace(pool, &status)
@@ -341,6 +350,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	if h := aclHash(pool.Spec.ACL); h != "" && h != status.AppliedACLHash && !failedForThisSpec("ACLFailed") {
 		return r.startOp(ctx, pool, sys, ns, status, opACL)
+	}
+	if want, pinned := pinnedReintegration(pool); pinned && status.ReintegrationMode != "" && status.ReintegrationMode != want && !failedForThisSpec("ReintmodeFailed") {
+		r.event(pool, corev1.EventTypeWarning, "ReintegrationModeDrift", fmt.Sprintf("pool %s has reintegration:%s but the DaosPool pins %s; setting it back",
+			poolLabel(pool), status.ReintegrationMode, want))
+		return r.startOp(ctx, pool, sys, ns, status, opReintMode)
 	}
 	if info.State == "Ready" {
 		msg := fmt.Sprintf("state %s, rebuild %s, %d ranks", info.State, info.Rebuild.State, len(status.EnabledRanks))
@@ -411,13 +425,45 @@ func humanBytes(b int64) string {
 // reintegrate` would lose everything that was on it. incremental keeps that data. An
 // explicit spec.properties.reintegration wins.
 func reintegrationMode(pool *daosv1alpha1.DaosPool) string {
-	if m, set := pool.Spec.Properties["reintegration"]; set {
+	if m, pinned := pinnedReintegration(pool); pinned {
 		return m
 	}
-	if pool.Spec.RedundancyFactor != nil && *pool.Spec.RedundancyFactor == 0 {
-		return "incremental"
-	}
 	return "data_sync"
+}
+
+// pinnedReintegration is the reintegration mode the operator keeps a pool on: an
+// explicit spec.properties.reintegration, or incremental for a pool without
+// redundancy. A redundant pool without the property is left on whatever DAOS has.
+func pinnedReintegration(pool *daosv1alpha1.DaosPool) (string, bool) {
+	if m, set := pool.Spec.Properties["reintegration"]; set {
+		return m, true
+	}
+	if pool.Spec.RedundancyFactor != nil && *pool.Spec.RedundancyFactor == 0 {
+		return "incremental", true
+	}
+	return "", false
+}
+
+// queriedReintegration reads the reintegration property from the query Job's second
+// command (`pool get-prop <pool> reintegration`); ok is false when it did not answer.
+func queriedReintegration(out string) (string, bool) {
+	envs, err := dmg.ParseAll(out)
+	if err != nil || len(envs) < 2 || envs[1].Error != nil {
+		return "", false
+	}
+	mode, found, err := dmg.PoolProp(envs[1], "reintegration")
+	if err != nil || !found || mode == "" {
+		return "", false
+	}
+	return mode, true
+}
+
+// opCommand is how an operation reads in conditions and events.
+func opCommand(op string) string {
+	if op == opReintMode {
+		return "set-prop reintegration"
+	}
+	return op
 }
 
 func parseResult(res *dmg.Result) (*dmg.Envelope, error) {
@@ -434,8 +480,8 @@ func (r *DaosPoolReconciler) startOp(ctx context.Context, pool *daosv1alpha1.Dao
 	}
 	status.Operation = op
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
-		Reason: strings.ToUpper(op[:1]) + op[1:] + "InProgress", Message: "dmg pool " + op + " is running", ObservedGeneration: pool.Generation})
-	r.event(pool, corev1.EventTypeNormal, "Pool"+strings.ToUpper(op[:1])+op[1:], "dmg pool "+op+" started")
+		Reason: strings.ToUpper(op[:1]) + op[1:] + "InProgress", Message: "dmg pool " + opCommand(op) + " is running", ObservedGeneration: pool.Generation})
+	r.event(pool, corev1.EventTypeNormal, "Pool"+strings.ToUpper(op[:1])+op[1:], "dmg pool "+opCommand(op)+" started")
 	return r.updateStatus(ctx, pool, status, poolRequeueOp)
 }
 
@@ -459,10 +505,10 @@ func (r *DaosPoolReconciler) pollOp(ctx context.Context, pool *daosv1alpha1.Daos
 		return r.updateStatus(ctx, pool, status, poolRequeueFailed)
 	}
 	if perr != nil {
-		return failed("dmg pool " + op + ": " + perr.Error())
+		return failed("dmg pool " + opCommand(op) + ": " + perr.Error())
 	}
 	if env.Error != nil {
-		return failed("dmg pool " + op + ": " + *env.Error)
+		return failed("dmg pool " + opCommand(op) + ": " + *env.Error)
 	}
 	switch op {
 	case opCreate:
@@ -479,8 +525,12 @@ func (r *DaosPoolReconciler) pollOp(ctx context.Context, pool *daosv1alpha1.Daos
 		r.event(pool, corev1.EventTypeNormal, "PoolACLApplied", "ACL overwritten from spec.acl")
 	case opExtend:
 		r.event(pool, corev1.EventTypeNormal, "PoolExtended", "pool extended to ranks "+ranksCSV(pool.Spec.Ranks))
+	case opReintMode:
+		want, _ := pinnedReintegration(pool)
+		status.ReintegrationMode = want
+		r.event(pool, corev1.EventTypeNormal, "ReintegrationModeRestored", "pool "+poolLabel(pool)+" set back to reintegration:"+want)
 	}
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "dmg pool " + op + " succeeded; refreshing", ObservedGeneration: pool.Generation})
+	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "dmg pool " + opCommand(op) + " succeeded; refreshing", ObservedGeneration: pool.Generation})
 	clearHold(poolKey(pool))
 	return r.updateStatus(ctx, pool, status, time.Second)
 }

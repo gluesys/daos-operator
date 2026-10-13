@@ -1253,11 +1253,21 @@ var _ = Describe("DaosSystem Controller", func() {
 		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"})
 		Expect(f.count("system reintegrate --ranks=1")).To(Equal(1))
 
+		By("a pool whose spec chose data_sync accepted the loss when it was created: no refusal")
+		pool.Spec.Properties = map[string]string{"reintegration": "data_sync"}
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+		pool.Status.ReintegrationMode = "data_sync"
+		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
+		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1"})
+		Expect(f.count("system reintegrate --ranks=1")).To(Equal(2))
+		pool.Spec.Properties = nil
+		Expect(k8sClient.Update(ctx, pool)).To(Succeed())
+
 		By("data_sync with the loss accepted for rank 1: sent, and both annotations dropped")
 		pool.Status.ReintegrationMode = "data_sync"
 		Expect(k8sClient.Status().Update(ctx, pool)).To(Succeed())
 		request(map[string]string{daosv1alpha1.AnnotationRankOp: "reintegrate:1", daosv1alpha1.AnnotationRankOpDiscardData: "1"})
-		Expect(f.count("system reintegrate --ranks=1")).To(Equal(2))
+		Expect(f.count("system reintegrate --ranks=1")).To(Equal(3))
 		Expect(getSys().Status.LastRankOp.Succeeded).To(BeTrue())
 		Expect(getSys().Annotations).NotTo(Or(HaveKey(daosv1alpha1.AnnotationRankOp), HaveKey(daosv1alpha1.AnnotationRankOpDiscardData)))
 	})

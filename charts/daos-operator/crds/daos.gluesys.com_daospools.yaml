@@ -38,6 +38,14 @@ spec:
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
+    - jsonPath: .spec.redundancyFactor
+      name: RF
+      priority: 1
+      type: integer
+    - jsonPath: .status.reintegrationMode
+      name: Reintegration
+      priority: 1
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -84,7 +92,10 @@ spec:
               properties:
                 additionalProperties:
                   type: string
-                description: Properties are extra `--properties k:v` pairs (e.g. ec_cell_sz).
+                description: |-
+                  Properties are extra `--properties k:v` pairs (e.g. ec_cell_sz), applied
+                  at creation. properties.reintegration cannot change once the pool exists,
+                  and when it is set the operator keeps the pool on that mode.
                 type: object
               ranks:
                 description: |-
@@ -99,8 +110,12 @@ spec:
                   RedundancyFactor is rd_fac. Unset means 2; 0 is valid and means "no
                   redundancy", which is what a pool on a single fault domain needs. It is a
                   pointer because with a default an omitted 0 would come back as the default.
-                  With 0 the pool is created with reintegration:incremental unless Properties
-                  sets reintegration: DAOS's default would discard a returning rank's data.
+                  It cannot change once the pool exists (status.uuid is set).
+
+                  With 0 the reintegration mode is pinned: incremental unless
+                  properties.reintegration says data_sync, which declares that a returning
+                  rank's data may be discarded (no_data_sync is refused: it rejects every
+                  write). The operator sets the mode back if it is changed in DAOS.
                 format: int32
                 maximum: 4
                 minimum: 0
@@ -131,6 +146,18 @@ spec:
             - size
             - systemRef
             type: object
+            x-kubernetes-validations:
+            - message: properties.reintegration must be data_sync, incremental or
+                no_data_sync
+              rule: '!has(self.properties) || !(''reintegration'' in self.properties)
+                || self.properties[''reintegration''] in [''data_sync'', ''incremental'',
+                ''no_data_sync'']'
+            - message: 'a pool with redundancyFactor 0 takes reintegration incremental
+                (the default) or data_sync: no_data_sync refuses every write to the
+                pool'
+              rule: '!has(self.redundancyFactor) || self.redundancyFactor != 0 ||
+                !has(self.properties) || !(''reintegration'' in self.properties) ||
+                self.properties[''reintegration''] != ''no_data_sync'''
           status:
             description: |-
               DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
@@ -234,9 +261,9 @@ spec:
                 type: string
               reintegrationMode:
                 description: |-
-                  ReintegrationMode is the reintegration property this operator created the
-                  pool with (data_sync, incremental, no_data_sync); empty when unknown (a pool
-                  created by an older operator or adopted). Containers are only cleared of
+                  ReintegrationMode is the pool's reintegration property (data_sync,
+                  incremental, no_data_sync) as dmg pool get-prop last reported it; empty when
+                  it could not be read. Containers are only cleared of
                   "Failures exceed RF" automatically on incremental pools annotated
                   daos.gluesys.com/auto-clear-unclean=true.
                 type: string
@@ -254,6 +281,17 @@ spec:
                 type: string
             type: object
         type: object
+        x-kubernetes-validations:
+        - message: spec.redundancyFactor cannot change once the pool exists; create
+            a new DaosPool for a different redundancy
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.redundancyFactor)
+            == has(oldSelf.spec.redundancyFactor) && (!has(self.spec.redundancyFactor)
+            || self.spec.redundancyFactor == oldSelf.spec.redundancyFactor))'
+        - message: spec.properties.reintegration cannot change once the pool exists
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.properties)
+            && ''reintegration'' in self.spec.properties ? self.spec.properties[''reintegration'']
+            : '''') == (has(oldSelf.spec.properties) && ''reintegration'' in oldSelf.spec.properties
+            ? oldSelf.spec.properties[''reintegration''] : '''')'
     served: true
     storage: true
     subresources:

@@ -24,6 +24,8 @@ import (
 )
 
 // DaosPoolSpec maps to `dmg pool create`.
+// +kubebuilder:validation:XValidation:rule="!has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] in ['data_sync', 'incremental', 'no_data_sync']",message="properties.reintegration must be data_sync, incremental or no_data_sync"
+// +kubebuilder:validation:XValidation:rule="!has(self.redundancyFactor) || self.redundancyFactor != 0 || !has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] != 'no_data_sync'",message="a pool with redundancyFactor 0 takes reintegration incremental (the default) or data_sync: no_data_sync refuses every write to the pool"
 type DaosPoolSpec struct {
 	// SystemRef names the DaosSystem this pool lives in.
 	SystemRef string `json:"systemRef"`
@@ -36,12 +38,18 @@ type DaosPoolSpec struct {
 	// RedundancyFactor is rd_fac. Unset means 2; 0 is valid and means "no
 	// redundancy", which is what a pool on a single fault domain needs. It is a
 	// pointer because with a default an omitted 0 would come back as the default.
-	// With 0 the pool is created with reintegration:incremental unless Properties
-	// sets reintegration: DAOS's default would discard a returning rank's data.
+	// It cannot change once the pool exists (status.uuid is set).
+	//
+	// With 0 the reintegration mode is pinned: incremental unless
+	// properties.reintegration says data_sync, which declares that a returning
+	// rank's data may be discarded (no_data_sync is refused: it rejects every
+	// write). The operator sets the mode back if it is changed in DAOS.
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:validation:Maximum=4
 	RedundancyFactor *int32 `json:"redundancyFactor,omitempty"`
-	// Properties are extra `--properties k:v` pairs (e.g. ec_cell_sz).
+	// Properties are extra `--properties k:v` pairs (e.g. ec_cell_sz), applied
+	// at creation. properties.reintegration cannot change once the pool exists,
+	// and when it is set the operator keeps the pool on that mode.
 	Properties map[string]string `json:"properties,omitempty"`
 	// ACL entries in DAOS ACE syntax (A::user@:rw). Declarative.
 	ACL []string `json:"acl,omitempty"`
@@ -87,9 +95,9 @@ type DaosPoolStatus struct {
 	// AppliedACLHash identifies the spec.acl last written with overwrite-acl.
 	AppliedACLHash string       `json:"appliedACLHash,omitempty"`
 	LastQueryTime  *metav1.Time `json:"lastQueryTime,omitempty"`
-	// ReintegrationMode is the reintegration property this operator created the
-	// pool with (data_sync, incremental, no_data_sync); empty when unknown (a pool
-	// created by an older operator or adopted). Containers are only cleared of
+	// ReintegrationMode is the pool's reintegration property (data_sync,
+	// incremental, no_data_sync) as dmg pool get-prop last reported it; empty when
+	// it could not be read. Containers are only cleared of
 	// "Failures exceed RF" automatically on incremental pools annotated
 	// daos.gluesys.com/auto-clear-unclean=true.
 	ReintegrationMode string `json:"reintegrationMode,omitempty"`
@@ -108,6 +116,10 @@ type DaosPoolStatus struct {
 // +kubebuilder:printcolumn:name="Rebuild",type=string,JSONPath=`.status.rebuildState`
 // +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:printcolumn:name="RF",type=integer,JSONPath=`.spec.redundancyFactor`,priority=1
+// +kubebuilder:printcolumn:name="Reintegration",type=string,JSONPath=`.status.reintegrationMode`,priority=1
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.redundancyFactor) == has(oldSelf.spec.redundancyFactor) && (!has(self.spec.redundancyFactor) || self.spec.redundancyFactor == oldSelf.spec.redundancyFactor))",message="spec.redundancyFactor cannot change once the pool exists; create a new DaosPool for a different redundancy"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.properties) && 'reintegration' in self.spec.properties ? self.spec.properties['reintegration'] : '') == (has(oldSelf.spec.properties) && 'reintegration' in oldSelf.spec.properties ? oldSelf.spec.properties['reintegration'] : '')",message="spec.properties.reintegration cannot change once the pool exists"
 
 // DaosPool is a DAOS pool.
 type DaosPool struct {

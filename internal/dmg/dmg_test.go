@@ -262,3 +262,33 @@ func TestRFExceeded(t *testing.T) {
 		t.Error("errno 5 alone is not enough to call it DER_RF")
 	}
 }
+
+// dmg -j pool get-prop e2epool rd_fac,self_heal,reintegration on CI lane A (2026-10-13)
+const poolGetPropOK = `{
+  "response": [
+    {"name": "rd_fac", "description": "Pool redundancy factor", "value": 0},
+    {"name": "reintegration", "description": "Reintegration mode", "value": "incremental"},
+    {"name": "self_heal", "description": "Self-healing policy", "value": "exclude;rebuild"}
+  ],
+  "error": null,
+  "status": 0
+}`
+
+func TestPoolProp(t *testing.T) {
+	e, err := Parse(poolGetPropOK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{"reintegration": "incremental", "self_heal": "exclude;rebuild", "rd_fac": "0"} {
+		if v, found, err := PoolProp(e, name); err != nil || !found || v != want {
+			t.Errorf("%s: %q %v %v, want %q", name, v, found, err, want)
+		}
+	}
+	if _, found, err := PoolProp(e, "label"); err != nil || found {
+		t.Errorf("absent property: found=%v err=%v", found, err)
+	}
+	e, _ = Parse(`{"response": null, "error": "unable to find pool service", "status": -1025}`)
+	if _, _, err := PoolProp(e, "reintegration"); err == nil {
+		t.Error("null response must be an error")
+	}
+}
