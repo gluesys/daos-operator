@@ -117,6 +117,34 @@ kubectl get nodes -o json | jq -r '.items[] | .metadata.name + " " + (.status.ca
 > (`pod-security.kubernetes.io/enforce: privileged`). The cloud VPC also has to
 > reach the DAOS servers at L3.
 
+### 2.4 Other accelerators — `accelerator`
+
+`vllm.services[].accelerator` sets the device resource and the KV connector
+together. Each default can be overridden on its own.
+
+| `accelerator` | Resource | `kvConnector` | Also |
+|---|---|---|---|
+| `nvidia` (default) | `nvidia.com/gpu` | `LMCacheConnectorV1` | `--gpu-memory-utilization`, `VLLM_USE_FLASHINFER_SAMPLER=0` |
+| `rbln` | `rebellions.ai/npu` | `RBLNLMCacheConnectorV1` | neither of those |
+| `custom` | `acceleratorResource` (required) | `kvConnector` (required) | — |
+
+`acceleratorCount` is the device count (`gpus` is still accepted) and
+`command` replaces `python3.12 -m vllm.entrypoints.openai.api_server` when the
+image's Python differs.
+
+**Rebellions NPU (`rbln`) — rendered, not yet run on hardware.** vllm-rbln is a
+vLLM platform plugin, not a fork, so the image is the RBLN stack (vllm-rbln,
+rebel-compiler, optimum-rbln, torch-rbln) with the DAOS client and lmcache-daos
+added; the `vllm-lmcache-daos` image does not work there. The connector
+`RBLNLMCacheConnectorV1` lives in `lmcache-rbln`, which only the vllm-rbln 0.12
+line uses and which is not on PyPI (0.11.x has no KV offload connector).
+lmcache-daos sits behind it as a `remote_storage_plugins` entry — whether
+lmcache-rbln passes that through is the part still to verify. The NPUs come in
+through the RBLN device plugin's CDI injection, so leave `runtimeClassName`
+unset. Older RBLN device plugins advertise `rebellions.ai/ATOM`; set
+`acceleratorResource` to whatever `kubectl describe node` lists. LMCache's
+multiprocess mode has no RBLN connector, so only the in-process path applies.
+
 ---
 
 ## 3. Preparing the DAOS side
