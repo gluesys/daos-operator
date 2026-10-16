@@ -182,6 +182,11 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 		if r := pool.Spec.MemRatioPercent; r != nil {
 			args = append(args, fmt.Sprintf("--mem-ratio=%d%%", *r))
 		}
+		if pool.Spec.Profile == daosv1alpha1.PoolProfileKVCache {
+			if t := kvcacheTierRatio(pool, sys); t > 0 {
+				args = append(args, fmt.Sprintf("--tier-ratio=%d", t))
+			}
+		}
 		if len(pool.Spec.Ranks) > 0 {
 			args = append(args, "-r", ranksCSV(pool.Spec.Ranks))
 		}
@@ -466,6 +471,46 @@ func setDegraded(pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, stat
 		}
 	}
 	meta.SetStatusCondition(&status.Conditions, c)
+}
+
+// minMetaPerTarget is the smallest metadata blob a target accepts under
+// MD-on-SSD: "Meta blob size(83886080) is less than minimal size(134217728)"
+// from bio_mc_create, lane A 2026-10-16 (a 14 GiB pool on 12 targets with the
+// default 6 % tier ratio).
+const minMetaPerTarget = 128 << 20
+
+// kvcacheTierRatio is the metadata tier percentage that gives every target at
+// least minMetaPerTarget, or 0 to leave DAOS's default (6 %) alone: when the
+// default already suffices, when the target count is not known yet, or when
+// even 100 % would not (DAOS then refuses the create and says why). A cache
+// pool is often small, which is where the default fails.
+//
+// Rounding up is conservative: DAOS rounds the per-target blob up as well
+// (14 GiB x 6 % / 12 targets is 71.7 MiB; it reported 80 MiB). The data tier
+// has its own floor -- 1 GiB of NVMe per target on lane A ("requested NVMe
+// capacity too small (min 1.0 GiB per target)") -- which a larger ratio eats
+// into; DAOS reports that case itself, with the size it would accept.
+func kvcacheTierRatio(pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem) int {
+	ranks := len(pool.Spec.Ranks)
+	if ranks == 0 {
+		ranks = len(sys.Status.Ranks)
+	}
+	perRank := int32(0)
+	for _, e := range sys.Spec.Engines {
+		if e.Targets > perRank {
+			perRank = e.Targets
+		}
+	}
+	size := pool.Spec.Size.Value()
+	if ranks == 0 || perRank == 0 || size <= 0 {
+		return 0
+	}
+	need := int64(minMetaPerTarget) * int64(ranks) * int64(perRank) * 100
+	pct := int((need + size - 1) / size)
+	if pct <= 6 || pct >= 100 {
+		return 0
+	}
+	return pct
 }
 
 // redundancyFactor is the rd_fac a pool is created with: profile kvcache's

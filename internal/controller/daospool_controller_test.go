@@ -319,6 +319,21 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		create := strings.Join(f.last("-dmg-create").Command, " ")
 		Expect(create).To(ContainSubstring("rd_fac:0"))
 		Expect(create).NotTo(ContainSubstring("self_heal"), "DAOS refuses self_heal at create (DER_INVAL)")
+		// 10 GiB over ranks 0,1 x 8 targets: 128 MiB x 16 = 2 GiB = 20 % (the default 6 % would give 38 MiB)
+		Expect(create).To(ContainSubstring("--tier-ratio=20"))
+	})
+
+	It("leaves the tier ratio alone when the default already gives each target 128 MiB", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Size = resource.MustParse("100Gi") // 6 % / 16 targets = 384 MiB
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("tier-ratio"))
 	})
 
 	It("pins a kvcache pool's self_heal to none and sets it back when DAOS drifts", func() {
