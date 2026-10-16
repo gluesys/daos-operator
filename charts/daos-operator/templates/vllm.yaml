@@ -65,6 +65,9 @@ through CDI, so no runtimeClassName is needed there.
 {{- fail (printf "vllm.services[%s]: accelerator %s needs kvConnector" .name $acc) }}
 {{- end }}
 {{- $accCount := .acceleratorCount | default .gpus | default 1 }}
+{{- $guard := .rankGuard | default dict }}
+{{- $url := printf "plugin://daos/%s/%s%s" (required "vllm.services[].poolRef is required" .poolRef) (required "vllm.services[].containerRef is required" .containerRef) (ternary (printf "?sys=%s" .systemName) "" (not (empty .systemName))) }}
+{{- $failPolicy := .kvLoadFailurePolicy | default (ternary "recompute" "" (eq ($guard.enabled | toString) "true")) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -75,12 +78,24 @@ metadata:
 data:
   lmcache_daos.yaml: |
     chunk_size: 256
-    remote_url: "plugin://daos/{{ required "vllm.services[].poolRef is required" .poolRef }}/{{ required "vllm.services[].containerRef is required" .containerRef }}{{ if .systemName }}?sys={{ .systemName }}{{ end }}"
+    {{- if $guard.enabled }}
+    {{- /* plugin route only: with remote_url as well LMCache 0.5.5 builds two
+    RemoteBackends on one container (#39). Needs lmcache-daos with the
+    extra_config url (lmcache-daos MR !50 and later). */}}
+    remote_serde: "naive"
+    remote_storage_plugins: ["daos"]
+    extra_config:
+      remote_storage_plugin.daos.url: "{{ $url }}"
+      remote_storage_plugin.daos.module_path: lmcache_daos.connector
+      remote_storage_plugin.daos.class_name: DaosConnector
+    {{- else }}
+    remote_url: "{{ $url }}"
     remote_serde: "naive"
     remote_storage_plugins: ["daos"]
     extra_config:
       remote_storage_plugin.daos.module_path: lmcache_daos.connector
       remote_storage_plugin.daos.class_name: DaosConnector
+    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -139,7 +154,7 @@ spec:
             {{- if or (eq $acc "nvidia") .gpuMemoryUtilization }}
             - --gpu-memory-utilization={{ .gpuMemoryUtilization | default "0.90" }}
             {{- end }}
-            - --kv-transfer-config={"kv_connector":"{{ $kvConnector }}","kv_role":"kv_both"}
+            - --kv-transfer-config={"kv_connector":"{{ $kvConnector }}","kv_role":"kv_both"{{ with $failPolicy }},"kv_load_failure_policy":"{{ . }}"{{ end }}}
             {{- range .extraArgs }}
             - {{ . }}
             {{- end }}
@@ -155,6 +170,15 @@ spec:
             {{- if .model.cacheHostPath }}
             - {name: HF_HOME, value: /data/hf_cache}
             - {name: HF_HUB_OFFLINE, value: "1"}
+            {{- end }}
+            {{- if $guard.enabled }}
+            # lmcache-daos rank guard: per-request deadlines, a breaker per rank
+            # (or per pool on EC buckets), capacity-bounded eviction
+            - {name: DAOS_RANK_GUARD, value: "1"}
+            - {name: DAOS_RANK_GUARD_OCLASS, value: {{ $guard.oclass | default "S1" | quote }}}
+            {{- with $guard.capacityGB }}
+            - {name: DAOS_RANK_GUARD_CAPACITY_GB, value: {{ . | quote }}}
+            {{- end }}
             {{- end }}
             {{- with .extraEnv }}
             {{- toYaml . | nindent 12 }}
