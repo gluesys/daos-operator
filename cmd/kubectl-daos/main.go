@@ -152,7 +152,8 @@ const usage = `usage: kubectl daos <command> <subcommand> <name> [--yes] [-n ns]
   rank   drain|exclude|reintegrate|clear-exclude <sys> --ranks=N[,M-O] [--wait=5m] [--discard-data]
                                                ask the operator to run one rank membership operation;
                                                waits for its result and fails if it failed (--wait=0: do not wait);
-                                               --discard-data lets a reintegrate empty rd_fac 0 data_sync pools
+                                               --discard-data lets a reintegrate empty rd_fac 0 data_sync pools,
+                                               or an exclude hit a kvcache pool without redundancy
   pool   destroy <pool>                        approve destruction and delete the DaosPool
   cont   destroy -n <ns> <cont>                approve destruction and delete the DaosContainer`
 
@@ -421,7 +422,7 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	fs := flag.NewFlagSet("rank", flag.ContinueOnError)
 	ranks := fs.String("ranks", "", "ranks to operate on: 1 or 0,2 or 1-3")
 	wait := fs.Duration("wait", 5*time.Minute, "how long to wait for the operator's result; 0 returns once the request is written")
-	discard := fs.Bool("discard-data", false, "reintegrate only: accept that rd_fac 0 pools with data_sync reintegration lose the data on these ranks")
+	discard := fs.Bool("discard-data", false, "reintegrate or exclude: accept that rd_fac 0 pools (data_sync reintegration, or kvcache without redundancy) lose the data on these ranks")
 	var pos []string
 	for i := 0; i < len(rest); i++ {
 		if strings.HasPrefix(rest[i], "-") {
@@ -439,8 +440,8 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	if *ranks == "" {
 		return fmt.Errorf("--ranks is required (e.g. --ranks=2 or --ranks=1,3-4)")
 	}
-	if *discard && op != "reintegrate" {
-		return fmt.Errorf("--discard-data only applies to reintegrate")
+	if *discard && op != "reintegrate" && op != "exclude" {
+		return fmt.Errorf("--discard-data only applies to reintegrate and exclude")
 	}
 	name := pos[0]
 	sys := &daosv1alpha1.DaosSystem{}
@@ -458,7 +459,9 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 			"  1. kubectl daos rank clear-exclude <sys> --ranks=<N>\n" +
 			"  2. kubectl -n <ns> delete pod <sys>-server-<node>-0   (so the engine starts and rejoins)\n" +
 			"  3. kubectl daos rank reintegrate <sys> --ranks=<N>\n" +
-			"Calling reintegrate before the engine is back only waits out a 5 minute drain timeout and fails.",
+			"Calling reintegrate before the engine is back only waits out a 5 minute drain timeout and fails.\n" +
+			"A kvcache pool without redundancy loses the data on these ranks (the system's self_heal excludes them from\n" +
+			"the pool); a rank that only reboots needs no exclude. The operator refuses it unless --discard-data is given.",
 		"reintegrate": "The ranks rejoin their pools and data rebuilds back onto them.\n" +
 			"A pool with redundancyFactor 0 and data_sync reintegration has no other copy: DAOS empties these ranks first,\n" +
 			"so their data in that pool is LOST. The operator refuses such a reintegrate unless --discard-data is given.",
@@ -467,7 +470,7 @@ func (a *app) rankOp(ctx context.Context, op string, rest []string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "About to ask DaosSystem %s to run: dmg system %s --ranks=%s\n%s\n", name, op, *ranks, impact)
 	if *discard {
-		b.WriteString("--discard-data: the data on these ranks in rd_fac 0 data_sync pools will be discarded.\n")
+		b.WriteString("--discard-data: the data on these ranks in rd_fac 0 pools (data_sync, or kvcache without redundancy) will be discarded.\n")
 	}
 	if len(sys.Status.Ranks) > 0 {
 		b.WriteString("current membership:\n")

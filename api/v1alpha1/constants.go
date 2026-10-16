@@ -71,6 +71,8 @@ const (
 	// rd_fac 0 pool with data_sync reintegration. DAOS discards the returning
 	// ranks' data before it rebuilds, and such a pool has no other copy, so the
 	// operator refuses unless this names the same ranks as the rank-op request.
+	// It likewise lets an exclude run on ranks of a kvcache pool without
+	// redundancy, which would lose the data on them.
 	// Removed together with AnnotationRankOp.
 	AnnotationRankOpDiscardData = "daos.gluesys.com/rank-op-discard-data"
 

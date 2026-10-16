@@ -125,7 +125,7 @@ func unprotectedPools(ranks string, pools []daosv1alpha1.DaosPool) []string {
 	want := parseRankSet(ranks)
 	var out []string
 	for _, p := range pools {
-		if p.Spec.RedundancyFactor == nil || *p.Spec.RedundancyFactor != 0 {
+		if redundancyFactor(&p) != 0 { // profile kvcache makes it 0 without spec.redundancyFactor
 			continue
 		}
 		if m := p.Status.ReintegrationMode; m != "" && m != "data_sync" {
@@ -144,6 +144,29 @@ func unprotectedPools(ranks string, pools []daosv1alpha1.DaosPool) []string {
 				mode = "unknown, DAOS default data_sync"
 			}
 			out = append(out, fmt.Sprintf("%s (reintegration %s)", p.Name, mode))
+		}
+	}
+	return out
+}
+
+// kvcachePoolsOn names the kvcache pools without redundancy that span any of
+// ranks. Excluding such a rank is the one thing their profile exists to avoid:
+// the system's self_heal (pool_exclude) then takes the rank's targets out of
+// the pool, and with rd_fac 0 the data on them is gone -- whereas a rank left
+// alone through a reboot simply rejoins and its blocks hit again.
+func kvcachePoolsOn(ranks string, pools []daosv1alpha1.DaosPool) []string {
+	want := parseRankSet(ranks)
+	var out []string
+	for _, p := range pools {
+		if p.Spec.Profile != daosv1alpha1.PoolProfileKVCache || kvcacheRedundancy(&p) != "none" {
+			continue
+		}
+		on := len(p.Spec.Ranks) == 0 // empty = every rank
+		for _, rk := range p.Spec.Ranks {
+			on = on || want[rk]
+		}
+		if on {
+			out = append(out, p.Name)
 		}
 	}
 	return out
@@ -235,7 +258,7 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 	if why := rankOpPrecondition(op, ranks, status); why != "" {
 		return record(op, ranks, false, why)
 	}
-	if op == "reintegrate" && sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData] != ranks {
+	if (op == "reintegrate" || op == "exclude") && sys.Annotations[daosv1alpha1.AnnotationRankOpDiscardData] != ranks {
 		pools := &daosv1alpha1.DaosPoolList{}
 		if err := r.List(ctx, pools); err != nil {
 			return 0, fmt.Errorf("list pools: %w", err)
@@ -246,7 +269,14 @@ func (r *DaosSystemReconciler) reconcileRankOp(ctx context.Context, sys *daosv1a
 				mine = append(mine, p)
 			}
 		}
-		if names := unprotectedPools(ranks, mine); len(names) > 0 {
+		if names := kvcachePoolsOn(ranks, mine); op == "exclude" && len(names) > 0 {
+			return record(op, ranks, false, fmt.Sprintf("refused: excluding rank(s) %s takes them out of kvcache pool(s) %s, "+
+				"which have no redundancy: the system's self_heal then excludes their targets from the pool and the data on "+
+				"them is lost. A rank that reboots does not need this -- it rejoins by itself and its blocks hit again. To "+
+				"accept the loss, set %s=%s with the request (kubectl daos rank exclude %s --ranks=%s --discard-data)",
+				ranks, strings.Join(names, ", "), daosv1alpha1.AnnotationRankOpDiscardData, ranks, sys.Name, ranks))
+		}
+		if names := unprotectedPools(ranks, mine); op == "reintegrate" && len(names) > 0 {
 			return record(op, ranks, false, fmt.Sprintf("refused: reintegrating rank(s) %s would discard their data in pool(s) %s: "+
 				"DAOS empties the returning ranks before it rebuilds, and rd_fac 0 has no other copy. To accept that loss, "+
 				"set %s=%s with the request (kubectl daos rank reintegrate %s --ranks=%s --discard-data)",
