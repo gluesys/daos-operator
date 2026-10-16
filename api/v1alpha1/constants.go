@@ -145,4 +145,8 @@ const (
 	// not the one the spec describes (size). It does not take the pool out of
 	// service: the data path is fine, the resource simply is not describing it.
 	ConditionSpecMismatch = "SpecMismatch"
+	// ConditionDegraded is set on a kvcache-profile DaosPool from the system's
+	// membership (not from dmg pool query, which does not answer while a rank
+	// of such a pool is down): True while a rank the pool spans is not Joined.
+	ConditionDegraded = "Degraded"
 )

@@ -243,6 +243,8 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		return r.updateStatus(ctx, pool, status, poolRequeueWait)
 	}
 
+	setDegraded(pool, sys, &status)
+
 	// an operation in flight: poll only that Job
 	if status.Operation != "" {
 		return r.pollOp(ctx, pool, sys, ns, status)
@@ -431,6 +433,39 @@ func humanBytes(b int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+// setDegraded reports, for a kvcache pool, whether a rank it spans is down.
+// It reads the DaosSystem's membership rather than dmg pool query, which does
+// not answer while a rank of an rd_fac 0, self_heal none pool is down (hub
+// 1f09478a §2.3). What it means differs by redundancy, so the message says it.
+func setDegraded(pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, status *daosv1alpha1.DaosPoolStatus) {
+	if pool.Spec.Profile != daosv1alpha1.PoolProfileKVCache || status.UUID == "" || len(sys.Status.Ranks) == 0 {
+		return
+	}
+	span := map[int32]bool{}
+	for _, r := range status.EnabledRanks {
+		span[r] = true
+	}
+	var down []string
+	for _, r := range sys.Status.Ranks {
+		if (len(span) == 0 || span[r.Rank]) && r.State != "Joined" {
+			down = append(down, fmt.Sprintf("%d (%s)", r.Rank, r.State))
+		}
+	}
+	c := metav1.Condition{Type: daosv1alpha1.ConditionDegraded, Status: metav1.ConditionFalse, Reason: "AllRanksJoined",
+		Message: "every rank the pool spans is Joined", ObservedGeneration: pool.Generation}
+	if len(down) > 0 {
+		c.Status, c.Reason = metav1.ConditionTrue, "RanksDown"
+		if kvcacheRedundancy(pool) == "ec" {
+			c.Message = "rank " + strings.Join(down, ", ") + " not Joined: the cache is served degraded and DAOS rebuilds " +
+				"that rank's share; once it is back, reintegrate it (dmg pool reintegrate)"
+		} else {
+			c.Message = "rank " + strings.Join(down, ", ") + " not Joined: blocks on it are misses until it returns, and a " +
+				"client that starts now cannot connect to the pool until then (running clients are unaffected)"
+		}
+	}
+	meta.SetStatusCondition(&status.Conditions, c)
 }
 
 // redundancyFactor is the rd_fac a pool is created with: profile kvcache's
