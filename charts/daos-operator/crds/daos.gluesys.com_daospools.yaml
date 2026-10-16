@@ -76,6 +76,24 @@ spec:
                 items:
                   type: string
                 type: array
+              kvcache:
+                description: KVCache tunes profile kvcache.
+                properties:
+                  redundancy:
+                    default: none
+                    description: |-
+                      Redundancy is none (rd_fac 0, self_heal none; clients use S1 buckets and
+                      a per-rank breaker) or ec (rd_fac 1, DAOS's default self_heal; clients
+                      use EC_2P1G1 buckets and a pool-wide breaker, and need at least three
+                      fault domains). Measured on a 3-node lane with one node powered off
+                      for 240 s: none misses that node's share during the outage and is back
+                      at once; ec keeps the hits but rebuilds the node's share, needs a
+                      reintegrate afterwards and 1.5x the space.
+                    enum:
+                    - none
+                    - ec
+                    type: string
+                type: object
               memRatioPercent:
                 description: |-
                   MemRatioPercent is `dmg pool create --mem-ratio`: how much of the pool's
@@ -89,6 +107,19 @@ spec:
                 maximum: 100
                 minimum: 1
                 type: integer
+              profile:
+                description: |-
+                  Profile presets the pool for a purpose. kvcache is a loss-tolerant KV
+                  cache for vLLM + LMCache with the lmcache-daos rank guard: a rebooting
+                  node costs its share of the cache as misses (redundancy none) or is
+                  served degraded (redundancy ec), and nothing in the data path stalls.
+                  It fixes rd_fac, and for redundancy none pins self_heal to none so DAOS
+                  never excludes a rank of this pool (an rd_fac 0 pool would lose that
+                  rank's data and need a reintegrate). See FlexA Hub 1f09478a §5, §6.2.
+                  It cannot change once the pool exists.
+                enum:
+                - kvcache
+                type: string
               properties:
                 additionalProperties:
                   type: string
@@ -147,6 +178,13 @@ spec:
             - systemRef
             type: object
             x-kubernetes-validations:
+            - message: 'spec.kvcache only applies with profile: kvcache'
+              rule: '!has(self.kvcache) || (has(self.profile) && self.profile == ''kvcache'')'
+            - message: 'profile kvcache sets rd_fac from kvcache.redundancy (none:
+                0, ec: 1); leave redundancyFactor unset or make it agree'
+              rule: '!has(self.profile) || self.profile != ''kvcache'' || !has(self.redundancyFactor)
+                || self.redundancyFactor == ((has(self.kvcache) && has(self.kvcache.redundancy)
+                && self.kvcache.redundancy == ''ec'') ? 1 : 0)'
             - message: properties.reintegration must be data_sync, incremental or
                 no_data_sync
               rule: '!has(self.properties) || !(''reintegration'' in self.properties)
@@ -267,6 +305,12 @@ spec:
                   "Failures exceed RF" automatically on incremental pools annotated
                   daos.gluesys.com/auto-clear-unclean=true.
                 type: string
+              selfHeal:
+                description: |-
+                  SelfHeal is the pool's self_heal property as dmg pool get-prop last
+                  reported it; empty when it could not be read. Profile kvcache with
+                  redundancy none keeps it at none.
+                type: string
               state:
                 type: string
               totalBytes:
@@ -282,6 +326,14 @@ spec:
             type: object
         type: object
         x-kubernetes-validations:
+        - message: spec.profile and spec.kvcache.redundancy cannot change once the
+            pool exists; create a new DaosPool
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || ((has(self.spec.profile)
+            ? self.spec.profile : '''') == (has(oldSelf.spec.profile) ? oldSelf.spec.profile
+            : '''') && (has(self.spec.kvcache) && has(self.spec.kvcache.redundancy)
+            ? self.spec.kvcache.redundancy : ''none'') == (has(oldSelf.spec.kvcache)
+            && has(oldSelf.spec.kvcache.redundancy) ? oldSelf.spec.kvcache.redundancy
+            : ''none''))'
         - message: spec.redundancyFactor cannot change once the pool exists; create
             a new DaosPool for a different redundancy
           rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.redundancyFactor)

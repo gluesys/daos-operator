@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -122,4 +123,38 @@ func (r *readFrom) Get(ctx context.Context, k client.ObjectKey, o client.Object,
 
 func (r *readFrom) List(ctx context.Context, l client.ObjectList, opts ...client.ListOption) error {
 	return r.reader.List(ctx, l, opts...)
+}
+
+func TestKVCachePoolsOn(t *testing.T) {
+	pool := func(name string, ranks []int32, redundancy string) daosv1alpha1.DaosPool {
+		p := daosv1alpha1.DaosPool{}
+		p.Name, p.Spec.Ranks, p.Spec.Profile = name, ranks, daosv1alpha1.PoolProfileKVCache
+		if redundancy != "" {
+			p.Spec.KVCache = &daosv1alpha1.KVCacheSpec{Redundancy: redundancy}
+		}
+		return p
+	}
+	plain := daosv1alpha1.DaosPool{}
+	plain.Name, plain.Spec.RedundancyFactor = "plain0", ptr.To(int32(0))
+	pools := []daosv1alpha1.DaosPool{
+		pool("kvall", nil, ""), // every rank, default redundancy none
+		pool("kv01", []int32{0, 1}, "none"),
+		pool("kvec", nil, "ec"), // redundant: DAOS rebuilds, not this guard's business
+		plain,                   // rd_fac 0 but not kvcache
+	}
+	if got := strings.Join(kvcachePoolsOn("2", pools), ","); got != "kvall" {
+		t.Fatalf("rank 2: got %q, want kvall", got)
+	}
+	if got := strings.Join(kvcachePoolsOn("0-1", pools), ","); got != "kvall,kv01" {
+		t.Fatalf("ranks 0-1: got %q, want kvall,kv01", got)
+	}
+}
+
+func TestUnprotectedPoolsSeesProfileRdFac(t *testing.T) {
+	p := daosv1alpha1.DaosPool{}
+	p.Name, p.Spec.Profile = "kv", daosv1alpha1.PoolProfileKVCache // rd_fac 0 through the profile
+	p.Status.ReintegrationMode = "data_sync"
+	if got := unprotectedPools("1", []daosv1alpha1.DaosPool{p}); len(got) != 1 {
+		t.Fatalf("a kvcache pool has rd_fac 0 without spec.redundancyFactor: got %v", got)
+	}
 }

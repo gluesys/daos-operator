@@ -71,6 +71,8 @@ const (
 	// rd_fac 0 pool with data_sync reintegration. DAOS discards the returning
 	// ranks' data before it rebuilds, and such a pool has no other copy, so the
 	// operator refuses unless this names the same ranks as the rank-op request.
+	// It likewise lets an exclude run on ranks of a kvcache pool without
+	// redundancy, which would lose the data on them.
 	// Removed together with AnnotationRankOp.
 	AnnotationRankOpDiscardData = "daos.gluesys.com/rank-op-discard-data"
 
@@ -92,6 +94,8 @@ const (
 	FinalizerPool      = "daos.gluesys.com/pool"
 	FinalizerContainer = "daos.gluesys.com/container"
 
+	// PoolProfileKVCache is DaosPool spec.profile for a loss-tolerant KV cache.
+	PoolProfileKVCache = "kvcache"
 	// LabelPool and LabelContainer mark the dmg/daos Jobs run for an object.
 	LabelPool      = "daos.gluesys.com/pool"
 	LabelContainer = "daos.gluesys.com/container"
@@ -143,4 +147,8 @@ const (
 	// not the one the spec describes (size). It does not take the pool out of
 	// service: the data path is fine, the resource simply is not describing it.
 	ConditionSpecMismatch = "SpecMismatch"
+	// ConditionDegraded is set on a kvcache-profile DaosPool from the system's
+	// membership (not from dmg pool query, which does not answer while a rank
+	// of such a pool is down): True while a rank the pool spans is not Joined.
+	ConditionDegraded = "Degraded"
 )

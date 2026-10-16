@@ -275,7 +275,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithMode("incremental")}}
 		rec(f) // finalizer
 		rec(f)
-		Expect(f.last("-dmg-query").Then).To(Equal([]string{"pool", "get-prop", "p1", "reintegration"}))
+		Expect(f.last("-dmg-query").Then).To(Equal([]string{"pool", "get-prop", "p1", "reintegration,self_heal"}))
 		Expect(getPool().Status.ReintegrationMode).To(Equal("incremental"), "status is what DAOS reports")
 		Expect(f.count("-dmg-reintmode")).To(BeZero())
 
@@ -298,6 +298,176 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		rec(f)
 		Expect(getPool().Status.ReintegrationMode).To(Equal("incremental"))
 		Expect(f.count("-dmg-reintmode")).To(Equal(2), "only the one set-prop (start + done poll)")
+	})
+
+	// the get-prop answer for both properties the query asks for
+	queryWithHeal := func(heal string) *dmg.Result {
+		props := `{"response": [{"name": "reintegration", "description": "Reintegration mode", "value": "incremental"},` +
+			`{"name": "self_heal", "description": "Self-healing policy", "value": "` + heal + `"}], "error": null, "status": 0}`
+		return &dmg.Result{Done: true, Output: dmgPoolQuery + "\n" + props}
+	}
+
+	It("creates a kvcache pool with rd_fac 0 and pins self_heal to none after the first query", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil // the fixture's 2 would be refused: the profile sets it
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		create := strings.Join(f.last("-dmg-create").Command, " ")
+		Expect(create).To(ContainSubstring("rd_fac:0"))
+		Expect(create).NotTo(ContainSubstring("self_heal"), "DAOS refuses self_heal at create (DER_INVAL)")
+		// 10 GiB over ranks 0,1 x 8 targets: 128 MiB x 16 = 2 GiB = 20 % (the default 6 % would give 38 MiB)
+		Expect(create).To(ContainSubstring("--tier-ratio=20"))
+	})
+
+	It("leaves the tier ratio alone when the default already gives each target 128 MiB", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Size = resource.MustParse("100Gi") // 6 % / 16 targets = 384 MiB
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).NotTo(ContainSubstring("tier-ratio"))
+	})
+
+	It("pins a kvcache pool's self_heal to none and sets it back when DAOS drifts", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		events := record.NewFakeRecorder(32)
+		rec := func(f *fakeDmg) {
+			r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		By("a new pool reports DAOS's default -> set to none, without a drift warning")
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("exclude;rebuild")}}
+		rec(f) // finalizer
+		rec(f)
+		Expect(getPool().Status.Operation).To(Equal(opSelfHeal))
+		Expect(f.last("-dmg-selfheal").Args).To(Equal([]string{"pool", "set-prop", "p1", "self_heal:none"}))
+		Expect(events.Events).NotTo(Receive(ContainSubstring("SelfHealDrift")))
+		f.set("-dmg-selfheal", &dmg.Result{Done: true, Output: dmgOK})
+		rec(f)
+		Expect(getPool().Status.SelfHeal).To(Equal("none"))
+		Expect(events.Events).To(Receive(ContainSubstring("SelfHealPinned")))
+
+		By("pinned: nothing more to do while DAOS reports none")
+		f.set("-dmg-query", queryWithHeal("none"))
+		rec(f)
+		Expect(f.count("-dmg-selfheal")).To(Equal(2), "only the one set-prop (start + done poll)")
+
+		By("someone set it back to exclude -> a drift warning and set-prop again")
+		f.set("-dmg-query", queryWithHeal("exclude"))
+		rec(f)
+		Expect(events.Events).To(Receive(ContainSubstring("SelfHealDrift")))
+		Expect(getPool().Status.Operation).To(Equal(opSelfHeal))
+	})
+
+	It("creates a kvcache ec pool with rd_fac 1", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.KVCache = &daosv1alpha1.KVCacheSpec{Redundancy: "ec"}
+		p.Spec.RedundancyFactor = ptr.To(int32(1)) // an explicit value that agrees is accepted
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(strings.Join(f.last("-dmg-create").Command, " ")).To(ContainSubstring("rd_fac:1"))
+	})
+
+	It("leaves a kvcache ec pool's self_heal to DAOS", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.KVCache = &daosv1alpha1.KVCacheSpec{Redundancy: "ec"}
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("exclude;rebuild")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(f.count("-dmg-selfheal")).To(BeZero())
+		Expect(getPool().Status.SelfHeal).To(Equal("exclude;rebuild"), "status is what DAOS reports")
+	})
+
+	It("marks a kvcache pool Degraded from system membership, even when dmg pool query does not answer", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		// the DaosSystem controller stores dmg's lower-case states
+		setRanks := func(states ...string) {
+			sys := &daosv1alpha1.DaosSystem{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
+			sys.Status.Ranks = nil
+			for i, st := range states {
+				sys.Status.Ranks = append(sys.Status.Ranks, daosv1alpha1.RankStatus{Rank: int32(i), State: st})
+			}
+			Expect(k8sClient.Status().Update(ctx, sys)).To(Succeed())
+		}
+		degraded := func() *metav1.Condition {
+			return meta.FindStatusCondition(getPool().Status.Conditions, daosv1alpha1.ConditionDegraded)
+		}
+		setRanks("joined", "joined")
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("none")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(degraded().Status).To(Equal(metav1.ConditionFalse))
+
+		By("rank 1 is down and the query no longer answers")
+		setRanks("joined", "excluded")
+		f.set("-dmg-query", &dmg.Result{Done: true, ExitCode: 1, Output: `{"response": null, "error": "context deadline exceeded", "status": -1}`})
+		poolRec(f)
+		c := degraded()
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Reason).To(Equal("RanksDown"))
+		Expect(c.Message).To(ContainSubstring("1 (excluded)"))
+		Expect(c.Message).To(ContainSubstring("cannot connect"), "redundancy none: new clients wait for the rank")
+
+		By("back")
+		setRanks("joined", "joined")
+		f.set("-dmg-query", queryWithHeal("none"))
+		poolRec(f)
+		Expect(degraded().Status).To(Equal(metav1.ConditionFalse))
+	})
+
+	It("does not set Degraded on a pool without the kvcache profile", func() {
+		setPoolUUID()
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
+		sys.Status.Ranks = []daosv1alpha1.RankStatus{{Rank: 0, State: "joined"}, {Rank: 1, State: "excluded"}}
+		Expect(k8sClient.Status().Update(ctx, sys)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("exclude;rebuild")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(meta.FindStatusCondition(getPool().Status.Conditions, daosv1alpha1.ConditionDegraded)).To(BeNil())
+	})
+
+	It("rejects a redundancyFactor that disagrees with profile kvcache", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = ptr.To(int32(2))
+		err := k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("profile kvcache sets rd_fac"))
+		p = getPool()
+		p.Spec.KVCache = &daosv1alpha1.KVCacheSpec{Redundancy: "ec"}
+		err = k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("only applies with profile: kvcache"))
 	})
 
 	It("keeps an rd_fac 0 pool on data_sync when the spec chose it", func() {

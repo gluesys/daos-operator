@@ -175,6 +175,41 @@ YAML
 The 1 MiB default `chunkSize` costs an RPC per chunk and drops read throughput
 badly. **Use 4 MiB.**
 
+### 3.1a A cache that survives a storage node reboot -- `profile: kvcache`
+
+The pool above stalls requests when a storage node goes down. For a cache that
+should instead *miss* (or be served degraded) while a node reboots, use the
+kvcache profile together with lmcache-daos's rank guard:
+
+```bash
+kubectl apply -f - <<'YAML'
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: kvc}
+spec:
+  systemRef: <DaosSystem name>
+  size: 100Gi
+  profile: kvcache
+  kvcache: {redundancy: none}   # or ec: rd_fac 1, needs >= 3 fault domains, 1.5x space
+---
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainer
+metadata: {name: kv, namespace: daos-system}
+spec: {poolRef: kvc, type: UNKNOWN}   # the rank guard uses the object API, not DFS
+YAML
+```
+
+and in the vLLM service values `rankGuard: {enabled: true, oclass: S1}` (`EC_2P1G1`
+for `redundancy: ec`), with `capacityGB` at a third of the pool or less.
+
+| | `redundancy: none` | `redundancy: ec` |
+|---|---|---|
+| pool | rd_fac 0; the operator pins `self_heal:none` | rd_fac 1, DAOS default self_heal |
+| node down 240 s, measured | that node's blocks miss (TTFT at recompute), back at once on rejoin | hits kept (degraded), ~80 s of recompute-speed misses right after the stop, rebuild, then `dmg pool reintegrate` |
+| while a node is down | no new pool connect; punched/overwritten space is not reclaimed | both work |
+
+Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §5.
+
 ### 3.2 Installing the client agent on the GPU nodes
 
 Run one daos_agent per GPU node and expose its socket through a hostPath. Serving

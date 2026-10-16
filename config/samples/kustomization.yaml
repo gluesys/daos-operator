@@ -2,6 +2,7 @@
 resources:
 - daos_v1alpha1_daossystem.yaml
 - daos_v1alpha1_daospool.yaml
+- daos_v1alpha1_daospool_kvcache.yaml
 - daos_v1alpha1_daoscontainer.yaml
 - daos_v1alpha1_s3service.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
