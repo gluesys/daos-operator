@@ -386,9 +386,18 @@ func (r *DaosContainerReconciler) rfExceeded(ctx context.Context, c *daosv1alpha
 		r.event(c, corev1.EventTypeWarning, "RFPendingDeadlineExceeded", fmt.Sprintf("no pool status queried after the DER_RF query at %s within %s (pool last queried %s); querying the container again", at, rfPendingMax, last))
 	}
 	if why != "" {
+		cache := ""
+		if pool.Spec.Profile == daosv1alpha1.PoolProfileKVCache {
+			// with self_heal pinned to none no rank should ever have left this pool, so
+			// UNCLEAN here means something excluded one (a manual exclude, a self_heal
+			// changed behind the operator's back); and the data is a cache
+			cache = fmt.Sprintf(". Pool %s has profile kvcache, where this should not happen: check its status.selfHeal "+
+				"and the DaosSystem's lastRankOp for an exclude. The data is a cache, so deleting and re-creating "+
+				"this DaosContainer (an empty cache) is a valid recovery too", pool.Name)
+		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse,
 			Reason: "FailuresExceedRF", Message: "DAOS refuses to open the container (DER_RF, failures exceed its redundancy factor); " + why +
-				". Once the ranks are back and the data is known to be intact: " + manual, ObservedGeneration: c.Generation})
+				". Once the ranks are back and the data is known to be intact: " + manual + cache, ObservedGeneration: c.Generation})
 		status.Ready = false
 		if _, ok := rfPendingSince(contKey(c)); ok {
 			return r.updateStatus(ctx, c, status, poolRequeueOp)
