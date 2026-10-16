@@ -408,6 +408,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		p.Spec.Properties, p.Spec.ACL = nil, nil
 		Expect(k8sClient.Update(ctx, p)).To(Succeed())
 		setPoolUUID()
+		// the DaosSystem controller stores dmg's lower-case states
 		setRanks := func(states ...string) {
 			sys := &daosv1alpha1.DaosSystem{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
@@ -420,24 +421,24 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		degraded := func() *metav1.Condition {
 			return meta.FindStatusCondition(getPool().Status.Conditions, daosv1alpha1.ConditionDegraded)
 		}
-		setRanks("Joined", "Joined")
+		setRanks("joined", "joined")
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("none")}}
 		poolRec(f)
 		poolRec(f)
 		Expect(degraded().Status).To(Equal(metav1.ConditionFalse))
 
 		By("rank 1 is down and the query no longer answers")
-		setRanks("Joined", "Excluded")
+		setRanks("joined", "excluded")
 		f.set("-dmg-query", &dmg.Result{Done: true, ExitCode: 1, Output: `{"response": null, "error": "context deadline exceeded", "status": -1}`})
 		poolRec(f)
 		c := degraded()
 		Expect(c.Status).To(Equal(metav1.ConditionTrue))
 		Expect(c.Reason).To(Equal("RanksDown"))
-		Expect(c.Message).To(ContainSubstring("1 (Excluded)"))
+		Expect(c.Message).To(ContainSubstring("1 (excluded)"))
 		Expect(c.Message).To(ContainSubstring("cannot connect"), "redundancy none: new clients wait for the rank")
 
 		By("back")
-		setRanks("Joined", "Joined")
+		setRanks("joined", "joined")
 		f.set("-dmg-query", queryWithHeal("none"))
 		poolRec(f)
 		Expect(degraded().Status).To(Equal(metav1.ConditionFalse))
@@ -447,7 +448,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		setPoolUUID()
 		sys := &daosv1alpha1.DaosSystem{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
-		sys.Status.Ranks = []daosv1alpha1.RankStatus{{Rank: 0, State: "Joined"}, {Rank: 1, State: "Excluded"}}
+		sys.Status.Ranks = []daosv1alpha1.RankStatus{{Rank: 0, State: "joined"}, {Rank: 1, State: "excluded"}}
 		Expect(k8sClient.Status().Update(ctx, sys)).To(Succeed())
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("exclude;rebuild")}}
 		poolRec(f)

@@ -454,7 +454,8 @@ func setDegraded(pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, stat
 	}
 	var down []string
 	for _, r := range sys.Status.Ranks {
-		if (len(span) == 0 || span[r.Rank]) && r.State != "Joined" {
+		// status.ranks carries dmg's lower-case states ("joined", "excluded")
+		if (len(span) == 0 || span[r.Rank]) && !strings.EqualFold(r.State, "joined") {
 			down = append(down, fmt.Sprintf("%d (%s)", r.Rank, r.State))
 		}
 	}
