@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# A KV cache pool for vLLM + LMCache with the lmcache-daos rank guard: rd_fac 0 and self_heal
+# pinned to none, so a rebooting node costs its share of the cache as misses. redundancy: ec
+# instead keeps the hits (degraded) at 1.5x the space and needs three or more fault domains.
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata:
+  name: kvc
+spec:
+  systemRef: daos-dev
+  size: 100Gi
+  profile: kvcache
+  kvcache:
+    redundancy: none

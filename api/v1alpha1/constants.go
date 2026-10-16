@@ -92,6 +92,8 @@ const (
 	FinalizerPool      = "daos.gluesys.com/pool"
 	FinalizerContainer = "daos.gluesys.com/container"
 
+	// PoolProfileKVCache is DaosPool spec.profile for a loss-tolerant KV cache.
+	PoolProfileKVCache = "kvcache"
 	// LabelPool and LabelContainer mark the dmg/daos Jobs run for an object.
 	LabelPool      = "daos.gluesys.com/pool"
 	LabelContainer = "daos.gluesys.com/container"

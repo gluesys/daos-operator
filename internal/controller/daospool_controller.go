@@ -84,6 +84,8 @@ const (
 	opHeal    = "heal" // daos cont set-prop status:healthy
 	// opReintMode sets the reintegration property back to the one the spec pins
 	opReintMode = "reintmode"
+	// opSelfHeal sets self_heal back to the one profile kvcache pins
+	opSelfHeal = "selfheal"
 )
 
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools,verbs=get;list;watch;create;update;patch;delete
@@ -161,13 +163,9 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	switch op {
 	case "query":
 		spec.Args = []string{"pool", "query", "--show-enabled", label}
-		spec.Then = []string{"pool", "get-prop", label, "reintegration"}
+		spec.Then = []string{"pool", "get-prop", label, "reintegration,self_heal"}
 	case opCreate:
-		rdFac := int32(2)
-		if pool.Spec.RedundancyFactor != nil {
-			rdFac = *pool.Spec.RedundancyFactor
-		}
-		props := []string{fmt.Sprintf("rd_fac:%d", rdFac)}
+		props := []string{fmt.Sprintf("rd_fac:%d", redundancyFactor(pool))}
 		keys := make([]string, 0, len(pool.Spec.Properties))
 		for k := range pool.Spec.Properties {
 			keys = append(keys, k)
@@ -197,6 +195,9 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	case opReintMode:
 		want, _ := pinnedReintegration(pool)
 		spec.Args = []string{"pool", "set-prop", label, "reintegration:" + want}
+	case opSelfHeal:
+		want, _ := pinnedSelfHeal(pool)
+		spec.Args = []string{"pool", "set-prop", label, "self_heal:" + want}
 	case opACL:
 		spec.Command = dmg.WithACLFile(pool.Spec.ACL, aclFilePath, append(base, "pool", "overwrite-acl", "-a", aclFilePath, label))
 	case opDestroy:
@@ -302,8 +303,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	status.TotalBytes, status.FreeBytes = info.Totals()
 	status.EnabledRanks = dmg.Ranks(info.EnabledRanks)
 	status.LastQueryTime = &now
-	if mode, ok := queriedReintegration(res.Output); ok {
+	if mode, ok := queriedProp(res.Output, "reintegration"); ok {
 		status.ReintegrationMode = mode
+	}
+	if heal, ok := queriedProp(res.Output, "self_heal"); ok {
+		status.SelfHeal = heal
 	}
 	// space: one number that decides for every container and PV in this pool.
 	// Reported on every successful query, even when an operation follows.
@@ -355,6 +359,16 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		r.event(pool, corev1.EventTypeWarning, "ReintegrationModeDrift", fmt.Sprintf("pool %s has reintegration:%s but the DaosPool pins %s; setting it back",
 			poolLabel(pool), status.ReintegrationMode, want))
 		return r.startOp(ctx, pool, sys, ns, status, opReintMode)
+	}
+	// self_heal cannot be given at create (DER_INVAL), so a kvcache pool is
+	// born with DAOS's default and set here on its first query; the same path
+	// sets it back if someone changes it.
+	if want, pinned := pinnedSelfHeal(pool); pinned && status.SelfHeal != "" && status.SelfHeal != want && !failedForThisSpec("SelfhealFailed") {
+		if pool.Status.SelfHeal != "" { // known before: someone changed it, not a new pool
+			r.event(pool, corev1.EventTypeWarning, "SelfHealDrift", fmt.Sprintf("pool %s has self_heal:%s but profile kvcache pins %s; setting it back",
+				poolLabel(pool), status.SelfHeal, want))
+		}
+		return r.startOp(ctx, pool, sys, ns, status, opSelfHeal)
 	}
 	if info.State == "Ready" {
 		msg := fmt.Sprintf("state %s, rebuild %s, %d ranks", info.State, info.Rebuild.State, len(status.EnabledRanks))
@@ -419,6 +433,43 @@ func humanBytes(b int64) string {
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
+// redundancyFactor is the rd_fac a pool is created with: profile kvcache's
+// (none: 0, ec: 1), else spec.redundancyFactor, else 2. Validation keeps an
+// explicit redundancyFactor in agreement with the profile.
+func redundancyFactor(pool *daosv1alpha1.DaosPool) int32 {
+	if pool.Spec.Profile == daosv1alpha1.PoolProfileKVCache {
+		if kvcacheRedundancy(pool) == "ec" {
+			return 1
+		}
+		return 0
+	}
+	if pool.Spec.RedundancyFactor != nil {
+		return *pool.Spec.RedundancyFactor
+	}
+	return 2
+}
+
+func kvcacheRedundancy(pool *daosv1alpha1.DaosPool) string {
+	if pool.Spec.KVCache != nil && pool.Spec.KVCache.Redundancy != "" {
+		return pool.Spec.KVCache.Redundancy
+	}
+	return "none"
+}
+
+// pinnedSelfHeal is the self_heal property the operator keeps a pool on: none
+// for profile kvcache without redundancy. Excluding a rank of an rd_fac 0 pool
+// loses its data and needs a reintegrate; leaving it in the map makes the
+// rank's blocks misses while it is down and hits again when it returns. The
+// price, measured: a new pool connect waits until the rank is back, and space
+// freed by punch or overwrite is not reclaimed meanwhile (hub 1f09478a §2.2,
+// §6.3 8).
+func pinnedSelfHeal(pool *daosv1alpha1.DaosPool) (string, bool) {
+	if pool.Spec.Profile == daosv1alpha1.PoolProfileKVCache && kvcacheRedundancy(pool) == "none" {
+		return "none", true
+	}
+	return "", false
+}
+
 // reintegrationMode is the reintegration property a pool is created with. Without
 // redundancy, DAOS's default (data_sync) discards the returning targets' data and rebuilds
 // it from replicas that do not exist: a node reboot followed by the documented `rank
@@ -438,20 +489,20 @@ func pinnedReintegration(pool *daosv1alpha1.DaosPool) (string, bool) {
 	if m, set := pool.Spec.Properties["reintegration"]; set {
 		return m, true
 	}
-	if pool.Spec.RedundancyFactor != nil && *pool.Spec.RedundancyFactor == 0 {
+	if redundancyFactor(pool) == 0 {
 		return "incremental", true
 	}
 	return "", false
 }
 
-// queriedReintegration reads the reintegration property from the query Job's second
-// command (`pool get-prop <pool> reintegration`); ok is false when it did not answer.
-func queriedReintegration(out string) (string, bool) {
+// queriedProp reads one property from the query Job's second command
+// (`pool get-prop <pool> reintegration,self_heal`); ok is false when it did not answer.
+func queriedProp(out, name string) (string, bool) {
 	envs, err := dmg.ParseAll(out)
 	if err != nil || len(envs) < 2 || envs[1].Error != nil {
 		return "", false
 	}
-	mode, found, err := dmg.PoolProp(envs[1], "reintegration")
+	mode, found, err := dmg.PoolProp(envs[1], name)
 	if err != nil || !found || mode == "" {
 		return "", false
 	}
@@ -462,6 +513,9 @@ func queriedReintegration(out string) (string, bool) {
 func opCommand(op string) string {
 	if op == opReintMode {
 		return "set-prop reintegration"
+	}
+	if op == opSelfHeal {
+		return "set-prop self_heal"
 	}
 	return op
 }
@@ -529,6 +583,10 @@ func (r *DaosPoolReconciler) pollOp(ctx context.Context, pool *daosv1alpha1.Daos
 		want, _ := pinnedReintegration(pool)
 		status.ReintegrationMode = want
 		r.event(pool, corev1.EventTypeNormal, "ReintegrationModeRestored", "pool "+poolLabel(pool)+" set back to reintegration:"+want)
+	case opSelfHeal:
+		want, _ := pinnedSelfHeal(pool)
+		status.SelfHeal = want
+		r.event(pool, corev1.EventTypeNormal, "SelfHealPinned", "pool "+poolLabel(pool)+" set to self_heal:"+want+" (profile kvcache)")
 	}
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "dmg pool " + opCommand(op) + " succeeded; refreshing", ObservedGeneration: pool.Generation})
 	clearHold(poolKey(pool))
