@@ -24,14 +24,14 @@ set -euo pipefail
 SRC=${SRC_REGISTRY:-registry.gitlab.gluesys.com/exastor}
 DST=${DST_REGISTRY:-ghcr.io/${GHCR_OWNER:-gluesys}}
 DRY=${1:-}
-OPERATOR_TAG=${OPERATOR_TAG:-v0.1.0-rc.4}
+OPERATOR_TAG=${OPERATOR_TAG:-v0.1.0-rc.5}
 OPERATOR_SRC_TAG=${OPERATOR_SRC_TAG:-$(git rev-parse --short=8 "${OPERATOR_TAG}^{commit}")}
 
 # source path : destination name : tag (source tag:destination tag when they differ)
 IMAGES=(
   "daos-operator/daos-operator:daos-operator:${OPERATOR_SRC_TAG}:${OPERATOR_TAG}"
   "daos-operator/daos-hostprep:daos-hostprep:${OPERATOR_SRC_TAG}:${OPERATOR_TAG}"
-  "daos-csi/daos-csi:daos-csi:${CSI_TAG:-v0.1.0-rc.4}"
+  "daos-csi/daos-csi:daos-csi:${CSI_SRC_TAG:-55f554f9}:${CSI_TAG:-v0.1.0-rc.5}"
   "daos-images/daos-server:daos-server:${DAOS_TAG:-2.8.0-20260922}"
   "daos-images/daos-agent:daos-agent:${DAOS_TAG:-2.8.0-20260914}"
   "daos-images/daos-admin:daos-admin:${DAOS_TAG:-2.8.0-20260914}"
