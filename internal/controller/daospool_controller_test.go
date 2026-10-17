@@ -758,6 +758,31 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, contNN, &daosv1alpha1.DaosContainer{}))).To(BeTrue())
 	})
 
+	It("tells a kvcache pool's UNCLEAN container that it should not happen and that re-creating it is a recovery", func() {
+		p := getPool()
+		p.Spec.Profile, p.Spec.RedundancyFactor = daosv1alpha1.PoolProfileKVCache, nil
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},
+			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, RedundancyFactor: ptr.To(int32(0))}}
+		Expect(k8sClient.Create(ctx, c)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{}}
+		rec := func() {
+			r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: contNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec() // finalizer
+		f.set("-daos-query", &dmg.Result{Done: true, ExitCode: 1, Output: daosContRFExceeded, Started: time.Now()})
+		rec()
+		Expect(k8sClient.Get(ctx, contNN, c)).To(Succeed())
+		cond := ready(c.Status.Conditions)
+		Expect(cond.Reason).To(Equal("FailuresExceedRF"))
+		Expect(cond.Message).To(And(ContainSubstring("profile kvcache"), ContainSubstring("re-creating"),
+			ContainSubstring("daos cont set-prop p1 c1 --properties status:healthy")))
+	})
+
 	It("clears a container stuck at failures-exceed-RF only when the pool is whole and was reintegrated incrementally", func() {
 		setPoolUUID()
 		setPool := func(mode string, disabled int32, queried time.Time) {
