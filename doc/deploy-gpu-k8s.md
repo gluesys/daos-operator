@@ -249,7 +249,7 @@ helm install daos daos-operator/charts/daos-operator -n daos-system --create-nam
 vllm:
   services:
     - name: vllm-daos
-      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20260927
+      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261020
       poolRef: kvpool
       containerRef: kvlmc
       systemName: daos_k8s                       # DaosSystem spec.systemName
