@@ -252,6 +252,31 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(HavePrefix("n2: 0/1 engine(s) joined (no rank registered: not formatted yet, or the engine died before joining)"))
 	})
 
+	It("does not call a system Ready whose management service lists ranks on nodes without a server (#38)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: `{"response": {"members": [
+		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
+		  {"addr": "10.0.0.2:10001", "state": "joined", "rank": 1, "uuid": "u1", "fault_domain": "/n2"},
+		  {"addr": "10.0.0.9:10001", "state": "joined", "rank": 2, "uuid": "u2", "fault_domain": "/gone"}]}, "error": null, "status": 0}`}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		sys := getSys()
+		c := cond(sys, daosv1alpha1.ConditionEnginesReady)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("StaleMembers"))
+		Expect(c.Message).To(HavePrefix("rank 2 at 10.0.0.9 (joined): the management service lists these ranks but no server pod"))
+		Expect(c.Message).To(ContainSubstring("/var/daos/<system>"))
+		r := cond(sys, daosv1alpha1.ConditionReady)
+		Expect(r.Status).To(Equal(metav1.ConditionFalse))
+		Expect(r.Reason).To(Equal("StaleMembers"))
+
+		By("once the member list matches the server nodes the system is Ready again")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers})
+		reconcileWith(f)
+		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Reason).To(Equal("AllJoined"))
+		Expect(cond(getSys(), daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
+	})
+
 	It("starts an engine that died under a Ready server pod, a bounded number of times (§13 #24)", func() {
 		resetEngineRestarts()
 		savedGrace, savedInterval := engineRestartGrace, engineRestartInterval

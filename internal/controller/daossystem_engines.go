@@ -32,6 +32,13 @@ import (
 const engineDownHint = "the server pod is up but its engine is not: read /var/log/daos/daos_engine.*.log " +
 	"in that pod (kubectl exec). A common cause is hugepages exhausted on the node (DER_NOMEM)"
 
+// staleMembersHint is what to do about ranks the management service remembers on nodes
+// without a server pod of this system.
+const staleMembersHint = "the server nodes keep /var/daos/<system>/control_metadata across helm uninstall, and a " +
+	"reinstall with another layout reuses it. Pool operations that span these ranks hang. Either put the " +
+	"servers back on those nodes, or remove the system and clear /var/daos/<system> on every server node " +
+	"before installing again (that erases its pools)"
+
 // membershipKnown reports whether status.ranks is an answer from the management service and
 // not the placeholder left right after a format.
 func membershipKnown(status *daosv1alpha1.DaosSystemStatus) bool {
@@ -51,6 +58,28 @@ func setEnginesCondition(sys *daosv1alpha1.DaosSystem, status *daosv1alpha1.Daos
 		return
 	case !membershipKnown(status):
 		setCond(status, daosv1alpha1.ConditionEnginesReady, metav1.ConditionUnknown, "MembershipUnknown", "the management service has not reported the ranks; see condition Formatted")
+		return
+	}
+	// A rank on a node where this DaosSystem runs no server is one the management service
+	// remembers from an earlier install: /var/daos/<name> outlives helm uninstall, and a
+	// reinstall with another layout (fewer nodes, other fabric) reuses its control_raft.
+	// The rank still reads Joined, so counting ranks says Ready while pool operations
+	// that need it hang (#38, lane A kdev-3rank -> kdev-1rank, 2026-10-20).
+	served := map[string]bool{}
+	for _, nc := range status.NodeConfigs {
+		if nc.Workload != "" {
+			served[nc.Node] = true
+		}
+	}
+	var stale []string
+	for _, r := range status.Ranks {
+		if !served[r.Node] {
+			stale = append(stale, fmt.Sprintf("rank %d at %s (%s)", r.Rank, r.Node, r.State))
+		}
+	}
+	if len(stale) > 0 {
+		setCond(status, daosv1alpha1.ConditionEnginesReady, metav1.ConditionFalse, "StaleMembers",
+			strings.Join(stale, ", ")+": the management service lists these ranks but no server pod of this system runs there; "+staleMembersHint)
 		return
 	}
 	want := len(sys.Spec.Engines)
