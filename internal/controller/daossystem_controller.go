@@ -470,6 +470,9 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "AwaitingFormat", "storage is not formatted; see condition Formatted")
 	case !status.Formatted:
 		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "FormatUnknown", "management service state unknown; see condition Formatted")
+	case enginesReason(&status) == "StaleMembers":
+		setCond(&status, daosv1alpha1.ConditionReady, metav1.ConditionFalse, "StaleMembers",
+			fmt.Sprintf("%d ranks joined, but some are left from an earlier install on nodes without a server pod; see condition EnginesReady", status.RanksJoined))
 	case status.RanksTotal > 0 && status.RanksJoined == status.RanksTotal && enginesDown(&status):
 		// every rank DAOS knows joined, but an engine never registered: counting ranks alone
 		// read this as Ready with half the engines gone (mixed-2engine, 2026-10-05)
@@ -633,6 +636,13 @@ func builderWithPredicates(p predicate.Predicate) builder.WatchesOption {
 }
 
 // enginesDown reports EnginesReady=False (an engine that should run on a Ready server pod does not).
+func enginesReason(st *daosv1alpha1.DaosSystemStatus) string {
+	if c := findCond(st, daosv1alpha1.ConditionEnginesReady); c != nil {
+		return c.Reason
+	}
+	return ""
+}
+
 func enginesDown(st *daosv1alpha1.DaosSystemStatus) bool {
 	c := findCond(st, daosv1alpha1.ConditionEnginesReady)
 	return c != nil && c.Status == metav1.ConditionFalse
