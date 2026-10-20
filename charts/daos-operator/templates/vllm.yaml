@@ -78,24 +78,16 @@ metadata:
 data:
   lmcache_daos.yaml: |
     chunk_size: 256
-    {{- if $guard.enabled }}
     {{- /* plugin route only: with remote_url as well LMCache 0.5.5 builds two
-    RemoteBackends on one container (#39). Needs lmcache-daos with the
-    extra_config url (lmcache-daos MR !50 and later). */}}
+    RemoteBackends on one container, so every chunk is stored twice.
+    The target comes from extra_config, which needs lmcache-daos MR !50 or
+    later (vllm-lmcache-daos 0.30.0-0.5.5-20261020 and later). */}}
     remote_serde: "naive"
     remote_storage_plugins: ["daos"]
     extra_config:
       remote_storage_plugin.daos.url: "{{ $url }}"
       remote_storage_plugin.daos.module_path: lmcache_daos.connector
       remote_storage_plugin.daos.class_name: DaosConnector
-    {{- else }}
-    remote_url: "{{ $url }}"
-    remote_serde: "naive"
-    remote_storage_plugins: ["daos"]
-    extra_config:
-      remote_storage_plugin.daos.module_path: lmcache_daos.connector
-      remote_storage_plugin.daos.class_name: DaosConnector
-    {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment

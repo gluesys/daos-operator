@@ -135,7 +135,7 @@ csi:
 vllm:
   services: []
   #  - name: vllm-daos
-  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20260927
+  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261020
   #    # KV cache target: an existing DaosPool and DaosContainer (POSIX, chunk 4 MiB)
   #    poolRef: podpool
   #    containerRef: kvlmc
@@ -159,8 +159,7 @@ vllm:
   #    imagePullSecret: ""
   #    resources: {requests: {cpu: "8", memory: 32Gi}}
   #    # lmcache-daos rank guard for a kvcache pool (DaosPool spec.profile: kvcache). Needs an
-  #    # image whose lmcache-daos has it (lmcache-daos MR !50 and later). Turning it on also
-  #    # writes the LMCache config the plugin-only way (#39: remote_url + plugins = two backends).
+  #    # image whose lmcache-daos has it (lmcache-daos MR !50 and later).
   #    rankGuard:
   #      enabled: false
   #      oclass: S1                  # S1 for kvcache redundancy none, EC_2P1G1 for redundancy ec
