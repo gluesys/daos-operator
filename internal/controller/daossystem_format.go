@@ -45,12 +45,13 @@ import (
 // keeps no membership database of its own.
 
 const (
-	jobQuerySuffix    = "-dmg-query"
-	jobFormatSuffix   = "-dmg-format"
-	requeueProbe      = 10 * time.Second
-	requeueMembership = 60 * time.Second
-	memberJoined      = "joined"
-	memberAwaitFormat = "awaitformat"
+	jobQuerySuffix     = "-dmg-query"
+	jobFormatSuffix    = "-dmg-format"
+	requeueProbe       = 10 * time.Second
+	requeueMembership  = 60 * time.Second
+	memberJoined       = "joined"
+	memberUnresponsive = "unresponsive"
+	memberAwaitFormat  = "awaitformat"
 )
 
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
@@ -95,13 +96,30 @@ func (r *DaosSystemReconciler) runDmgThen(ctx context.Context, sys *daosv1alpha1
 		ControlConfigMap: sys.Name + "-control",
 		Args:             args,
 		Then:             then,
-		NodeSelector:     sys.Spec.NodeSelector,
-		Tolerations:      sys.Spec.Tolerations,
-		ImagePullSecrets: sys.Spec.ImagePullSecrets,
-		Labels:           map[string]string{daosv1alpha1.LabelSystem: sys.Name},
-		CertsSecret:      adminCertsSecret(sys),
-		CertsFiles:       adminCertFiles(),
+		// only the membership query runs two commands; see membershipQueryTimeout
+		FirstTimeoutSeconds: firstTimeout(then),
+		NodeSelector:        sys.Spec.NodeSelector,
+		Tolerations:         sys.Spec.Tolerations,
+		ImagePullSecrets:    sys.Spec.ImagePullSecrets,
+		Labels:              map[string]string{daosv1alpha1.LabelSystem: sys.Name},
+		CertsSecret:         adminCertsSecret(sys),
+		CertsFiles:          adminCertFiles(),
 	})
+}
+
+// membershipQueryTimeout bounds `dmg system query` in the query Job. While a rank
+// is down the management service can sit on the membership lock (the leader's
+// raft commit for the dead rank does not finish), and the query then waits out
+// dmg's fixed 5 min deadline every time: status.ranks stayed at the pre-outage
+// "joined" for a 61 min outage (lane A, 2026-10-21). Past this, the pod prints a
+// timeout envelope and still answers the leader query that follows.
+const membershipQueryTimeout = 60
+
+func firstTimeout(then []string) int {
+	if len(then) > 0 {
+		return membershipQueryTimeout
+	}
+	return 0
 }
 
 // adminCertsSecret is the Secret dmg Jobs mount, "" when insecure.
@@ -248,6 +266,13 @@ func (r *DaosSystemReconciler) reconcileFormat(ctx context.Context, sys *daosv1a
 			return requeueSlow, nil
 		case dmg.ErrUnreachable:
 			setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "ManagementUnreachable", *env.Error)
+		case dmg.ErrTimeout:
+			var leader *dmg.Envelope
+			if len(envs) > 1 {
+				leader = envs[1]
+			}
+			markUnresponsive(status, leader)
+			return requeueSlow, nil
 		default:
 			setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionUnknown, "QueryError", *env.Error)
 		}
@@ -455,4 +480,54 @@ func findCond(st *daosv1alpha1.DaosSystemStatus, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// markUnresponsive handles a membership query that did not answer in time. The
+// last answer stays (status.ranks and lastQueryTime are not refreshed), except
+// that ranks on a node whose server pod is not Ready, or whose control address
+// the leader query lists as down, are reported "unresponsive" -- a state DAOS
+// itself uses -- so that what reads status.ranks (kvcache Degraded, EnginesReady)
+// sees the outage instead of the last "joined". Formatted says what was inferred.
+func markUnresponsive(status *daosv1alpha1.DaosSystemStatus, leader *dmg.Envelope) {
+	down := map[string]bool{}
+	for _, nc := range status.NodeConfigs {
+		if nc.Workload != "" && !nc.ServerReady {
+			down[nc.Node] = true
+		}
+	}
+	if leader != nil {
+		if info, err := dmg.LeaderQuery(leader); err == nil && info != nil {
+			byAddr := map[string]string{}
+			for _, nc := range status.NodeConfigs {
+				byAddr[dmg.Host(nc.ControlAddr)] = nc.Node
+			}
+			for _, a := range info.DownReplicas {
+				if n := byAddr[dmg.Host(a)]; n != "" {
+					down[n] = true
+				}
+			}
+		}
+	}
+	var marked []string
+	joined := 0
+	for i, r := range status.Ranks {
+		if down[r.Node] {
+			status.Ranks[i].State = memberUnresponsive
+			marked = append(marked, fmt.Sprintf("%d (%s)", r.Rank, r.Node))
+		}
+		if status.Ranks[i].State == memberJoined {
+			joined++
+		}
+	}
+	status.RanksJoined = int32(joined)
+	since := "never"
+	if status.LastQueryTime != nil {
+		since = status.LastQueryTime.UTC().Format(time.RFC3339)
+	}
+	msg := fmt.Sprintf("dmg system query did not answer within %d s (the management service can block while a rank is down); membership as of %s",
+		membershipQueryTimeout, since)
+	if len(marked) > 0 {
+		msg += "; reported unresponsive because their server pod is not Ready or their replica does not answer: rank " + strings.Join(marked, ", ")
+	}
+	setCond(status, daosv1alpha1.ConditionFormatted, metav1.ConditionTrue, "MembershipStale", msg)
 }

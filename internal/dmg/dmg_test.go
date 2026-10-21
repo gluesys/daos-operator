@@ -121,6 +121,7 @@ func TestClassify(t *testing.T) {
 		"unable to find pool service with label \"optest\"":                                          ErrNotFound,
 		"failed to connect to pool: DER_NONEXIST(-1005): The specified entity does not exist":        ErrNotFound,
 		"pool create failed: server: code = 605 description = \"requested NVMe capacity too small\"": ErrOther,
+		TimeoutError + " 60 s": ErrTimeout,
 	}
 	for msg, want := range cases {
 		if got := Classify(msg); got != want {

@@ -60,6 +60,12 @@ type RunSpec struct {
 	// It bypasses the admin entrypoint, so dmg reads its default config path --
 	// which is the path the control ConfigMap is mounted at anyway.
 	Then []string
+	// FirstTimeoutSeconds bounds Args when Then is set: past it the pod prints an
+	// envelope whose error is TimeoutError and goes on to Then. dmg's own request
+	// deadline is a fixed 5 min, and `dmg system query` waits that long while the
+	// management service is stuck on a dead rank -- with Then never reached and
+	// the Job running to its deadline with no output at all (lane A, 2026-10-21).
+	FirstTimeoutSeconds int
 	// Command replaces the default `dmg -j <Args>` entirely (e.g. a bash -c wrapper
 	// that writes an ACL file first, or a `daos` client invocation).
 	Command          []string
@@ -209,7 +215,12 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 		// admin entrypoint: "dmg ..." -> exec dmg -o /etc/daos/daos_control.yml ...
 		command = append([]string{"dmg", "-j"}, s.Args...)
 		if len(s.Then) > 0 {
-			command = []string{"sh", "-c", dmgLine(s.Args) + "; " + dmgLine(s.Then)}
+			first := dmgLine(s.Args)
+			if s.FirstTimeoutSeconds > 0 {
+				first = fmt.Sprintf("timeout %d %s || echo %s", s.FirstTimeoutSeconds, first,
+					ShellQuote(timeoutEnvelope(s.FirstTimeoutSeconds)))
+			}
+			command = []string{"sh", "-c", first + "; " + dmgLine(s.Then)}
 		}
 	}
 	volumes := append([]corev1.Volume{{Name: "control", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
@@ -340,6 +351,14 @@ func Parse(out string) (*Envelope, error) {
 }
 
 // dmgLine renders one `dmg -j ...` shell command.
+// TimeoutError starts the error of the envelope a pod prints when the first of
+// its two commands ran past RunSpec.FirstTimeoutSeconds (Classify: ErrTimeout).
+const TimeoutError = "dmg: no answer within"
+
+func timeoutEnvelope(secs int) string {
+	return fmt.Sprintf(`{"response":null,"error":"%s %d s","status":-1}`, TimeoutError, secs)
+}
+
 func dmgLine(args []string) string {
 	out := "dmg -j"
 	for _, a := range args {
@@ -417,6 +436,8 @@ const (
 	ErrNotFound
 	// ErrOther: anything else; the message is shown as is.
 	ErrOther
+	// ErrTimeout: the command ran past RunSpec.FirstTimeoutSeconds.
+	ErrTimeout
 )
 
 // Classify maps a dmg error message to an ErrorKind.
@@ -425,6 +446,8 @@ func Classify(msg string) ErrorKind {
 	switch {
 	case m == "":
 		return ErrNone
+	case strings.HasPrefix(msg, TimeoutError):
+		return ErrTimeout
 	case strings.Contains(m, "system is uninitialized"), strings.Contains(m, "storage format required"),
 		strings.Contains(m, "raft service unavailable"):
 		return ErrUnformatted
