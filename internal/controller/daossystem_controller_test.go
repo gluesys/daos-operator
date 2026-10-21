@@ -205,6 +205,18 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(f.last("-dmg-query").ImagePullSecrets).To(Equal(want), "dmg Jobs")
 	})
 
+	It("checks the bdev layout of a formatted control_metadata before daos_server starts (#38)", func() {
+		reconcileOnce()
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n1"}, sts)).To(Succeed())
+		ic := sts.Spec.Template.Spec.InitContainers
+		Expect(ic).To(HaveLen(1))
+		Expect(ic[0].Name).To(Equal(bdevLayoutContainer))
+		Expect(ic[0].Image).To(Equal(hostPrepImage(getSys())))
+		Expect(ic[0].Args).To(Equal([]string{"-check-bdev-layout", "0=nvme:0000:03:00.0,0000:04:00.0", "-control-metadata", "/var/daos/control_metadata"}))
+		Expect(ic[0].VolumeMounts).To(Equal([]corev1.VolumeMount{{Name: "data", MountPath: "/var/daos", ReadOnly: true}}))
+	})
+
 	It("tells a file-class engine without bdevList to list file paths, not to wait for node facts (#16)", func() {
 		sys := getSys()
 		sys.Spec.Engines[0].BdevClass, sys.Spec.Engines[0].FabricIface = "file", "ens2"

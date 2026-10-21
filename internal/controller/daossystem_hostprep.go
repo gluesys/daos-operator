@@ -43,6 +43,13 @@ import (
 // chart overrides it through the DAOS_HOSTPREP_DEFAULT_IMAGE environment variable.
 var DefaultHostPrepImage = "registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:latest"
 
+func hostPrepImage(sys *daosv1alpha1.DaosSystem) string {
+	if sys.Spec.Images.HostPrep != "" {
+		return sys.Spec.Images.HostPrep
+	}
+	return DefaultHostPrepImage
+}
+
 const (
 	hostPrepClusterRole = "daos-hostprep"
 	hostPrepSAName      = "daos-hostprep"
@@ -80,10 +87,7 @@ func (r *DaosSystemReconciler) ensureHostPrep(ctx context.Context, sys *daosv1al
 		return fmt.Errorf("clusterrolebinding: %w", err)
 	}
 
-	image := sys.Spec.Images.HostPrep
-	if image == "" {
-		image = DefaultHostPrepImage
-	}
+	image := hostPrepImage(sys)
 	interval := sys.Spec.HostPrep.IntervalSeconds
 	if interval <= 0 {
 		interval = 300
