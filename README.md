@@ -219,6 +219,12 @@ KV-cache workload failed outright: the fabric is not an implementation detail.
 
 ## Documentation
 
+- [`doc/architecture.html`](doc/architecture.html) — a one-page visual guide for
+  developers: how the four reconcilers turn CRs into dmg Jobs, the DaosSystem
+  reconcile steps, the approval gates, the repository map and the CI lanes
+  *(Korean; open the file in a browser — GitLab and GitHub show it as source)*.
+  Regenerate it from `doc/architecture.src.html` with the visual-explainer
+  renderer (`node <visual-explainer>/kit/render.mjs doc/architecture.src.html`)
 - [`doc/deploy-gpu-k8s.md`](doc/deploy-gpu-k8s.md) — deploying the vLLM KV-cache
   path on common GPU setups, with the traps each one hides
 - [`doc/adr/`](doc/adr/) — the decisions behind the deployment, device-binding,
