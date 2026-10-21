@@ -1,0 +1,219 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 Gluesys Co., Ltd. -->
+<html lang="ko" data-register="blueprint">
+<head>
+<title>daos-operator는 CR을 dmg Job으로 바꾸는 조정기 네 개다</title>
+<link rel="stylesheet" href="kit.css" data-ve-kit>
+<style>
+:root { --accent: oklch(0.62 0.14 230); }
+.files { display:grid; grid-template-columns: repeat(auto-fit, minmax(min(260px,100%),1fr)); gap: var(--s-4); }
+.files div { padding: var(--s-3) 0; border-top: 1px solid var(--border); }
+.files code { overflow-wrap:anywhere; }
+.order li, .steps-list li { margin-bottom: var(--s-2); }
+main p code, main li code, figcaption code, .ve-table code, .files code { overflow-wrap:anywhere; word-break:break-all; }
+.bars-wrap { overflow-x:auto; max-width:100%; }
+.cases { max-width:100%; }
+</style>
+</head>
+<body><main>
+<header>
+  <p class="eyebrow">개발자 안내 · daos-operator main cea9acd</p>
+  <h1>daos-operator는 CR 네 종을 <span class="num">dmg</span> Job으로 바꾸는 조정기 네 개다</h1>
+  <p class="lead">원하는 상태는 CR spec에, 실제 상태는 DAOS 관리 서비스에 있다. <b>operator는 둘을 비교하고, 바꾸는 일은 모두 dmg Job으로 한다.</b></p>
+  <p class="meta">exastor/daos-operator · Go 약 9.9k 줄(테스트 제외) · v0.1.0-rc.5, 차트 0.1.7 · 2026-10-21</p>
+</header>
+
+<figure>
+  <div class="frame"><svg class="ve-svg" viewBox="0 0 1040 600" aria-label="사용자, helm, daos-csi가 CR을 만들고, manager의 조정기가 CR을 보고 hostprep, server StatefulSet, dmg Job, agent를 만들어 DAOS를 움직인다">
+    <rect class="ve-bnd" x="15" y="125" width="940" height="95"/><text class="ve-bnd-t" x="715" y="141">CR · api/v1alpha1</text>
+    <path class="ve-e" d="M125 82V150"/><text class="ve-el r" x="133" y="120">승인 어노테이션</text>
+    <path class="ve-e" d="M365 82V150"/><text class="ve-el r" x="373" y="120">CR·Deployment 설치</text>
+    <path class="ve-e" d="M605 82V150"/><text class="ve-el r" x="613" y="120">PVC마다 생성</text>
+    <path class="ve-e is-hot" d="M470 220V270"/><text class="ve-el r" x="478" y="252">watch</text>
+    <path class="ve-e" d="M125 330V400"/><text class="ve-el r" x="133" y="372">DaemonSet</text>
+    <path class="ve-e" d="M365 330V400"/><text class="ve-el r" x="373" y="384">노드마다 1개</text>
+    <path class="ve-e is-hot" d="M640 330V400"/><text class="ve-el r" x="648" y="372">Job 생성</text>
+    <path class="ve-e is-async" d="M570 400V330"/><text class="ve-el l" x="562" y="350">로그 → status</text>
+    <path class="ve-e" d="M845 330V400"/><text class="ve-el r" x="853" y="372">ConfigMap·DS</text>
+    <path class="ve-e is-async" d="M30 426H18V300H30"/>
+    <path class="ve-e" d="M365 452V520"/><text class="ve-el r" x="373" y="494">엔진 실행</text>
+    <path class="ve-e is-hot" d="M605 452V520"/><text class="ve-el r" x="613" y="494">dmg → JSON</text>
+    <path class="ve-e is-async" d="M845 452V505H690V520"/><text class="ve-el r" x="760" y="498">agent 소켓</text>
+    <path class="ve-e is-async" d="M940 56H990V546H700"/><text class="ve-el l" x="984" y="114">libdaos</text>
+    <g class="ve-n"><rect class="sh" x="30" y="30" width="190" height="52"/><text x="125" y="56">kubectl daos</text></g>
+    <g class="ve-n"><rect class="sh" x="270" y="30" width="190" height="52"/><text x="365" y="56">helm install</text></g>
+    <g class="ve-n"><rect class="sh" x="510" y="30" width="190" height="52"/><text x="605" y="50">daos-csi</text><text class="sub" x="605" y="68">별도 저장소</text></g>
+    <g class="ve-n"><rect class="sh" x="750" y="30" width="190" height="52"/><text x="845" y="50">vLLM 서비스</text><text class="sub" x="845" y="68">차트 vllm.yaml</text></g>
+    <g class="ve-n" data-ref="sys"><rect class="sh" x="30" y="150" width="190" height="52"/><text x="125" y="170">DaosSystem</text><text class="sub" x="125" y="188">cluster</text></g>
+    <g class="ve-n" data-ref="pool"><rect class="sh" x="270" y="150" width="190" height="52"/><text x="365" y="170">DaosPool</text><text class="sub" x="365" y="188">cluster</text></g>
+    <g class="ve-n"><rect class="sh" x="510" y="150" width="190" height="52"/><text x="605" y="170">DaosContainer</text><text class="sub" x="605" y="188">namespace</text></g>
+    <g class="ve-n"><rect class="sh" x="750" y="150" width="190" height="52"/><text x="845" y="170">S3Service</text><text class="sub" x="845" y="188">namespace</text></g>
+    <g class="ve-n is-key" data-ref="mgr"><rect class="sh" x="30" y="270" width="910" height="60"/><text x="485" y="292">operator manager · cmd/main.go</text><text class="sub" x="485" y="314">조정기 4개 · internal/controller</text></g>
+    <g class="ve-n"><rect class="sh" x="30" y="400" width="190" height="52"/><text x="125" y="420">hostprep</text><text class="sub" x="125" y="438">노드 사실 → 어노테이션</text></g>
+    <g class="ve-n"><rect class="sh" x="270" y="400" width="190" height="52"/><text x="365" y="420">server StatefulSet</text><text class="sub" x="365" y="438">노드마다 · OnDelete</text></g>
+    <g class="ve-n" data-ref="dmg"><rect class="sh" x="510" y="400" width="190" height="52"/><text x="605" y="420">dmg Job</text><text class="sub" x="605" y="438">daos-admin 이미지</text></g>
+    <g class="ve-n"><rect class="sh" x="750" y="400" width="190" height="52"/><text x="845" y="420">agent · control</text><text class="sub" x="845" y="438">ConfigMap · DaemonSet</text></g>
+    <g class="ve-n"><path class="sh" d="M270 528a215 8 0 0 1 430 0V566a215 8 0 0 1 -430 0Z"/><ellipse class="sh lid" cx="485" cy="528" rx="215" ry="8"/><text x="485" y="552">DAOS 시스템 · MS + 엔진(rank)</text></g>
+  </svg></div>
+  <figcaption><span class="fig-n">Fig. 1</span>사람·helm·daos-csi는 CR만 만든다. 조정기가 CR을 보고 Kubernetes 객체와 dmg Job을 만들고, Job의 로그가 status가 된다.</figcaption>
+</figure>
+
+<section>
+  <p class="ve-label caps">원칙</p>
+  <h2>파괴적인 일은 사람의 승인 한 번에 한 번만 일어난다</h2>
+  <p>format, destroy, rank 작업, 인증서 갱신은 승인 어노테이션이 있어야 실행된다. operator는 결과와 관계없이 시도 한 번 뒤에 어노테이션을 지운다. 업그레이드만 spec 필드(<code>spec.upgrade.approved</code>)다. <code>kubectl daos</code>가 확인을 받은 뒤 어노테이션을 쓴다.</p>
+  <figure>
+    <div class="cases">
+      <div class="case" data-st="warn"><span class="chip warn">format</span><h3>format-approved</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="사람이 format-approved 를 쓰면 조정기가 storage format 을 한 번 실행한다"><path class="ve-e" d="M70 32H120"/><path class="ve-e is-st" d="M170 50V78"/><g class="ve-n"><rect class="sh" x="10" y="14" width="60" height="36"/><text x="40" y="32">사람</text></g><g class="ve-n"><rect class="sh" x="120" y="14" width="100" height="36"/><text x="170" y="32">조정기</text></g><g class="ve-n is-st"><rect class="sh" x="20" y="78" width="200" height="36"/><text x="120" y="96">storage format</text></g></svg></div>
+      <div class="case" data-st="risk"><span class="chip risk">destroy</span><h3>destroy-approved</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="사람이 destroy-approved 를 쓰면 조정기가 pool 또는 container destroy 를 한 번 실행한다"><path class="ve-e" d="M70 32H120"/><path class="ve-e is-st" d="M170 50V78"/><g class="ve-n"><rect class="sh" x="10" y="14" width="60" height="36"/><text x="40" y="32">사람</text></g><g class="ve-n"><rect class="sh" x="120" y="14" width="100" height="36"/><text x="170" y="32">조정기</text></g><g class="ve-n is-st"><rect class="sh" x="20" y="78" width="200" height="36"/><text x="120" y="96">pool·cont destroy</text></g></svg></div>
+      <div class="case" data-st="risk"><span class="chip risk">rank-op</span><h3>op:ranks</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="사람이 rank-op 를 쓰면 조정기가 drain·exclude·reintegrate 를 한 번 실행한다"><path class="ve-e" d="M70 32H120"/><path class="ve-e is-st" d="M170 50V78"/><g class="ve-n"><rect class="sh" x="10" y="14" width="60" height="36"/><text x="40" y="32">사람</text></g><g class="ve-n"><rect class="sh" x="120" y="14" width="100" height="36"/><text x="170" y="32">조정기</text></g><g class="ve-n is-st"><rect class="sh" x="20" y="78" width="200" height="36"/><text x="120" y="96">exclude 등</text></g></svg></div>
+      <div class="case" data-st="ok"><span class="chip ok">upgrade</span><h3>spec.upgrade</h3>
+        <svg class="ve-mini" viewBox="0 0 240 128" aria-label="사람이 spec.upgrade.approved 를 켜면 조정기가 전체 정지 업그레이드를 한 번 실행한다"><path class="ve-e" d="M70 32H120"/><path class="ve-e is-st" d="M170 50V78"/><g class="ve-n"><rect class="sh" x="10" y="14" width="60" height="36"/><text x="40" y="32">사람</text></g><g class="ve-n"><rect class="sh" x="120" y="14" width="100" height="36"/><text x="170" y="32">조정기</text></g><g class="ve-n is-st"><rect class="sh" x="20" y="78" width="200" height="36"/><text x="120" y="96">system stop·start</text></g></svg></div>
+    </div>
+    <figcaption><span class="fig-n">Fig. 2</span>네 가지 위험한 작업은 같은 모양이다: 사람이 승인을 쓰고, 조정기가 dmg를 한 번 실행하고, 승인을 지운다.</figcaption>
+  </figure>
+  <p>두 번째 원칙: <b>진실의 출처는 둘뿐이다.</b> status는 dmg가 보고한 것만 옮긴다(<code>internal/dmg/dmg.go:18</code>). 차트의 DaosSystem에는 <code>helm.sh/resource-policy: keep</code>이 붙어 있어 <code>helm uninstall</code>이 엔진을 멈추지 않는다.</p>
+</section>
+
+<section>
+  <p class="ve-label caps">DaosSystem 조정</p>
+  <h2>DaosSystem 한 번의 조정은 노드 선택에서 Ready까지 10단계다</h2>
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 1010 280" aria-label="DaosSystem 조정 10단계: 노드 선택, 사실·충돌, MS·인증서, 서버 STS, agent·control, 업그레이드, format, rank 작업, 엔진 확인, Ready"><path class="ve-e" d="M190 60H220"/><path class="ve-e" d="M390 60H420"/><path class="ve-e" d="M590 60H620"/><path class="ve-e" d="M790 60H820"/><path class="ve-e" d="M905 90V190"/><path class="ve-e" d="M820 220H790"/><path class="ve-e" d="M620 220H590"/><path class="ve-e" d="M420 220H390"/><path class="ve-e" d="M220 220H190"/><g class="ve-n"><rect class="sh" x="20" y="30" width="170" height="60"/><text x="105" y="52">노드 선택</text><text class="sub" x="105" y="72">1 · hostprep</text></g><g class="ve-n"><rect class="sh" x="220" y="30" width="170" height="60"/><text x="305" y="52">사실·충돌</text><text class="sub" x="305" y="72">2 · discovery</text></g><g class="ve-n"><rect class="sh" x="420" y="30" width="170" height="60"/><text x="505" y="52">MS·인증서</text><text class="sub" x="505" y="72">3 · certs</text></g><g class="ve-n is-key"><rect class="sh" x="620" y="30" width="170" height="60"/><text x="705" y="52">서버 STS</text><text class="sub" x="705" y="72">4 · ensureServer</text></g><g class="ve-n"><rect class="sh" x="820" y="30" width="170" height="60"/><text x="905" y="52">agent·control</text><text class="sub" x="905" y="72">5 · ConfigMap·DS</text></g><g class="ve-n"><rect class="sh" x="820" y="190" width="170" height="60"/><text x="905" y="212">업그레이드</text><text class="sub" x="905" y="232">6 · 상태 기계</text></g><g class="ve-n is-key"><rect class="sh" x="620" y="190" width="170" height="60"/><text x="705" y="212">format</text><text class="sub" x="705" y="232">7 · 멤버십</text></g><g class="ve-n"><rect class="sh" x="420" y="190" width="170" height="60"/><text x="505" y="212">rank 작업</text><text class="sub" x="505" y="232">8 · rank-op</text></g><g class="ve-n"><rect class="sh" x="220" y="190" width="170" height="60"/><text x="305" y="212">엔진 확인</text><text class="sub" x="305" y="232">9 · 재시작</text></g><g class="ve-n"><rect class="sh" x="20" y="190" width="170" height="60"/><text x="105" y="212">Ready</text><text class="sub" x="105" y="232">10 · 30 s 주기</text></g></svg></div>
+    <ol class="steps-list">
+        <li><code>nodeSelector</code>로 노드를 고르고 hostprep DaemonSet을 만든다. hostprep가 NVMe·RDMA·NUMA를 찾아 Node 어노테이션에 쓴다.</li>
+        <li><code>discovery.FromNode</code>로 어노테이션을 읽고, 같은 드라이브(DSN)가 두 노드에 보이면 <code>DriveConflict</code>로 막는다.</li>
+        <li>MS 복제 노드를 고른다. 이미 복제인 노드는 그대로 둬서 나중에 붙은 노드가 시스템을 새로 만들지 못한다. TLS 인증서 Secret을 만든다.</li>
+        <li>노드마다 <code>render.Server</code>로 <code>&lt;sys&gt;-server-&lt;node&gt;</code> ConfigMap을, <code>ensureServer</code>로 replicas=1 StatefulSet을 만든다(OnDelete, hostNetwork, privileged).</li>
+        <li><code>&lt;sys&gt;-agent</code>·<code>&lt;sys&gt;-control</code> ConfigMap과 client agent DaemonSet을 만들고 ServersReady·Telemetry를 정한다.</li>
+        <li>업그레이드 상태 기계: Pending → Stopping → Updating → Starting → Verifying → Completed. 승인 뒤에만 움직인다.</li>
+        <li><code>dmg system query -v</code>로 멤버십을 읽는다. 초기화 전이면 <code>pendingFormat</code>. 승인과 모든 서버 Ready가 갖춰지면 <code>storage format</code>을 한 번 실행한다.</li>
+        <li><code>rank-op</code> 어노테이션을 처리한다. rd_fac 0 + data_sync 재편입과 kvcache 풀 rank의 exclude는 거부한다.</li>
+        <li>EnginesReady를 정한다(엔진 사망, 서버 없는 노드의 rank = StaleMembers). 죽은 엔진은 <code>dmg system start --ranks</code>로 다시 띄운다.</li>
+        <li>위가 모두 맞으면 Ready=True. 평소 30 s, format 확인 10 s, 멤버십 60 s마다 다시 돈다.</li>
+      </ol>
+      <button data-go="-1" aria-label="이전">‹</button><button data-play aria-label="재생">▶</button><input type="range" aria-label="단계"><button data-go="1" aria-label="다음">›</button>
+    </div>
+    <figcaption><span class="fig-n">Fig. 3</span>DaosSystem 조정기는 노드 사실 → 설정 렌더 → 노드별 서버 → format → 멤버십 순으로 진행한다. 모두 <code>internal/controller/daossystem_*.go</code>에 한 파일씩 있다.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="ve-label caps">dmg</p>
+  <h2>dmg는 Pod 안에서 돌고, 결과는 Job 로그의 JSON으로 돌아온다</h2>
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 860 330" aria-label="조정기가 Job을 만들고, Done=false면 다시 돌고, Job이 끝나면 로그를 읽어 JSON을 파싱하고 Job을 지운다">
+      <path class="ve-axis" d="M130 60V310M430 60V310M730 60V310"/>
+      <path class="ve-e is-hot" d="M130 100H430"/><text class="ve-el r" x="140" y="91">Job 생성 · daos-admin</text>
+      <path class="ve-e is-async" d="M430 140H130"/><text class="ve-el r" x="140" y="131">Done=false → requeue</text>
+      <path class="ve-e" d="M430 180H730"/><text class="ve-el r" x="440" y="171">dmg … -j</text>
+      <path class="ve-e is-async" d="M730 215H430"/><text class="ve-el r" x="440" y="206">JSON → 로그</text>
+      <path class="ve-e is-hot" d="M430 255H130"/><text class="ve-el r" x="140" y="246">GetLogs → Parse</text>
+      <path class="ve-e" d="M130 290H430"/><text class="ve-el r" x="140" y="281">Job 삭제</text>
+      <g class="ve-n is-key"><rect class="sh" x="40" y="20" width="180" height="40"/><text x="130" y="40">조정기</text></g>
+      <g class="ve-n"><rect class="sh" x="340" y="20" width="180" height="40"/><text x="430" y="40">Kubernetes Job·Pod</text></g>
+      <g class="ve-n"><rect class="sh" x="640" y="20" width="180" height="40"/><text x="730" y="40">DAOS MS</text></g>
+    </svg></div>
+    <figcaption><span class="fig-n">Fig. 4</span>조정기는 dmg를 직접 부르지 않는다. <code>internal/dmg.JobRunner</code>가 이름이 정해진 Job을 만들고, 끝나면 로그에서 JSON을 꺼내 <code>Classify</code>(Unformatted·Unreachable·NotFound)로 나눈다.</figcaption>
+  </figure>
+  <p>Job 이름이 정해져 있어서 같은 질의가 겹쳐 뜨지 않는다. <code>probehold.go</code>는 Job 삭제 이벤트가 곧바로 다음 질의를 부르지 않게 잠시 막는다. 시험은 <code>fake_dmg_test.go</code>가 스크립트로 응답을 대신한다.</p>
+</section>
+
+<section>
+  <p class="ve-label caps">CR</p>
+  <h2>CR마다 조정기 하나, status는 dmg가 본 것만 담는다</h2>
+  <div class="ve-table"><table>
+    <thead><tr><th>CR</th><th>범위</th><th>spec 핵심</th><th>status·조건</th><th>만드는 것</th></tr></thead>
+    <tbody>
+      <tr><td><b>DaosSystem</b></td><td>cluster</td><td>images, nodeSelector, msReplicas, provider, engines[] (bdevClass, bdevTiers), hostPrep, clientAgent, upgrade</td><td>NodesSelected, DriveConflict, ConfigRendered, ServersReady, EnginesReady, Formatted, ManagementService, Ready · ranks[]</td><td>hostprep DS, server STS ×노드, ConfigMap, Secret, Service, dmg Job</td></tr>
+      <tr><td><b>DaosPool</b></td><td>cluster</td><td>systemRef, size, ranks, redundancyFactor, properties, acl, <code>profile: kvcache</code></td><td>Ready, SpaceLow, SpecMismatch, Degraded · selfHeal, reintegrationMode</td><td>dmg Job(create·extend·set-prop·destroy). 줄이거나 다시 만들지 않음</td></tr>
+      <tr><td><b>DaosContainer</b></td><td>namespace</td><td>poolRef, type, oclass, chunkSize, redundancyFactor, acl</td><td>Ready(FailuresExceedRF 포함), health</td><td><code>daos cont</code> Job + agent 사이드카</td></tr>
+      <tr><td><b>S3Service</b></td><td>namespace</td><td>poolRef, image, replicas, iam, serviceType, tls</td><td>PoolReady, IAMDurable, Deployed, Ready</td><td>versitygw Deployment + Service</td></tr>
+    </tbody>
+  </table></div>
+  <p>CEL 규칙이 잘못된 조합을 apply 단계에서 막는다: nvme와 다른 bdev 클래스 섞기, kvcache 프로파일과 맞지 않는 rd_fac, 생성 뒤 profile·rd_fac·reintegration 변경. webhook은 없다.</p>
+</section>
+
+<section>
+  <p class="ve-label caps">요청 경로</p>
+  <h2>helm install에서 파드의 RWX 볼륨까지 7단계다</h2>
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 1040 260" aria-label="helm install, DaosSystem, format 승인, DaosPool, DaosContainer, dfuse 마운트 순서"><path class="ve-e" d="M200 58H290"/><text class="ve-el r" x="214" y="49">CR</text><path class="ve-e" d="M470 58H560"/><text class="ve-el r" x="478" y="49">pending</text><path class="ve-e" d="M740 58H830"/><text class="ve-el r" x="748" y="49">Formatted</text><path class="ve-e" d="M920 86V180"/><text class="ve-el r" x="928" y="138">pool Ready</text><path class="ve-e is-hot" d="M830 208H740"/><text class="ve-el r" x="750" y="196">mount</text><g class="ve-n"><rect class="sh" x="20" y="30" width="180" height="56"/><text x="110" y="58">helm install</text></g><g class="ve-n"><rect class="sh" x="290" y="30" width="180" height="56"/><text x="380" y="50">DaosSystem</text><text class="sub" x="380" y="70">hostprep</text></g><g class="ve-n is-key"><rect class="sh" x="560" y="30" width="180" height="56"/><text x="650" y="50">format 승인</text><text class="sub" x="650" y="70">kubectl daos</text></g><g class="ve-n"><rect class="sh" x="830" y="30" width="180" height="56"/><text x="920" y="50">DaosPool</text><text class="sub" x="920" y="70">pool create</text></g><g class="ve-n"><rect class="sh" x="830" y="180" width="180" height="56"/><text x="920" y="200">DaosContainer</text><text class="sub" x="920" y="220">PVC → daos-csi</text></g><g class="ve-n"><rect class="sh" x="560" y="180" width="180" height="56"/><text x="650" y="200">dfuse 마운트</text><text class="sub" x="650" y="220">RWX 볼륨</text></g></svg></div>
+    <ol class="steps-list">
+        <li><code>helm install</code>이 CRD와 operator Deployment를 깐다. <code>system.create</code>면 DaosSystem, <code>csi.enabled</code>면 daos-csi도 깐다.</li>
+        <li>조정기가 노드를 고르고 hostprep를 띄운다. Node 어노테이션이 바뀌면 다시 돈다.</li>
+        <li>서버 파드가 Ready가 되면 dmg 질의가 "초기화 전"을 보고 <code>status.pendingFormat</code>을 세운다.</li>
+        <li>사람이 <code>kubectl daos system format</code>을 실행한다. 조정기가 <code>storage format</code> Job을 한 번 돌리고 어노테이션을 지운다. rank가 Joined가 되면 Ready.</li>
+        <li>DaosPool은 Formatted를 기다렸다가 <code>dmg pool create</code> Job을 돌린다.</li>
+        <li>DAOS StorageClass의 PVC가 오면 daos-csi 컨트롤러가 DaosContainer를 만들고, 조정기가 <code>daos cont create</code>를 돌린다.</li>
+        <li>PV가 바인딩되고, CSI 노드 플러그인이 자기 agent 사이드카로 컨테이너를 dfuse 마운트한다. 파드는 RWX 볼륨을 본다.</li>
+      </ol>
+      <button data-go="-1" aria-label="이전">‹</button><button data-play aria-label="재생">▶</button><input type="range" aria-label="단계"><button data-go="1" aria-label="다음">›</button>
+    </div>
+    <figcaption><span class="fig-n">Fig. 5</span>사람이 끼어드는 곳은 format 승인 한 번이다. 나머지는 조정기가 이전 단계의 조건(pendingFormat, Formatted, Ready)을 보고 진행한다.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <p class="ve-label caps">저장소</p>
+  <h2>코드의 절반은 internal/controller에 있다</h2>
+  <figure>
+    <div class="bars-wrap"><ve-bars unit="줄" max="5200" label="패키지별 Go 줄 수(테스트 제외): controller 5157, api 2075, dmg 732, kubectl 599, hostprep 563, main 249, render 241, certs 166, discovery 156">
+      <ve-bar value="5157" hot>조정기</ve-bar><ve-bar value="2075">api</ve-bar><ve-bar value="732">dmg</ve-bar><ve-bar value="599">kubectl</ve-bar><ve-bar value="563">hostprep</ve-bar><ve-bar value="249">main</ve-bar><ve-bar value="241">render</ve-bar><ve-bar value="166">certs</ve-bar><ve-bar value="156">discovery</ve-bar>
+    </ve-bars></div>
+    <figcaption><span class="fig-n">Fig. 6</span>패키지별 Go 줄 수(테스트 제외). hostprep는 <code>cmd/hostprep</code>(203)와 <code>internal/hostprep</code>(360)의 합이다.</figcaption>
+  </figure>
+  <div class="files">
+    <div><code>cmd/main.go</code><br>manager. 조정기 4개 등록, dmg JobRunner 2개.</div>
+    <div><code>api/v1alpha1/</code><br>CRD 타입 4개와 <code>constants.go</code>(어노테이션·조건 이름).</div>
+    <div><code>internal/controller/</code><br>조정기. <code>daossystem_*.go</code> 11개가 단계별로 나뉜다.</div>
+    <div><code>internal/dmg/</code><br>Job 실행, JSON 파서, 오류 분류.</div>
+    <div><code>internal/render/</code><br>daos_server·agent·control YAML. Kubernetes 의존 없음.</div>
+    <div><code>internal/hostprep/</code>, <code>cmd/hostprep/</code><br>노드 사실 수집. 장치를 포맷하지 않는다.</div>
+    <div><code>cmd/kubectl-daos/</code><br>승인을 쓰는 플러그인. system·rank·pool·cont 명령.</div>
+    <div><code>charts/daos-operator/</code><br>CRD, operator, csi.yaml, s3.yaml, vllm.yaml, values 스키마.</div>
+    <div><code>test/e2e/</code>, <code>hack/ci/</code><br>Ginkgo e2e와 레인 롤백·준비 스크립트.</div>
+  </div>
+</section>
+
+<section>
+  <p class="ve-label caps">시험·CI</p>
+  <h2>MR은 레인 B의 Tier 1까지, 업그레이드와 Tier 2는 밤에 레인 A에서 돈다</h2>
+  <figure>
+    <div class="frame"><svg class="ve-svg" viewBox="0 0 740 260" aria-label="check, image 뒤 MR 과 main 은 레인 B Tier 1, 업그레이드·회귀는 MR 수동 또는 야간 Tier 2 로 레인 A"><path class="ve-e" d="M200 58H280"/><text class="ve-el r" x="214" y="49">통과</text><path class="ve-e is-hot" d="M460 58H540"/><text class="ve-el r" x="468" y="49">MR·main</text><path class="ve-e is-async" d="M370 86V180"/><text class="ve-el r" x="378" y="138">MR 수동</text><path class="ve-e" d="M200 208H280"/><text class="ve-el r" x="210" y="199">TIER=2</text><g class="ve-n"><rect class="sh" x="20" y="30" width="180" height="56"/><text x="110" y="50">check</text><text class="sub" x="110" y="70">syntax·test·schema</text></g><g class="ve-n"><rect class="sh" x="280" y="30" width="180" height="56"/><text x="370" y="50">image</text><text class="sub" x="370" y="70">operator·hostprep</text></g><g class="ve-n is-key"><rect class="sh" x="540" y="30" width="180" height="56"/><text x="630" y="50">Tier 1</text><text class="sub" x="630" y="70">레인 B</text></g><g class="ve-n"><rect class="sh" x="20" y="180" width="180" height="56"/><text x="110" y="200">야간 01:03</text><text class="sub" x="110" y="220">schedule</text></g><g class="ve-n"><rect class="sh" x="280" y="180" width="180" height="56"/><text x="370" y="200">업그레이드·회귀</text><text class="sub" x="370" y="220">레인 A</text></g></svg></div>
+    <figcaption><span class="fig-n">Fig. 7</span>check는 syntax·license·go-build·go-test(envtest)·chart-schema·render·render-validate·helm이다. 레인마다 실행 전에 VM을 <code>k8s-ready</code> 스냅숏으로 되돌린다(<code>hack/ci/rollback.sh</code>).</figcaption>
+  </figure>
+  <div class="ve-table"><table>
+    <thead><tr><th>시험</th><th>어디서</th><th>실행</th></tr></thead>
+    <tbody>
+      <tr><td>단위 + envtest</td><td><code>internal/controller/suite_test.go</code>, <code>fake_dmg_test.go</code></td><td><code>make test</code>(golang 컨테이너, setup-envtest)</td></tr>
+      <tr><td>e2e Tier 1</td><td><code>test/e2e/tier1_test.go</code>, 레인 B</td><td>MR·main 파이프라인 자동</td></tr>
+      <tr><td>업그레이드·회귀</td><td>라벨 <code>upgrade</code>, <code>regression</code>, 레인 A</td><td>MR 수동, 밤 Tier 2</td></tr>
+      <tr><td>Tier 2</td><td>라벨 <code>tier2</code>(resilience·mixed), 레인 A</td><td>밤 스케줄, 보고만</td></tr>
+      <tr><td>e2e 프로파일</td><td><code>test/e2e/profiles/</code>: kdev-1rank, kdev-3rank, tiers, mixed-2engine, nvme-1rank, neg-*</td><td><code>E2E_PROFILE</code>, <code>E2E_SET</code>, <code>E2E_RESET=1</code></td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section>
+  <p class="ve-label caps">시작</p>
+  <h2>처음 읽을 파일은 다섯 개다</h2>
+  <ol class="order">
+    <li><code>README.md</code>의 "Two rules"와 Uninstall: 승인과 데이터 보존 규칙.</li>
+    <li><code>api/v1alpha1/constants.go</code>: 모든 어노테이션과 조건 이름.</li>
+    <li><code>internal/controller/daossystem_controller.go</code>: Fig. 3의 단계가 이 순서로 있다.</li>
+    <li><code>internal/dmg/dmg.go</code>: Job 실행과 파싱(Fig. 4).</li>
+    <li><code>internal/controller/daossystem_controller_test.go</code>: <code>fakeDmg</code>로 조정기를 시험하는 방법.</li>
+  </ol>
+  <p>설계 근거는 <code>doc/adr/</code>(ADR-001 전용 저장 노드, 002 hostprep·VFIO, 003 전체 정지 업그레이드, 004 S3, 005 상류 RPM)와 <code>doc/design-notes.ko.md</code>에 있다. CI 설계는 <code>doc/ci-design-2026-10-02.md</code>.</p>
+</section>
+
+<section class="sources" aria-label="Sources"><p class="ve-label caps">Sources</p>
+  <p><code>cmd/main.go</code> · <code>api/v1alpha1/*_types.go</code>, <code>constants.go</code> · <code>internal/controller/daossystem_controller.go</code>, <code>daossystem_format.go</code>, <code>daossystem_engines.go</code>, <code>daossystem_upgrade.go</code>, <code>daossystem_rankop.go</code>, <code>daossystem_enginerestart.go</code>, <code>daospool_controller.go</code>, <code>daoscontainer_controller.go</code>, <code>s3service_controller.go</code> · <code>internal/dmg/dmg.go</code>, <code>probehold.go</code> · <code>internal/hostprep/</code> · <code>charts/daos-operator/templates/</code> · <code>.gitlab-ci.yml</code> · <code>hack/ci/</code> · <code>test/e2e/</code> · <code>README.md</code> · <code>doc/</code>. 모두 origin/main cea9acd. daos-csi 내부는 별도 저장소라 확인하지 않았다.</p>
+</section>
+</main></body>
+</html>
