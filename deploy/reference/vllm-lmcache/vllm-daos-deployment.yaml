@@ -29,7 +29,7 @@ spec:
       imagePullSecrets: [{name: gitlab-registry}]
       containers:
         - name: vllm
-          image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021
+          image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021.2
           command: ["python3.12", "-m", "vllm.entrypoints.openai.api_server"]
           args:
             - --model=/data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659
