@@ -54,8 +54,13 @@ func main() {
 		daosServer = flag.String("daos-server", "daos_server", "daos_server binary used for nvme prepare")
 		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig (empty = in-cluster)")
 		dryRun     = flag.Bool("dry-run", false, "discover once and print facts + annotations as JSON; no hugepages, no nvme prepare, no Node patch")
+		layouts    = flag.String("check-bdev-layout", "", "compare these engine layouts (0=aio:/dev/sdb;1=nvme:<pci>,...) with the formatted control_metadata, exit 1 if one changed, and do nothing else")
+		metaDir    = flag.String("control-metadata", "/var/daos/control_metadata", "control_metadata path for -check-bdev-layout")
 	)
 	flag.Parse()
+	if *layouts != "" {
+		os.Exit(checkBdevLayout(*layouts, *metaDir))
+	}
 	if *dryRun {
 		sys := hostprep.Sys{Root: *sysRoot}
 		if err := dryRunOnce(sys, *cidr); err != nil {
@@ -89,6 +94,26 @@ func main() {
 		case <-time.After(*interval):
 		}
 	}
+}
+
+// checkBdevLayout runs as the server pod's init container: a changed layout stops the pod
+// before daos_server starts engines that cannot open their bdevs (#38).
+func checkBdevLayout(layouts, metaDir string) int {
+	want, err := hostprep.ParseBdevLayouts(layouts)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hostprep:", err)
+		return 2
+	}
+	bad, err := hostprep.CheckBdevLayouts(metaDir, want)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "hostprep: read control_metadata:", err)
+		return 1
+	}
+	if len(bad) > 0 {
+		fmt.Fprintln(os.Stderr, strings.Join(bad, "; "))
+		return 1
+	}
+	return 0
 }
 
 // dryRunOnce prints what a real run would annotate, without changing anything.

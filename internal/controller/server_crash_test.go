@@ -5,6 +5,8 @@ package controller
 
 import (
 	"github.com/gluesys/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/hostprep"
+	"github.com/gluesys/daos-operator/internal/render"
 	"strings"
 	"testing"
 
@@ -77,5 +79,43 @@ func TestPodNotReadyMessageSaysWhyItIsUnschedulable(t *testing.T) {
 	want := "server pod daos2-server-n1-0: Unschedulable: 0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector."
 	if got := podNotReadyMessage(p); got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+// A reinstall with another storage layout over the same control_metadata: the init container
+// names both layouts and the condition says what to do (#38, lane A 2026-10-21).
+func TestPodNotReadyMessageSaysTheLayoutChanged(t *testing.T) {
+	layout := "engine 0: control_metadata was formatted for nvme 0000:00:03.0,0000:00:04.0, the config asks for aio /dev/sdb\n"
+	p := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "daos-server-n1-0"}, Status: corev1.PodStatus{
+		InitContainerStatuses: []corev1.ContainerStatus{{Name: bdevLayoutContainer,
+			State:                corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+			LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Message: layout}}}},
+		ContainerStatuses: []corev1.ContainerStatus{{Name: serverContainer,
+			State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}}},
+	}}
+	msg := podNotReadyMessage(p)
+	for _, want := range []string{"storage layout changed", "formatted for nvme 0000:00:03.0,0000:00:04.0", "asks for aio /dev/sdb", "No available SPDK bdevs", "approve the format"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message %q lacks %q", msg, want)
+		}
+	}
+
+	// the check passed on the next try: the old failure no longer explains the pod
+	p.Status.InitContainerStatuses[0].State = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 0}}
+	if got := podNotReadyMessage(p); got != "server pod daos-server-n1-0: PodInitializing" {
+		t.Errorf("after a passed check: %q", got)
+	}
+}
+
+func TestEngineBdevLayouts(t *testing.T) {
+	got := engineBdevLayouts([]render.Engine{
+		{Index: 0, BdevClass: "kdev", Bdevs: []string{"/dev/sdb"}},
+		{Index: 1, Tiers: []render.Tier{{Class: "nvme", Bdevs: []string{"0000:00:04.0"}}, {Class: "nvme", Bdevs: []string{"0000:00:03.0"}}}},
+		{Index: 2, Tiers: []render.Tier{{Class: "nvme", Bdevs: []string{"0000:00:05.0"}}, {Class: "kdev", Bdevs: []string{"/dev/sdc"}}}},
+		{Index: 3, BdevClass: "nvme"},
+		{Index: 4, BdevClass: "file", Bdevs: []string{"/var/daos/bdev0"}},
+	})
+	if s := hostprep.FormatBdevLayouts(got); s != "0=aio:/dev/sdb;1=nvme:0000:00:03.0,0000:00:04.0;4=aio:/var/daos/bdev0" {
+		t.Errorf("layouts: %s", s)
 	}
 }

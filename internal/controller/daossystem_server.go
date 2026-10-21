@@ -21,6 +21,7 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"sort"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+	"github.com/gluesys/daos-operator/internal/hostprep"
 	"github.com/gluesys/daos-operator/internal/render"
 )
 
@@ -58,8 +60,10 @@ import (
 // engine automatically is exactly the kind of surprise these ADRs forbid.
 
 const (
-	serverContainer   = "daos-server"
-	serverGracePeriod = int64(120)
+	serverContainer = "daos-server"
+	// bdevLayoutContainer stops the pod when control_metadata was formatted for other bdevs
+	bdevLayoutContainer = "bdev-layout-check"
+	serverGracePeriod   = int64(120)
 	// serverMemoryOverheadGiB is added to the tmpfs total for the engine's own RSS
 	// (SPDK, xstreams, RPC buffers). Users override via spec.server.resources.
 	serverMemoryOverheadGiB = 2
@@ -74,6 +78,48 @@ func serverEnabled(sys *daosv1alpha1.DaosSystem) bool {
 
 func serverWorkloadName(sys *daosv1alpha1.DaosSystem, node string) string {
 	return fmt.Sprintf("%s-server-%s", sys.Name, node)
+}
+
+// bdevLayoutHint is what to do when the node's control_metadata was formatted for other bdevs.
+const bdevLayoutHint = "daos_server would start the engines on the bdevs of that earlier format: they die " +
+	"(No available SPDK bdevs) while their ranks still read joined. Either put the earlier storage layout " +
+	"back in spec.engines, or remove the system and clear /var/daos/<system> (spec.server.dataHostPath) on " +
+	"this node before installing again (that erases its pools), then approve the format"
+
+// engineBdevLayouts is what each engine's daos_nvme.conf must describe for daos_server to
+// open its bdevs; an engine without bdevs, or with tiers of both kinds, is left out.
+func engineBdevLayouts(engines []render.Engine) map[int]hostprep.BdevLayout {
+	kindOf := func(class string) string {
+		switch class {
+		case "nvme":
+			return "nvme"
+		case "kdev", "file":
+			return "aio"
+		}
+		return ""
+	}
+	out := map[int]hostprep.BdevLayout{}
+	for _, e := range engines {
+		tiers := e.Tiers
+		if len(tiers) == 0 {
+			tiers = []render.Tier{{Class: e.BdevClass, Bdevs: e.Bdevs}}
+		}
+		var l hostprep.BdevLayout
+		for _, t := range tiers {
+			k := kindOf(t.Class)
+			if k == "" || (l.Kind != "" && l.Kind != k) {
+				l = hostprep.BdevLayout{}
+				break
+			}
+			l.Kind = k
+			l.Devices = append(l.Devices, t.Bdevs...)
+		}
+		if l.Kind != "" && len(l.Devices) > 0 {
+			sort.Strings(l.Devices)
+			out[e.Index] = l
+		}
+	}
+	return out
 }
 
 // serverHostPaths returns the node directories for data and logs.
@@ -204,6 +250,20 @@ func (r *DaosSystemReconciler) ensureServer(ctx context.Context, sys *daosv1alph
 		if certsSecret != "" {
 			mounts = append(mounts, corev1.VolumeMount{Name: "certs", MountPath: certsMountPath, ReadOnly: true})
 		}
+		// control_metadata outlives helm uninstall, and daos_server keeps the bdev config of the
+		// format it holds (#38): check it before daos_server starts
+		pod.InitContainers = nil
+		if l := engineBdevLayouts(engines); len(l) > 0 {
+			pod.InitContainers = []corev1.Container{{
+				Name:                     bdevLayoutContainer,
+				Image:                    hostPrepImage(sys),
+				ImagePullPolicy:          corev1.PullIfNotPresent,
+				Command:                  []string{"/usr/local/bin/hostprep"},
+				Args:                     []string{"-check-bdev-layout", hostprep.FormatBdevLayouts(l), "-control-metadata", "/var/daos/control_metadata"},
+				TerminationMessagePolicy: corev1.TerminationMessageFallbackToLogsOnError,
+				VolumeMounts:             []corev1.VolumeMount{{Name: "data", MountPath: "/var/daos", ReadOnly: true}},
+			}}
+		}
 		pod.Containers = []corev1.Container{{
 			Name: serverContainer,
 			// a daos_server that exits at start leaves its error here for ServersReady
@@ -249,6 +309,21 @@ func (r *DaosSystemReconciler) serverReady(ctx context.Context, sys *daosv1alpha
 // FallbackToLogsOnError). Without it a THP, RAM or bdev-space failure showed only as
 // "CrashLoopBackOff" and the cause was in the pod log (CI cluster, 2026-10-04).
 func podNotReadyMessage(p corev1.Pod) string {
+	for _, cs := range p.Status.InitContainerStatuses {
+		if cs.Name != bdevLayoutContainer || cs.Ready {
+			continue
+		}
+		t := cs.State.Terminated
+		if t != nil && t.ExitCode == 0 {
+			continue
+		}
+		if t == nil {
+			t = cs.LastTerminationState.Terminated
+		}
+		if t != nil && t.ExitCode != 0 {
+			return fmt.Sprintf("server pod %s: storage layout changed: %s; %s", p.Name, clip(strings.TrimSpace(t.Message)), bdevLayoutHint)
+		}
+	}
 	for _, cs := range p.Status.ContainerStatuses {
 		cause := ""
 		if t := cs.State.Terminated; t != nil {
