@@ -190,3 +190,30 @@ func TestJobRunnerReportsWhenDmgRan(t *testing.T) {
 		t.Errorf("unknown start must fall back, got %v", got)
 	}
 }
+
+// The membership query bounds its first command: past FirstTimeoutSeconds the pod
+// prints a timeout envelope (ParseAll reads it like dmg's own) and runs Then.
+func TestFirstTimeoutBoundsTheFirstCommand(t *testing.T) {
+	ctx := context.Background()
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+	spec := RunSpec{Owner: owner, Namespace: "ns", Name: "sys-dmg-query", Image: "admin", ControlConfigMap: "sys-control",
+		Args: []string{"system", "query", "-v"}, Then: []string{"system", "leader-query"}, FirstTimeoutSeconds: 60}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "sys-dmg-query"}, job); err != nil {
+		t.Fatal(err)
+	}
+	cmd := job.Spec.Template.Spec.Containers[0].Command
+	want := "timeout 60 " + dmgLine(spec.Args) + " || echo " + ShellQuote(timeoutEnvelope(60)) + "; " + dmgLine(spec.Then)
+	if len(cmd) != 3 || cmd[0] != "sh" || cmd[2] != want {
+		t.Fatalf("command:\n got %q\nwant %q", cmd, want)
+	}
+	envs, err := ParseAll(timeoutEnvelope(60) + "\n" + `{"response": {"current_leader": "a"}, "error": null, "status": 0}`)
+	if err != nil || len(envs) != 2 || envs[0].Error == nil || Classify(*envs[0].Error) != ErrTimeout {
+		t.Fatalf("timeout envelope must parse and classify: %+v %v", envs, err)
+	}
+}

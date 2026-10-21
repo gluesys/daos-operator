@@ -252,6 +252,42 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cond(getSys(), daosv1alpha1.ConditionEnginesReady).Message).To(HavePrefix("n2: 0/1 engine(s) joined (no rank registered: not formatted yet, or the engine died before joining)"))
 	})
 
+	It("marks ranks of a down node unresponsive when dmg system query does not answer", func() {
+		timedOut := fmt.Sprintf(`{"response":null,"error":"%s 60 s","status":-1}`, dmg.TimeoutError)
+		leaderDown := `{"response": {"current_leader": "10.0.0.1:10001",
+		  "replicas": ["10.0.0.1:10001", "10.0.0.2:10001"], "down_replicas": ["10.0.0.2:10001"]}, "error": null, "status": 0}`
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers + "\n" + dmgLeaderOK}}}
+		reconcileWith(f)
+		markServersReady("n1", "n2")
+		reconcileWith(f)
+		Expect(f.last("-dmg-query").FirstTimeoutSeconds).To(Equal(membershipQueryTimeout))
+		before := getSys().Status.LastQueryTime
+		Expect(before).NotTo(BeNil())
+
+		By("n2 powers off: its server pod goes NotReady and the query times out")
+		sts := &appsv1.StatefulSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-server-n2"}, sts)).To(Succeed())
+		sts.Status.ReadyReplicas = 0
+		Expect(k8sClient.Status().Update(ctx, sts)).To(Succeed())
+		f.set("system query -v", &dmg.Result{Done: true, Output: timedOut + "\n" + leaderDown})
+		reconcileWith(f)
+		sys := getSys()
+		Expect(sys.Status.Ranks).To(Equal([]daosv1alpha1.RankStatus{{Rank: 0, Node: "n1", State: "joined"}, {Rank: 1, Node: "n2", State: "unresponsive"}}))
+		Expect(sys.Status.RanksJoined).To(Equal(int32(1)))
+		Expect(sys.Status.LastQueryTime.Time.Equal(before.Time)).To(BeTrue(), "the membership answer is not refreshed")
+		c := cond(sys, daosv1alpha1.ConditionFormatted)
+		Expect(c.Reason).To(Equal("MembershipStale"))
+		Expect(c.Message).To(ContainSubstring("rank 1 (n2)"))
+
+		By("the query answers again: dmg's view replaces the inferred state")
+		markServersReady("n2")
+		f.set("system query -v", &dmg.Result{Done: true, Output: dmgMembers + "\n" + dmgLeaderOK})
+		reconcileWith(f)
+		sys = getSys()
+		Expect(sys.Status.RanksJoined).To(Equal(int32(2)))
+		Expect(cond(sys, daosv1alpha1.ConditionFormatted).Reason).NotTo(Equal("MembershipStale"))
+	})
+
 	It("does not call a system Ready whose management service lists ranks on nodes without a server (#38)", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: `{"response": {"members": [
 		  {"addr": "10.0.0.1:10001", "state": "joined", "rank": 0, "uuid": "u0", "fault_domain": "/n1"},
