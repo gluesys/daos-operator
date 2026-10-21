@@ -205,10 +205,16 @@ for `redundancy: ec`), with `capacityGB` at a third of the pool or less.
 | | `redundancy: none` | `redundancy: ec` |
 |---|---|---|
 | pool | rd_fac 0; the operator pins `self_heal:none` | rd_fac 1, DAOS default self_heal |
-| node down 240 s, measured | that node's blocks miss (TTFT at recompute), back at once on rejoin | hits kept (degraded), ~80 s of recompute-speed misses right after the stop, rebuild, then `dmg pool reintegrate` |
+| node down 240 s, measured | that node's blocks miss (TTFT at recompute), back at once on rejoin; with `relocate: true`, hits again within 15 s of the stop | hits kept (degraded), ~80 s of recompute-speed misses right after the stop, rebuild, then `dmg pool reintegrate` |
 | while a node is down | no new pool connect; punched/overwritten space is not reclaimed | both work |
 
-Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §5.
+`rankGuard.relocate: true` (S1 / `redundancy: none` only, off by default) stores the keys
+of a down rank on another rank's bucket and reads them back from there, during the outage and
+after it. Lane A, 240 s outage: repeat TTFT p50 0.18 s throughout instead of 0.7 s, no change
+in healthy TTFT, no failed request; a few writes may be dropped with DER_NOSPACE in the ~10 s
+after the rank rejoins. It needs vllm-lmcache-daos 0.30.0-0.5.5-20261021.2 or later.
+
+Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
 
 ### 3.2 Installing the client agent on the GPU nodes
 
@@ -249,7 +255,7 @@ helm install daos daos-operator/charts/daos-operator -n daos-system --create-nam
 vllm:
   services:
     - name: vllm-daos
-      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021
+      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021.2
       poolRef: kvpool
       containerRef: kvlmc
       systemName: daos_k8s                       # DaosSystem spec.systemName

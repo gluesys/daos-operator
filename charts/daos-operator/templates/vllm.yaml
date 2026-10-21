@@ -171,6 +171,11 @@ spec:
             {{- with $guard.capacityGB }}
             - {name: DAOS_RANK_GUARD_CAPACITY_GB, value: {{ . | quote }}}
             {{- end }}
+            {{- if $guard.relocate }}
+            # keys whose home rank is down go to another rank's bucket and are read
+            # back from there (lmcache-daos doc/RANK-GUARD-RELOCATION.md); S1 only
+            - {name: DAOS_RANK_GUARD_RELOCATE, value: "1"}
+            {{- end }}
             {{- end }}
             {{- with .extraEnv }}
             {{- toYaml . | nindent 12 }}

@@ -135,7 +135,7 @@ csi:
 vllm:
   services: []
   #  - name: vllm-daos
-  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021
+  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021.2
   #    # KV cache target: an existing DaosPool and DaosContainer (POSIX, chunk 4 MiB)
   #    poolRef: podpool
   #    containerRef: kvlmc
@@ -164,6 +164,9 @@ vllm:
   #      enabled: false
   #      oclass: S1                  # S1 for kvcache redundancy none, EC_2P1G1 for redundancy ec
   #      capacityGB: 0               # bound on what one instance keeps; start at <= 1/3 of the pool
+  #      relocate: false             # S1 only: while a rank is down, store its keys on another rank's
+  #                                  # bucket, so the cache keeps hitting (needs lmcache-daos with
+  #                                  # relocation, vllm-lmcache-daos 0.30.0-0.5.5-20261021.2 and later)
   #    kvLoadFailurePolicy: ""       # vLLM's own default is fail; recompute when rankGuard is on
   #    extraArgs: []                 # more vllm serve flags
   #    extraEnv: []
