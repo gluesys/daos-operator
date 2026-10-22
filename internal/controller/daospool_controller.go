@@ -66,6 +66,11 @@ const (
 	poolRequeueOp     = 10 * time.Second
 	poolRequeueWait   = 30 * time.Second
 	poolRequeueFailed = 5 * time.Minute
+	// poolQueryTimeout bounds the full pool query. While a rank of a self_heal none pool is
+	// down its targets stay in the pool map and the space query waits on them until dmg's
+	// own 5 min deadline, every probe; `dmg pool query -t` still answers in seconds
+	// (lane A, 2026-10-22).
+	poolQueryTimeout = 60
 
 	// A destroy hangs, with no output, while a rank holding the pool is down;
 	// left alone the operator re-ran it every 10 minutes for days without a word
@@ -163,6 +168,8 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	switch op {
 	case "query":
 		spec.Args = []string{"pool", "query", "--show-enabled", label}
+		spec.FirstTimeoutSeconds = poolQueryTimeout
+		spec.Fallback = []string{"pool", "query", "-t", "--show-enabled", label}
 		spec.Then = []string{"pool", "get-prop", label, "reintegration,self_heal"}
 	case opCreate:
 		props := []string{fmt.Sprintf("rd_fac:%d", redundancyFactor(pool))}
@@ -279,6 +286,12 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		setC(metav1.ConditionUnknown, "ProbeFailed", perr.Error())
 		return r.updateStatus(ctx, pool, status, poolRequeueWait)
 	}
+	healthOnly := false
+	if env.Error != nil && dmg.Classify(*env.Error) == dmg.ErrTimeout {
+		if h := fallbackAnswer(res.Output); h != nil {
+			env, healthOnly = h, true
+		}
+	}
 	if env.Error != nil {
 		switch dmg.Classify(*env.Error) {
 		case dmg.ErrNotFound:
@@ -307,7 +320,9 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	now := metav1.NewTime(res.QueriedAt(time.Now()))
 	status.UUID, status.State, status.RebuildState, status.DisabledTargets = info.UUID, info.State, info.Rebuild.State, info.DisabledTargets
 	status.Label = poolLabel(pool)
-	status.TotalBytes, status.FreeBytes = info.Totals()
+	if !healthOnly { // the health-only answer carries no space: keep the last full answer's
+		status.TotalBytes, status.FreeBytes = info.Totals()
+	}
 	status.EnabledRanks = dmg.Ranks(info.EnabledRanks)
 	status.LastQueryTime = &now
 	if mode, ok := queriedProp(res.Output, "reintegration"); ok {
@@ -348,6 +363,20 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			Status: st, Reason: reason, Message: msg, ObservedGeneration: pool.Generation})
 	}
 	setMismatch()
+
+	if healthOnly {
+		// an operation would wait on the same down rank; report and come back
+		msg := fmt.Sprintf("state %s, rebuild %s, %d ranks, dead ranks %v; dmg pool query did not answer within %d s, so this is "+
+			"its health-only form (-t): space is from the last full answer. A rank down in a self_heal none pool stays in "+
+			"the pool map and the space query waits on it", info.State, info.Rebuild.State, len(status.EnabledRanks),
+			dmg.Ranks(info.DeadRanks), poolQueryTimeout)
+		if info.State == "Ready" {
+			setC(metav1.ConditionTrue, "ReadyHealthOnly", msg)
+		} else {
+			setC(metav1.ConditionFalse, "State"+info.State, msg)
+		}
+		return r.updateStatus(ctx, pool, status, poolRequeueIdle)
+	}
 
 	// drift -> at most one operation per pass; a failed operation is not retried
 	// until the spec changes
@@ -580,10 +609,17 @@ func pinnedReintegration(pool *daosv1alpha1.DaosPool) (string, bool) {
 // (`pool get-prop <pool> reintegration,self_heal`); ok is false when it did not answer.
 func queriedProp(out, name string) (string, bool) {
 	envs, err := dmg.ParseAll(out)
-	if err != nil || len(envs) < 2 || envs[1].Error != nil {
+	if err != nil || len(envs) < 2 {
 		return "", false
 	}
-	mode, found, err := dmg.PoolProp(envs[1], name)
+	props := envs[1]
+	if fallbackAnswer(out) != nil {
+		props = envs[2]
+	}
+	if props.Error != nil {
+		return "", false
+	}
+	mode, found, err := dmg.PoolProp(props, name)
 	if err != nil || !found || mode == "" {
 		return "", false
 	}
@@ -599,6 +635,16 @@ func opCommand(op string) string {
 		return "set-prop self_heal"
 	}
 	return op
+}
+
+// fallbackAnswer is the health-only pool query the Job ran after the full one timed out:
+// the envelope after the timeout envelope, when the get-prop answer follows it too.
+func fallbackAnswer(out string) *dmg.Envelope {
+	envs, err := dmg.ParseAll(out)
+	if err != nil || len(envs) != 3 || envs[0].Error == nil || dmg.Classify(*envs[0].Error) != dmg.ErrTimeout {
+		return nil
+	}
+	return envs[1]
 }
 
 func parseResult(res *dmg.Result) (*dmg.Envelope, error) {

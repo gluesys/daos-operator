@@ -66,6 +66,9 @@ type RunSpec struct {
 	// management service is stuck on a dead rank -- with Then never reached and
 	// the Job running to its deadline with no output at all (lane A, 2026-10-21).
 	FirstTimeoutSeconds int
+	// Fallback runs only when Args ran past FirstTimeoutSeconds, right after the
+	// timeout envelope and before Then: a cheaper form of the same question.
+	Fallback []string
 	// Command replaces the default `dmg -j <Args>` entirely (e.g. a bash -c wrapper
 	// that writes an ACL file first, or a `daos` client invocation).
 	Command          []string
@@ -217,8 +220,13 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 		if len(s.Then) > 0 {
 			first := dmgLine(s.Args)
 			if s.FirstTimeoutSeconds > 0 {
-				first = fmt.Sprintf("timeout %d %s || echo %s", s.FirstTimeoutSeconds, first,
-					ShellQuote(timeoutEnvelope(s.FirstTimeoutSeconds)))
+				// only timeout's own exit code: dmg exits 1 after printing an error envelope,
+				// and a second envelope would shift Then's answer to the wrong place
+				onTimeout := "echo " + ShellQuote(timeoutEnvelope(s.FirstTimeoutSeconds))
+				if len(s.Fallback) > 0 {
+					onTimeout += "; " + dmgLine(s.Fallback)
+				}
+				first = fmt.Sprintf("timeout %d %s; if [ $? -eq 124 ]; then %s; fi", s.FirstTimeoutSeconds, first, onTimeout)
 			}
 			command = []string{"sh", "-c", first + "; " + dmgLine(s.Then)}
 		}
@@ -537,6 +545,8 @@ type PoolInfo struct {
 	} `json:"tier_stats"`
 	EnabledRanks  json.RawMessage `json:"enabled_ranks"`
 	DisabledRanks json.RawMessage `json:"disabled_ranks"`
+	// DeadRanks are pool ranks the system reports down (dmg pool query -t, DAOS 2.8).
+	DeadRanks json.RawMessage `json:"dead_ranks"`
 }
 
 // Totals sums the storage tiers.

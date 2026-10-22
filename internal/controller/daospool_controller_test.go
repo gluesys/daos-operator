@@ -444,6 +444,46 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(degraded().Status).To(Equal(metav1.ConditionFalse))
 	})
 
+	It("keeps the pool status current with the health-only query while the full one times out", func() {
+		p := getPool()
+		p.Spec.Profile = daosv1alpha1.PoolProfileKVCache
+		p.Spec.RedundancyFactor = nil
+		p.Spec.Properties, p.Spec.ACL = nil, nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		setPoolUUID()
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": queryWithHeal("none")}}
+		poolRec(f)
+		poolRec(f)
+		Expect(f.last("-dmg-query").FirstTimeoutSeconds).To(Equal(poolQueryTimeout))
+		Expect(f.last("-dmg-query").Fallback).To(Equal([]string{"pool", "query", "-t", "--show-enabled", poolLabel(getPool())}))
+		before := getPool().Status
+		Expect(before.TotalBytes).To(BeNumerically(">", 0))
+
+		By("rank 1 is down: the full query times out, the health-only one answers (lane A, 2026-10-22)")
+		health := `{"response": {"state": "Ready", "uuid": "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d", "total_targets": 2, "disabled_targets": 0,
+		  "rebuild": {"state": "idle"}, "tier_stats": [{"total": 0, "free": 0, "media_type": "scm"}, {"total": 0, "free": 0, "media_type": "nvme"}],
+		  "enabled_ranks": [0, 1], "dead_ranks": [1], "disabled_ranks": []}, "error": null, "status": 0}`
+		// self_heal reads exclude: the normal path would start a set-prop that the down rank would block
+		props := `{"response": [{"name": "reintegration", "value": "incremental"}, {"name": "self_heal", "value": "exclude"}], "error": null, "status": 0}`
+		f.set("-dmg-query", &dmg.Result{Done: true, Output: `{"response":null,"error":"dmg: no answer within 60 s","status":-1}` + "\n" + health + "\n" + props})
+		poolRec(f)
+		st := getPool().Status
+		c := meta.FindStatusCondition(st.Conditions, daosv1alpha1.ConditionReady)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Reason).To(Equal("ReadyHealthOnly"))
+		Expect(c.Message).To(ContainSubstring("dead ranks [1]"))
+		Expect(st.TotalBytes).To(Equal(before.TotalBytes), "space stays from the last full answer")
+		Expect(st.FreeBytes).To(Equal(before.FreeBytes))
+		Expect(st.SelfHeal).To(Equal("exclude"))
+		Expect(st.LastQueryTime.Time).NotTo(BeTemporally("<", before.LastQueryTime.Time))
+		Expect(f.count("-dmg-selfheal")).To(BeZero(), "no operation while a rank is down")
+
+		By("the full query answers again")
+		f.set("-dmg-query", queryWithHeal("none"))
+		poolRec(f)
+		Expect(meta.FindStatusCondition(getPool().Status.Conditions, daosv1alpha1.ConditionReady).Reason).To(Equal("Ready"))
+	})
+
 	It("does not set Degraded on a pool without the kvcache profile", func() {
 		setPoolUUID()
 		sys := &daosv1alpha1.DaosSystem{}

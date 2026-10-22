@@ -20,6 +20,8 @@ package dmg
 import (
 	"context"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -208,12 +210,55 @@ func TestFirstTimeoutBoundsTheFirstCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := job.Spec.Template.Spec.Containers[0].Command
-	want := "timeout 60 " + dmgLine(spec.Args) + " || echo " + ShellQuote(timeoutEnvelope(60)) + "; " + dmgLine(spec.Then)
+	want := "timeout 60 " + dmgLine(spec.Args) + "; if [ $? -eq 124 ]; then echo " + ShellQuote(timeoutEnvelope(60)) + "; fi; " + dmgLine(spec.Then)
 	if len(cmd) != 3 || cmd[0] != "sh" || cmd[2] != want {
 		t.Fatalf("command:\n got %q\nwant %q", cmd, want)
 	}
 	envs, err := ParseAll(timeoutEnvelope(60) + "\n" + `{"response": {"current_leader": "a"}, "error": null, "status": 0}`)
 	if err != nil || len(envs) != 2 || envs[0].Error == nil || Classify(*envs[0].Error) != ErrTimeout {
 		t.Fatalf("timeout envelope must parse and classify: %+v %v", envs, err)
+	}
+}
+
+// The pool query falls back to the health-only form after its first command timed out;
+// a dmg error (exit 1) prints no timeout envelope and runs no fallback (lane A, 2026-10-22).
+func TestFallbackRunsOnlyAfterTimeout(t *testing.T) {
+	ctx := context.Background()
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+	spec := RunSpec{Owner: owner, Namespace: "ns", Name: "pool-q", Image: "admin", ControlConfigMap: "sys-control",
+		Args: []string{"pool", "query", "--show-enabled", "kvt"}, Fallback: []string{"pool", "query", "-t", "--show-enabled", "kvt"},
+		Then: []string{"pool", "get-prop", "kvt", "self_heal"}, FirstTimeoutSeconds: 60}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "pool-q"}, job); err != nil {
+		t.Fatal(err)
+	}
+	want := "timeout 60 " + dmgLine(spec.Args) + "; if [ $? -eq 124 ]; then echo " + ShellQuote(timeoutEnvelope(60)) +
+		"; " + dmgLine(spec.Fallback) + "; fi; " + dmgLine(spec.Then)
+	if cmd := job.Spec.Template.Spec.Containers[0].Command; len(cmd) != 3 || cmd[2] != want {
+		t.Fatalf("command:\n got %q\nwant %q", cmd, want)
+	}
+	for _, c := range []struct {
+		name, script string
+		envs         int
+	}{
+		{"timed out", "sleep 5", 3},
+		{"dmg error", "echo '{\"response\":null,\"error\":\"DER_NONEXIST\",\"status\":-1005}'; exit 1", 2},
+	} {
+		sh := strings.NewReplacer("timeout 60 "+dmgLine(spec.Args), "timeout 1 sh -c "+ShellQuote(c.script),
+			dmgLine(spec.Fallback), `echo '{"response":{"state":"Ready"},"error":null,"status":0}'`,
+			dmgLine(spec.Then), `echo '{"response":[],"error":null,"status":0}'`).Replace(want)
+		out, err := exec.Command("sh", "-c", sh).Output()
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		envs, err := ParseAll(string(out))
+		if err != nil || len(envs) != c.envs {
+			t.Errorf("%s: %d envelopes (%v), want %d: %s", c.name, len(envs), err, c.envs, out)
+		}
 	}
 }
