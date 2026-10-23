@@ -171,9 +171,12 @@ spec:
             {{- with $guard.capacityGB }}
             - {name: DAOS_RANK_GUARD_CAPACITY_GB, value: {{ . | quote }}}
             {{- end }}
-            {{- if $guard.relocate }}
+            {{- $relocate := true }}
+            {{- if hasKey $guard "relocate" }}{{ $relocate = $guard.relocate }}{{ end }}
+            {{- if and $relocate (eq ($guard.oclass | default "S1") "S1") }}
             # keys whose home rank is down go to another rank's bucket and are read
-            # back from there (lmcache-daos doc/RANK-GUARD-RELOCATION.md); S1 only
+            # back from there (lmcache-daos doc/RANK-GUARD-RELOCATION.md); S1 only, on
+            # unless rankGuard.relocate is false. An image without relocation ignores it
             - {name: DAOS_RANK_GUARD_RELOCATE, value: "1"}
             {{- end }}
             {{- end }}
