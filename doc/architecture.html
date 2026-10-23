@@ -397,10 +397,10 @@ main p code, main li code, figcaption code, .ve-table code, .files code { overfl
         <li><code>nodeSelector</code>로 노드를 고르고 hostprep DaemonSet을 만든다. hostprep가 NVMe·RDMA·NUMA를 찾아 Node 어노테이션에 쓴다.</li>
         <li><code>discovery.FromNode</code>로 어노테이션을 읽고, 같은 드라이브(DSN)가 두 노드에 보이면 <code>DriveConflict</code>로 막는다.</li>
         <li>MS 복제 노드를 고른다. 이미 복제인 노드는 그대로 둬서 나중에 붙은 노드가 시스템을 새로 만들지 못한다. TLS 인증서 Secret을 만든다.</li>
-        <li>노드마다 <code>render.Server</code>로 <code>&lt;sys&gt;-server-&lt;node&gt;</code> ConfigMap을, <code>ensureServer</code>로 replicas=1 StatefulSet을 만든다(OnDelete, hostNetwork, privileged).</li>
+        <li>노드마다 <code>render.Server</code>로 <code>&lt;sys&gt;-server-&lt;node&gt;</code> ConfigMap을, <code>ensureServer</code>로 replicas=1 StatefulSet을 만든다(OnDelete, hostNetwork, privileged). bdev가 있는 엔진이면 init container <code>bdev-layout-check</code>(hostprep 이미지)가 노드에 남은 포맷의 <code>daos_nvme.conf</code>와 지금 구성을 비교해, 다르면 daos_server를 띄우지 않고 ServersReady에 이유를 적는다.</li>
         <li><code>&lt;sys&gt;-agent</code>·<code>&lt;sys&gt;-control</code> ConfigMap과 client agent DaemonSet을 만들고 ServersReady·Telemetry를 정한다.</li>
         <li>업그레이드 상태 기계: Pending → Stopping → Updating → Starting → Verifying → Completed. 승인 뒤에만 움직인다.</li>
-        <li><code>dmg system query -v</code>로 멤버십을 읽는다. 초기화 전이면 <code>pendingFormat</code>. 승인과 모든 서버 Ready가 갖춰지면 <code>storage format</code>을 한 번 실행한다.</li>
+        <li><code>dmg system query -v</code>로 멤버십을 읽는다(60 s 제한. 넘으면 마지막 멤버십을 두고 근거 있는 rank만 <code>unresponsive</code>, Formatted=<code>MembershipStale</code>). 초기화 전이면 <code>pendingFormat</code>. 승인과 모든 서버 Ready가 갖춰지면 <code>storage format</code>을 한 번 실행한다.</li>
         <li><code>rank-op</code> 어노테이션을 처리한다. rd_fac 0 + data_sync 재편입과 kvcache 풀 rank의 exclude는 거부한다.</li>
         <li>EnginesReady를 정한다(엔진 사망, 서버 없는 노드의 rank = StaleMembers). 죽은 엔진은 <code>dmg system start --ranks</code>로 다시 띄운다.</li>
         <li>위가 모두 맞으면 Ready=True. 평소 30 s, format 확인 10 s, 멤버십 60 s마다 다시 돈다.</li>
@@ -427,9 +427,9 @@ main p code, main li code, figcaption code, .ve-table code, .files code { overfl
       <g class="ve-n"><rect class="sh" x="340" y="20" width="180" height="40"/><text x="430" y="40">Kubernetes Job·Pod</text></g>
       <g class="ve-n"><rect class="sh" x="640" y="20" width="180" height="40"/><text x="730" y="40">DAOS MS</text></g>
     </svg></div>
-    <figcaption><span class="fig-n">Fig. 4</span>조정기는 dmg를 직접 부르지 않는다. <code>internal/dmg.JobRunner</code>가 이름이 정해진 Job을 만들고, 끝나면 로그에서 JSON을 꺼내 <code>Classify</code>(Unformatted·Unreachable·NotFound)로 나눈다.</figcaption>
+    <figcaption><span class="fig-n">Fig. 4</span>조정기는 dmg를 직접 부르지 않는다. <code>internal/dmg.JobRunner</code>가 이름이 정해진 Job을 만들고, 끝나면 로그에서 JSON을 꺼내 <code>Classify</code>(Unformatted, Unreachable, NotFound, Timeout)로 나눈다.</figcaption>
   </figure>
-  <p>Job 이름이 정해져 있어서 같은 질의가 겹쳐 뜨지 않는다. <code>probehold.go</code>는 Job 삭제 이벤트가 곧바로 다음 질의를 부르지 않게 잠시 막는다. 시험은 <code>fake_dmg_test.go</code>가 스크립트로 응답을 대신한다.</p>
+  <p>한 Job이 dmg를 두 번 부를 수 있다(<code>RunSpec.Then</code>). 첫 명령에 <code>FirstTimeoutSeconds</code>를 주면, 시간을 넘겼을 때(종료 코드 124)만 시간 초과 envelope와 <code>Fallback</code>을 내고 Then으로 간다. 멤버십 질의는 이것으로 60 s에 끊고, DaosPool 질의는 넘으면 <code>pool query -t</code>(health만)로 다시 묻는다. Job 이름이 정해져 있어서 같은 질의가 겹쳐 뜨지 않는다. <code>probehold.go</code>는 Job 삭제 이벤트가 곧바로 다음 질의를 부르지 않게 잠시 막는다. 시험은 <code>fake_dmg_test.go</code>가 스크립트로 응답을 대신한다.</p>
 </section>
 
 <section>
@@ -439,7 +439,7 @@ main p code, main li code, figcaption code, .ve-table code, .files code { overfl
     <thead><tr><th>CR</th><th>범위</th><th>spec 핵심</th><th>status·조건</th><th>만드는 것</th></tr></thead>
     <tbody>
       <tr><td><b>DaosSystem</b></td><td>cluster</td><td>images, nodeSelector, msReplicas, provider, engines[] (bdevClass, bdevTiers), hostPrep, clientAgent, upgrade</td><td>NodesSelected, DriveConflict, ConfigRendered, ServersReady, EnginesReady, Formatted, ManagementService, Ready · ranks[]</td><td>hostprep DS, server STS ×노드, ConfigMap, Secret, Service, dmg Job</td></tr>
-      <tr><td><b>DaosPool</b></td><td>cluster</td><td>systemRef, size, ranks, redundancyFactor, properties, acl, <code>profile: kvcache</code></td><td>Ready, SpaceLow, SpecMismatch, Degraded · selfHeal, reintegrationMode</td><td>dmg Job(create·extend·set-prop·destroy). 줄이거나 다시 만들지 않음</td></tr>
+      <tr><td><b>DaosPool</b></td><td>cluster</td><td>systemRef, size, ranks, redundancyFactor, properties, acl, <code>profile: kvcache</code></td><td>Ready(전체 조회가 막히면 <code>ReadyHealthOnly</code>), SpaceLow, SpecMismatch, Degraded · selfHeal, reintegrationMode</td><td>dmg Job(create·extend·set-prop·destroy). 줄이거나 다시 만들지 않음</td></tr>
       <tr><td><b>DaosContainer</b></td><td>namespace</td><td>poolRef, type, oclass, chunkSize, redundancyFactor, acl</td><td>Ready(FailuresExceedRF 포함), health</td><td><code>daos cont</code> Job + agent 사이드카</td></tr>
       <tr><td><b>S3Service</b></td><td>namespace</td><td>poolRef, image, replicas, iam, serviceType, tls</td><td>PoolReady, IAMDurable, Deployed, Ready</td><td>versitygw Deployment + Service</td></tr>
     </tbody>
@@ -471,7 +471,7 @@ main p code, main li code, figcaption code, .ve-table code, .files code { overfl
   <p class="ve-label caps">저장소</p>
   <h2>코드의 절반은 internal/controller에 있다</h2>
   <figure>
-    <div class="bars-wrap"><svg class="ve-bars" viewBox="0 0 240 248" role="img" aria-label="패키지별 Go 줄 수(테스트 제외): controller 5157, api 2075, dmg 732, kubectl 599, hostprep 563, main 249, render 241, certs 166, discovery 156"><text y="12">조정기</text><rect class="hot" x="84" y="5" width="99.17" height="14" rx="2"/><text x="191.17000000000002" y="12">5157줄</text><text y="40">api</text><rect x="84" y="33" width="39.9" height="14" rx="2"/><text x="131.9" y="40">2075줄</text><text y="68">dmg</text><rect x="84" y="61" width="14.08" height="14" rx="2"/><text x="106.08" y="68">732줄</text><text y="96">kubectl</text><rect x="84" y="89" width="11.52" height="14" rx="2"/><text x="103.52" y="96">599줄</text><text y="124">hostprep</text><rect x="84" y="117" width="10.83" height="14" rx="2"/><text x="102.83" y="124">563줄</text><text y="152">main</text><rect x="84" y="145" width="4.79" height="14" rx="2"/><text x="96.79" y="152">249줄</text><text y="180">render</text><rect x="84" y="173" width="4.63" height="14" rx="2"/><text x="96.63" y="180">241줄</text><text y="208">certs</text><rect x="84" y="201" width="3.19" height="14" rx="2"/><text x="95.19" y="208">166줄</text><text y="236">discovery</text><rect x="84" y="229" width="3" height="14" rx="2"/><text x="95" y="236">156줄</text></svg></div>
+    <div class="bars-wrap"><svg class="ve-bars" viewBox="0 0 240 248" role="img" aria-label="패키지별 Go 줄 수(테스트 제외): controller 5357, api 2075, dmg 765, hostprep 750, kubectl 599, main 249, render 241, certs 166, discovery 156"><text y="12">조정기</text><rect class="hot" x="84" y="5" width="99.2" height="14" rx="2"/><text x="191.2" y="12">5357줄</text><text y="40">api</text><rect x="84" y="33" width="38.43" height="14" rx="2"/><text x="130.43" y="40">2075줄</text><text y="68">dmg</text><rect x="84" y="61" width="14.17" height="14" rx="2"/><text x="106.17" y="68">765줄</text><text y="96">hostprep</text><rect x="84" y="89" width="13.89" height="14" rx="2"/><text x="105.89" y="96">750줄</text><text y="124">kubectl</text><rect x="84" y="117" width="11.09" height="14" rx="2"/><text x="103.09" y="124">599줄</text><text y="152">main</text><rect x="84" y="145" width="4.61" height="14" rx="2"/><text x="96.61" y="152">249줄</text><text y="180">render</text><rect x="84" y="173" width="4.46" height="14" rx="2"/><text x="96.46" y="180">241줄</text><text y="208">certs</text><rect x="84" y="201" width="3.07" height="14" rx="2"/><text x="95.07" y="208">166줄</text><text y="236">discovery</text><rect x="84" y="229" width="2.89" height="14" rx="2"/><text x="94.89" y="236">156줄</text></svg></div>
     <figcaption><span class="fig-n">Fig. 6</span>패키지별 Go 줄 수(테스트 제외). hostprep는 <code>cmd/hostprep</code>(203)와 <code>internal/hostprep</code>(360)의 합이다.</figcaption>
   </figure>
   <div class="files">
@@ -520,7 +520,7 @@ main p code, main li code, figcaption code, .ve-table code, .files code { overfl
 </section>
 
 <section class="sources" aria-label="Sources"><p class="ve-label caps">Sources</p>
-  <p><code>cmd/main.go</code> · <code>api/v1alpha1/*_types.go</code>, <code>constants.go</code> · <code>internal/controller/daossystem_controller.go</code>, <code>daossystem_format.go</code>, <code>daossystem_engines.go</code>, <code>daossystem_upgrade.go</code>, <code>daossystem_rankop.go</code>, <code>daossystem_enginerestart.go</code>, <code>daospool_controller.go</code>, <code>daoscontainer_controller.go</code>, <code>s3service_controller.go</code> · <code>internal/dmg/dmg.go</code>, <code>probehold.go</code> · <code>internal/hostprep/</code> · <code>charts/daos-operator/templates/</code> · <code>.gitlab-ci.yml</code> · <code>hack/ci/</code> · <code>test/e2e/</code> · <code>README.md</code> · <code>doc/</code>. 모두 origin/main cea9acd. daos-csi 내부는 별도 저장소라 확인하지 않았다.</p>
+  <p><code>cmd/main.go</code> · <code>api/v1alpha1/*_types.go</code>, <code>constants.go</code> · <code>internal/controller/daossystem_controller.go</code>, <code>daossystem_format.go</code>, <code>daossystem_engines.go</code>, <code>daossystem_upgrade.go</code>, <code>daossystem_rankop.go</code>, <code>daossystem_enginerestart.go</code>, <code>daospool_controller.go</code>, <code>daoscontainer_controller.go</code>, <code>s3service_controller.go</code> · <code>internal/dmg/dmg.go</code>, <code>probehold.go</code> · <code>internal/hostprep/</code> · <code>charts/daos-operator/templates/</code> · <code>.gitlab-ci.yml</code> · <code>hack/ci/</code> · <code>test/e2e/</code> · <code>README.md</code> · <code>doc/</code>. 모두 origin/main cea9acd, Fig. 3·4·표·줄 수는 fa83125 기준으로 갱신. daos-csi 내부는 별도 저장소라 확인하지 않았다.</p>
 </section>
 </main><script data-ve-kit>
 // Reader replies, shared by kit pages and plan pages: the note popover, the selection buttons, and sending one reply
