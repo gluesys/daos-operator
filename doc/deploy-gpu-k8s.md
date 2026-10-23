@@ -205,10 +205,11 @@ for `redundancy: ec`), with `capacityGB` at a third of the pool or less.
 | | `redundancy: none` | `redundancy: ec` |
 |---|---|---|
 | pool | rd_fac 0; the operator pins `self_heal:none` | rd_fac 1, DAOS default self_heal |
-| node down 240 s, measured | that node's blocks miss (TTFT at recompute), back at once on rejoin; with `relocate: true`, hits again within 15 s of the stop | hits kept (degraded), ~80 s of recompute-speed misses right after the stop, rebuild, then `dmg pool reintegrate` |
+| node down 240 s, measured | that node's blocks miss (TTFT at recompute), back at once on rejoin; with `relocate` (default), hits again within 15 s of the stop | hits kept (degraded), ~80 s of recompute-speed misses right after the stop, rebuild, then `dmg pool reintegrate` |
 | while a node is down | no new pool connect; punched/overwritten space is not reclaimed | both work |
 
-`rankGuard.relocate: true` (S1 / `redundancy: none` only, off by default) stores the keys
+`rankGuard.relocate` (S1 / `redundancy: none` only, on by default in charts after 0.1.7; set it to
+`false` to turn it off) stores the keys
 of a down rank on another rank's bucket and reads them back from there, during the outage and
 after it. Lane A, 240 s outage: repeat TTFT p50 0.18 s throughout instead of 0.7 s, no change
 in healthy TTFT, no failed request; a few writes may be dropped with DER_NOSPACE in the ~10 s
