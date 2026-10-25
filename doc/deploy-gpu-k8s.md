@@ -250,13 +250,18 @@ reach the engines. Name the interfaces the engines use.
 helm install daos daos-operator/charts/daos-operator -n daos-system --create-namespace -f my-values.yaml
 ```
 
+Use vllm-lmcache-daos 0.30.0-0.5.5-20261025 or later. Earlier images carry an LMCache 0.5.5 bug
+with vLLM 0.30's fused K/V layout: only the first half of each 256-token chunk is stored and
+restored, so a cache hit can return a wrong answer (lane A needle test: 55 % correct on hits,
+97.5 % with the patched image, the same as without LMCache). daos-images README has the details.
+
 `my-values.yaml` (for a GPU Operator environment):
 
 ```yaml
 vllm:
   services:
     - name: vllm-daos
-      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021.2
+      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261025.2
       poolRef: kvpool
       containerRef: kvlmc
       systemName: daos_k8s                       # DaosSystem spec.systemName
