@@ -215,6 +215,15 @@ after it. Lane A, 240 s outage: repeat TTFT p50 0.18 s throughout instead of 0.7
 in healthy TTFT, no failed request; a few writes may be dropped with DER_NOSPACE in the ~10 s
 after the rank rejoins. It needs vllm-lmcache-daos 0.30.0-0.5.5-20261021.2 or later.
 
+From vllm-lmcache-daos 0.30.0-0.5.5-20261025.2 the guard also watches the free space of each
+bucket's target (every `spacePoll` s, default 10). It evicts the keys of a target below
+`evictAt` (0.30) of free space, refuses relocated writes below `admitNewAt` (0.15) and every
+write below `admitAllAt` (0.05), holds punches while a rank of an S1 pool is down, and caps
+what is relocated for one down rank at `relocateBudgetGB` (a quarter of `capacityGB`). The
+victim order is S3-FIFO (`eviction: lru` for the old order). Lane A, 20-minute outage:
+DER_NOSPACE 889 → 3, outage hits kept, no failed request. The chart passes these keys only
+when they are set; the defaults are in parentheses. `spacePoll: 0` turns the space checks off.
+
 Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
 
 ### 3.2 Installing the client agent on the GPU nodes

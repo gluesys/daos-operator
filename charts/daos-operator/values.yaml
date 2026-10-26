@@ -168,6 +168,16 @@ vllm:
   #                                  # rank's bucket, so the cache keeps hitting (needs lmcache-daos with
   #                                  # relocation, vllm-lmcache-daos 0.30.0-0.5.5-20261021.2 and later;
   #                                  # older images ignore it). false turns it off
+  #      # The keys below need vllm-lmcache-daos 0.30.0-0.5.5-20261025.2 or later and are passed only
+  #      # when set; unset, the image default (shown) applies. lmcache-daos doc/EVICTION-DESIGN.md.
+  #      # relocateBudgetGB: 0         # bytes relocated for one down rank before its writes are dropped;
+  #      #                             # 0 = a quarter of capacityGB
+  #      # eviction: s3fifo            # victim order: s3fifo | lru
+  #      # spacePoll: 10               # s between free-space checks of the bucket targets; 0 turns the
+  #      #                             # space checks (evictAt, admit*At) off
+  #      # evictAt: 0.30               # evict the keys of a target whose free share is below this
+  #      # admitNewAt: 0.15            # below this, refuse relocated writes to that target
+  #      # admitAllAt: 0.05            # below this, refuse every write to that target
   #    kvLoadFailurePolicy: ""       # vLLM's own default is fail; recompute when rankGuard is on
   #    extraArgs: []                 # more vllm serve flags
   #    extraEnv: []

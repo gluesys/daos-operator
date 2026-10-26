@@ -179,6 +179,15 @@ spec:
             # unless rankGuard.relocate is false. An image without relocation ignores it
             - {name: DAOS_RANK_GUARD_RELOCATE, value: "1"}
             {{- end }}
+            {{- /* space-aware admission and eviction (lmcache-daos doc/EVICTION-DESIGN.md,
+            vllm-lmcache-daos 0.30.0-0.5.5-20261025.2 and later). Only keys that are set
+            are passed, so the image's defaults apply otherwise; hasKey keeps spacePoll: 0
+            (space checks off) from being dropped. */}}
+            {{- range $key, $env := dict "relocateBudgetGB" "RELOCATE_BUDGET_GB" "eviction" "EVICTION" "spacePoll" "SPACE_POLL" "evictAt" "EVICT_AT" "admitNewAt" "ADMIT_NEW_AT" "admitAllAt" "ADMIT_ALL_AT" }}
+            {{- if hasKey $guard $key }}
+            - {name: DAOS_RANK_GUARD_{{ $env }}, value: {{ get $guard $key | toString | quote }}}
+            {{- end }}
+            {{- end }}
             {{- end }}
             {{- with .extraEnv }}
             {{- toYaml . | nindent 12 }}
