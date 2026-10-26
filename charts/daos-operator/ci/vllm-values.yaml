@@ -31,6 +31,7 @@ vllm:
       gpus: 1
       rdma: true
       nodeSelector: {nvidia.com/gpu.present: "true"}
+      rankGuard: {enabled: true, oclass: S1, capacityGB: 3, spacePoll: 0, evictAt: 0.25, eviction: lru}
     - name: vllm-daos-rbln
       image: registry.example.com/vllm-rbln-lmcache-daos:test
       accelerator: rbln
