@@ -224,6 +224,11 @@ victim order is S3-FIFO (`eviction: lru` for the old order). Lane A, 20-minute o
 DER_NOSPACE 889 → 3, outage hits kept, no failed request. The chart passes these keys only
 when they are set; the defaults are in parentheses. `spacePoll: 0` turns the space checks off.
 
+`lmcacheCpuGB` sets LMCache's CPU tier in front of DAOS. Unset, LMCache's own default applies
+(on, 5 GB per process), so most repeat hits come from host memory and DAOS serves what does not
+fit. `0` turns the tier off and every hit is read from DAOS (lane A needle test 2026-10-26:
+97.5 % correct, hit TTFT p50 0.244 s with Qwen2.5-1.5B).
+
 Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
 
 ### 3.2 Installing the client agent on the GPU nodes
@@ -274,7 +279,7 @@ vllm:
       poolRef: kvpool
       containerRef: kvlmc
       systemName: daos_k8s                       # DaosSystem spec.systemName
-      agentSocketHostPath: /var/run/daos_agent/daos-k8s
+      agentSocketHostPath: /var/run/daos-operator/agent/daos-k8s   # spec.clientAgent socket dir (<DaosSystem name>)
       model:
         path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/<hash>
         servedName: llama31-8b
