@@ -140,7 +140,12 @@ vllm:
   #    poolRef: podpool
   #    containerRef: kvlmc
   #    systemName: daos_k8s          # DaosSystem spec.systemName; omit for the client default
-  #    agentSocketHostPath: /var/run/daos_agent/daos-k8s   # spec.clientAgent's socket dir
+  #    agentSocketHostPath: /var/run/daos-operator/agent/daos-k8s   # spec.clientAgent's socket dir:
+  #                                  # /var/run/daos-operator/agent/<DaosSystem name> unless hostSocketDir
+  #                                  # is set. Default: that path for system.name when system.create is
+  #                                  # true, else /var/run/daos_agent (a host daos_agent)
+  #    # lmcacheCpuGB: 5             # LMCache CPU tier per process in front of DAOS; unset = LMCache's
+  #    #                             # default (on, 5 GB), 0 = off (every hit is read from DAOS)
   #    model:
   #      path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f2
   #      servedName: llama31-8b-daos

@@ -66,6 +66,9 @@ through CDI, so no runtimeClassName is needed there.
 {{- end }}
 {{- $accCount := .acceleratorCount | default .gpus | default 1 }}
 {{- $guard := .rankGuard | default dict }}
+{{- /* the operator's client agent socket dir (spec.clientAgent.hostSocketDir default) when this
+chart creates the DaosSystem; otherwise the host daos_agent's own directory */}}
+{{- $agentDir := .agentSocketHostPath | default (ternary (printf "/var/run/daos-operator/agent/%s" $.Values.system.name) "/var/run/daos_agent" (eq ($.Values.system.create | toString) "true")) }}
 {{- $url := printf "plugin://daos/%s/%s%s" (required "vllm.services[].poolRef is required" .poolRef) (required "vllm.services[].containerRef is required" .containerRef) (ternary (printf "?sys=%s" .systemName) "" (not (empty .systemName))) }}
 {{- $failPolicy := .kvLoadFailurePolicy | default (ternary "recompute" "" (eq ($guard.enabled | toString) "true")) }}
 apiVersion: v1
@@ -78,6 +81,16 @@ metadata:
 data:
   lmcache_daos.yaml: |
     chunk_size: 256
+    {{- /* LMCache's CPU tier in front of DAOS. Unset leaves LMCache's default (on,
+    5 GB per process); 0 turns it off so every hit is read from DAOS. */}}
+    {{- if hasKey . "lmcacheCpuGB" }}
+    {{- if eq (toString .lmcacheCpuGB) "0" }}
+    local_cpu: false
+    {{- else }}
+    local_cpu: true
+    max_local_cpu_size: {{ .lmcacheCpuGB }}
+    {{- end }}
+    {{- end }}
     {{- /* plugin route only: with remote_url as well LMCache 0.5.5 builds two
     RemoteBackends on one container, so every chunk is stored twice.
     The target comes from extra_config, which needs lmcache-daos MR !50 or
@@ -232,7 +245,7 @@ spec:
       volumes:
         - name: agent-sock
           hostPath:
-            path: {{ .agentSocketHostPath | default "/var/run/daos_agent" }}
+            path: {{ $agentDir }}
             type: Directory
         - name: lmcache-config
           configMap: {name: {{ .name }}-lmcache}

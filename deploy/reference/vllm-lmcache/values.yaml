@@ -48,7 +48,7 @@ servingEngineSpec:
       extraVolumes:
         - name: daos-agent-sock
           hostPath:
-            path: /var/run/daos_agent/daos-k8s   # spec.clientAgent.hostSocketDir default
+            path: /var/run/daos-operator/agent/daos-k8s   # spec.clientAgent.hostSocketDir default
             type: Directory
         - name: lmcache-config
           configMap:

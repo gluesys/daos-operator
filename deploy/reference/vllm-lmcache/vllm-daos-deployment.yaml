@@ -66,7 +66,7 @@ spec:
             failureThreshold: 60
       volumes:
         - name: agent-sock
-          hostPath: {path: /var/run/daos_agent/daos-k8s, type: Directory}   # spec.clientAgent 가 만든다
+          hostPath: {path: /var/run/daos-operator/agent/daos-k8s, type: Directory}   # spec.clientAgent 가 만든다
         - name: lmcache-config
           configMap: {name: lmcache-daos-config}
         - name: hf-cache
