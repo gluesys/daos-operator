@@ -188,8 +188,9 @@ vllm:
   #    extraEnv: []
   #    # command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]   # default python3.12 -m ...
   #
-  #  # Rebellions NPU (vllm-rbln). The image must carry vllm-rbln 0.12+, lmcache-rbln
-  #  # and lmcache-daos; we do not build one. NPUs come in through CDI, so no runtimeClassName.
+  #  # Rebellions NPU (vllm-rbln). The image must carry vllm-rbln 0.12+ with the kv_connectors
+  #  # extra (lmcache-rbln, from pypi.rbln.ai) and lmcache-daos; we do not build one. Rendered,
+  #  # not yet run on RBLN hardware. NPUs come in through CDI, so no runtimeClassName.
   #  # Older RBLN device plugins advertise rebellions.ai/ATOM: set acceleratorResource to match.
   #  - name: vllm-daos-rbln
   #    image: <your-registry>/vllm-rbln-lmcache-daos:<tag>
@@ -200,6 +201,8 @@ vllm:
   #    model: {path: /data/hf_cache/<compiled-model-dir>, servedName: rbln-daos, cacheHostPath: /mnt/hf_cache}
   #    port: 8101
   #    rdma: true
+  #    lmcacheChunkSize: 256         # LMCache chunk_size (default 256); Rebellions recommends the --block-size
+  #    # modelImpl: vllm             # --model-impl; rbln defaults to vllm (required by RBLNLMCacheConnectorV1)
 
 # S3 gateways (versitygw-daos) in front of a DaosPool, one S3Service per entry.
 # The operator supplies --pool/--system, the daos_agent sidecar and the certificates;

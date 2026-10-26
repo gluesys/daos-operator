@@ -135,15 +135,36 @@ image's Python differs.
 **Rebellions NPU (`rbln`) — rendered, not yet run on hardware.** vllm-rbln is a
 vLLM platform plugin, not a fork, so the image is the RBLN stack (vllm-rbln,
 rebel-compiler, optimum-rbln, torch-rbln) with the DAOS client and lmcache-daos
-added; the `vllm-lmcache-daos` image does not work there. The connector
-`RBLNLMCacheConnectorV1` lives in `lmcache-rbln`, which only the vllm-rbln 0.12
-line uses and which is not on PyPI (0.11.x has no KV offload connector).
-lmcache-daos sits behind it as a `remote_storage_plugins` entry — whether
-lmcache-rbln passes that through is the part still to verify. The NPUs come in
-through the RBLN device plugin's CDI injection, so leave `runtimeClassName`
-unset. Older RBLN device plugins advertise `rebellions.ai/ATOM`; set
-`acceleratorResource` to whatever `kubectl describe node` lists. LMCache's
-multiprocess mode has no RBLN connector, so only the in-process path applies.
+added; the `vllm-lmcache-daos` image does not work there.
+
+- KV offload is official from the RBLN SDK 2026.10.16 (vllm-rbln **0.12.0**, built on
+  vLLM 0.30.0). `RBLNLMCacheConnectorV1` lives in `lmcache-rbln 0.12.0`, installed with
+  `vllm-rbln[kv_connectors]` from `pypi.rbln.ai` (an account is needed; not on PyPI).
+- lmcache-rbln 0.12.0 depends on **stock LMCache 0.5.4** (vllm-rbln v0.12.0 `uv.lock`; the
+  wheel hashes match PyPI). Every LMCache module lmcache-daos uses — plugin loading,
+  `RemoteConnector`, `RemoteBackend`, `RemoteMetadata`, naive serde, `LocalCPUBackend` — is
+  identical between 0.5.4 and 0.5.5, and `remote_storage_plugins` (lmcache-daos) is built in
+  the same `CreateStorageBackends` call as Rebellions' own RDS storage plugin. lmcache-daos
+  therefore plugs in behind it as a `remote_storage_plugins` entry. The lmcache-rbln source
+  itself (how it copies NPU KV into LMCache memory objects) is not public: before relying on
+  hits, check that cache-hit answers match a run without LMCache (ask the same question
+  about a long document twice, with `lmcacheCpuGB: 0` so the hit comes from DAOS) — that is
+  how the LMCache 0.5.5 half-copy bug on NVIDIA showed up.
+- The chart passes `--model-impl=vllm` for `rbln` (the connector is not imported on the
+  `transformers` path; override with `modelImpl`). Rebellions recommends an LMCache chunk
+  equal to `--block-size`: set `lmcacheChunkSize`. `PYTHONHASHSEED` is already fixed and
+  LMCache's layerwise mode (unsupported on RBLN) is off by default.
+- The DAOS path goes through host memory: LMCache hands remote backends host buffers, NPU →
+  host → DAOS over RDMA, as on NVIDIA. There is no NPU-direct path to DAOS today. RBLN's
+  direct paths are RDS (NPU ↔ **local** NVMe over PCIe P2P, index in memory, gone on restart)
+  and nixl-rbln (NPU ↔ NPU over RoCE for P/D disaggregation); neither targets remote storage.
+  Start with the CPU tier + DAOS, add RDS (`LMCACHE_STORAGE_PLUGINS=RDSBackend`) as a local
+  tier only after that measures right — how lmcache-rbln orders RDS and DAOS lookups is not
+  documented.
+- The NPUs come in through the RBLN device plugin's CDI injection, so leave
+  `runtimeClassName` unset. Older RBLN device plugins advertise `rebellions.ai/ATOM`; set
+  `acceleratorResource` to whatever `kubectl describe node` lists. LMCache's multiprocess
+  mode has no RBLN connector, so only the in-process path applies.
 
 ---
 
