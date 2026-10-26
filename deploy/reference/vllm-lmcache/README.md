@@ -14,7 +14,7 @@ vLLM 이 생성한 KV 캐시를 LMCache 가 DAOS 컨테이너에 내리는 구�
 | DAOS 시스템·풀 | `daos-k8s` / `podpool` | operator (DaosSystem, DaosPool) |
 | KV 캐시 컨테이너 | `kvlmc` (POSIX, chunk 4 MiB, SX/S1, rd_fac 0) | `DaosContainer` CR |
 | 노드 단위 agent | `daos-k8s-agent` DaemonSet, **파드 네트워크**, 소켓 hostPath `/var/run/daos_agent/daos-k8s` | `spec.clientAgent{enabled, hostNetwork: false, nodeSelector: daos.gluesys.com/gpu=true}` |
-| 서빙 이미지 | `vllm-lmcache-daos:0.30.0-0.5.5-20261021.2` (daos-client + vllm 0.30.0 + lmcache 0.5.5 + lmcache-daos) | exastor/daos-images |
+| 서빙 이미지 | `vllm-lmcache-daos:0.30.0-0.5.5-20261025.2` (daos-client + vllm 0.30.0 + lmcache 0.5.5 + lmcache-daos) | exastor/daos-images |
 | LMCache 설정 | `lmcache-config.yaml` (ConfigMap) | 이 디렉터리 |
 | vLLM 파드 | `vllm-daos-deployment.yaml` (hostNetwork) | 이 디렉터리 |
 | (참고) production-stack 차트 | `values.yaml` — **현재는 못 쓴다**, 아래 참조 | 이 디렉터리 |

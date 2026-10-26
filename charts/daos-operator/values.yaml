@@ -135,7 +135,7 @@ csi:
 vllm:
   services: []
   #  - name: vllm-daos
-  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261021.2
+  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5   # internal: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261025.2
   #    # KV cache target: an existing DaosPool and DaosContainer (POSIX, chunk 4 MiB)
   #    poolRef: podpool
   #    containerRef: kvlmc
