@@ -69,16 +69,15 @@ it needs.
 
 ## Supported versions
 
-There is no stable release yet. The chart is published with
-`artifacthub.io/prerelease: "true"`, and fixes land on `main`.
+Fixes land on `main` and ship in the next release; there are no maintenance
+branches yet. The API is `v1alpha1`.
 
 | Version | Supported |
 |---|---|
 | `main` | yes |
-| latest `v0.1.0-rc.*` | best effort |
+| latest `v0.1.x` (chart `0.2.x`) | yes |
+| `v0.1.0-rc.*` | no -- upgrade to `v0.1.0` |
 | anything else | no |
-
-Once releases begin, this section will name the supported branches.
 
 ## Hardening notes for deployers
 
