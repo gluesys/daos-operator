@@ -183,6 +183,11 @@ spec:
             - {name: HF_HOME, value: /data/hf_cache}
             - {name: HF_HUB_OFFLINE, value: "1"}
             {{- end }}
+            {{- with .reuseStats }}
+            # one "DAOS reuse stats" JSON line this often: how often evicted chunks are
+            # asked for again (lmcache-daos doc/REUSE-STATS.md). An older image ignores it
+            - {name: DAOS_REUSE_STATS, value: {{ . | toString | quote }}}
+            {{- end }}
             {{- if $guard.enabled }}
             # lmcache-daos rank guard: per-request deadlines, a breaker per rank
             # (or per pool on EC buckets), capacity-bounded eviction
