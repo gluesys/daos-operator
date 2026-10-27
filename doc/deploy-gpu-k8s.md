@@ -250,6 +250,12 @@ when they are set; the defaults are in parentheses. `spacePoll: 0` turns the spa
 fit. `0` turns the tier off and every hit is read from DAOS (lane A needle test 2026-10-26:
 97.5 % correct, hit TTFT p50 0.244 s with Qwen2.5-1.5B).
 
+`reuseStats: <seconds>` makes lmcache-daos log one `DAOS reuse stats {...}` JSON line that often:
+writes, hits and misses with bytes, and the misses on chunks it had evicted with the time since
+eviction -- each one a hit a lower tier (HDD pool, S3) would have served. Turn it on in a PoC or
+a real service before deciding on tiering; lmcache-daos `doc/REUSE-STATS.md` says how to read it.
+Images with lmcache-daos 0.2.0 or older ignore it.
+
 Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
 
 ### 3.2 Installing the client agent on the GPU nodes

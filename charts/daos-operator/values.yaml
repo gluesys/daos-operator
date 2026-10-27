@@ -146,6 +146,8 @@ vllm:
   #                                  # true, else /var/run/daos_agent (a host daos_agent)
   #    # lmcacheCpuGB: 5             # LMCache CPU tier per process in front of DAOS; unset = LMCache's
   #    #                             # default (on, 5 GB), 0 = off (every hit is read from DAOS)
+  #    # reuseStats: 300             # log lmcache-daos reuse statistics every N s: how often evicted
+  #    #                             # chunks are asked for again, the numbers a tiering decision needs
   #    model:
   #      path: /data/hf_cache/hub/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f2
   #      servedName: llama31-8b-daos
