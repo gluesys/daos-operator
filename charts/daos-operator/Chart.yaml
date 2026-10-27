@@ -4,8 +4,8 @@ apiVersion: v2
 name: daos-operator
 description: DAOS on Kubernetes - operator (DaosSystem/DaosPool/DaosContainer), host preparation, telemetry, Grafana dashboard
 type: application
-version: 0.1.9
-appVersion: "v0.1.0-rc.6"
+version: 0.2.0
+appVersion: "v0.1.0"
 # native sidecars (initContainers[].restartPolicy) for the daos_agent in DaosContainer Jobs
 kubeVersion: ">=1.29.0-0"
 home: https://github.com/gluesys/daos-operator
@@ -20,7 +20,7 @@ annotations:
   daos.gluesys.com/daos-version: "2.8.0"
   artifacthub.io/license: Apache-2.0
   artifacthub.io/operator: "true"
-  artifacthub.io/prerelease: "true"
+  artifacthub.io/prerelease: "false"
   artifacthub.io/crds: |
     - kind: DaosSystem
       version: v1alpha1
