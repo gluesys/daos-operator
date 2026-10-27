@@ -36,10 +36,13 @@ it; every default can be overridden on its own:
                                                            vllm-rbln plugin
   custom       (required)          (required)
 
-rbln: the connector comes from lmcache-rbln, which only the vllm-rbln 0.12
-line ships (not on PyPI); lmcache-daos plugs in behind it as a
-remote_storage_plugins entry, so the image has to carry vllm-rbln,
-lmcache-rbln and lmcache-daos together. Older RBLN device plugins advertise
+rbln: the connector comes from lmcache-rbln (vllm-rbln[kv_connectors] 0.12,
+from pypi.rbln.ai, not PyPI). lmcache-rbln 0.12.0 runs on stock LMCache 0.5.4,
+whose remote_storage_plugins path is the one lmcache-daos uses on 0.5.5, so
+lmcache-daos plugs in behind it; the image has to carry vllm-rbln,
+lmcache-rbln and lmcache-daos together. rbln also passes --model-impl=vllm
+(the connector is not imported on the transformers path); set
+lmcacheChunkSize to the --block-size, as Rebellions recommends. Older RBLN device plugins advertise
 rebellions.ai/ATOM instead of rebellions.ai/npu -- set acceleratorResource to
 what `kubectl describe node` shows. The RBLN device plugin injects the NPUs
 through CDI, so no runtimeClassName is needed there.
@@ -66,6 +69,7 @@ through CDI, so no runtimeClassName is needed there.
 {{- end }}
 {{- $accCount := .acceleratorCount | default .gpus | default 1 }}
 {{- $guard := .rankGuard | default dict }}
+{{- $modelImpl := .modelImpl | default (ternary "vllm" "" (eq $acc "rbln")) }}
 {{- /* the operator's client agent socket dir (spec.clientAgent.hostSocketDir default) when this
 chart creates the DaosSystem; otherwise the host daos_agent's own directory */}}
 {{- $agentDir := .agentSocketHostPath | default (ternary (printf "/var/run/daos-operator/agent/%s" $.Values.system.name) "/var/run/daos_agent" (eq ($.Values.system.create | toString) "true")) }}
@@ -80,7 +84,7 @@ metadata:
     {{- include "daos-operator.labels" $ | nindent 4 }}
 data:
   lmcache_daos.yaml: |
-    chunk_size: 256
+    chunk_size: {{ .lmcacheChunkSize | default 256 }}
     {{- /* LMCache's CPU tier in front of DAOS. Unset leaves LMCache's default (on,
     5 GB per process); 0 turns it off so every hit is read from DAOS. */}}
     {{- if hasKey . "lmcacheCpuGB" }}
@@ -156,6 +160,9 @@ spec:
             - --port={{ $port }}
             - --dtype={{ .dtype | default "bfloat16" }}
             - --max-model-len={{ .maxModelLen | default 16384 }}
+            {{- with $modelImpl }}
+            - --model-impl={{ . }}
+            {{- end }}
             {{- if or (eq $acc "nvidia") .gpuMemoryUtilization }}
             - --gpu-memory-utilization={{ .gpuMemoryUtilization | default "0.90" }}
             {{- end }}
