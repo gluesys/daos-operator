@@ -254,7 +254,7 @@ fit. `0` turns the tier off and every hit is read from DAOS (lane A needle test 
 writes, hits and misses with bytes, and the misses on chunks it had evicted with the time since
 eviction -- each one a hit a lower tier (HDD pool, S3) would have served. Turn it on in a PoC or
 a real service before deciding on tiering; lmcache-daos `doc/REUSE-STATS.md` says how to read it.
-Images with lmcache-daos 0.2.0 or older ignore it.
+It needs vllm-lmcache-daos 0.30.0-0.5.5-20261028 or later; older images ignore it.
 
 Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
 
@@ -302,7 +302,7 @@ restored, so a cache hit can return a wrong answer (lane A needle test: 55 % cor
 vllm:
   services:
     - name: vllm-daos
-      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261025.2
+      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261028
       poolRef: kvpool
       containerRef: kvlmc
       systemName: daos_k8s                       # DaosSystem spec.systemName
