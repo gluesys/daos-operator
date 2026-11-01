@@ -17,6 +17,11 @@ replicaCount: 1
 leaderElect: true
 # --metrics-bind-address for the operator's own controller-runtime metrics ("0" = off)
 metricsBindAddress: "0"
+# Managed Service for the operator endpoint. HTTPS + Kubernetes auth by default.
+metrics:
+  enabled: false
+  port: 8443
+  secure: true
 logLevel: info
 
 resources:
@@ -89,6 +94,10 @@ csi:
     repository: ghcr.io/gluesys/daos-csi
     tag: ""               # defaults to .Chart.appVersion
     pullPolicy: IfNotPresent
+  # Provisioner operation duration/errors; not the DAOS data path.
+  metrics:
+    enabled: false
+    port: 8080
   agentImage: ""          # defaults to system.spec.images.agent
   tls: false              # mount <system>-certs (agent set for the sidecar, admin set for the daos client)
   sidecars:

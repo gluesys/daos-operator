@@ -1,0 +1,8 @@
+metrics:
+  enabled: true
+csi:
+  metrics:
+    enabled: true
+image:
+  repository: registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator
+  tag: telemetry-20261101-r2
