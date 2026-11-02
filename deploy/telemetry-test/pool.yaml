@@ -1,0 +1,23 @@
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata:
+  name: telemetry-lab-pool
+  namespace: daos-system
+spec:
+  systemRef: telemetry-lab
+  size: 4Gi
+  redundancyFactor: 0
+  properties:
+    reclaim: lazy
+---
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainer
+metadata:
+  name: telemetry-io
+  namespace: daos-system
+spec:
+  poolRef: telemetry-lab-pool
+  type: POSIX
+  fileOclass: SX
+  dirOclass: S1
+  redundancyFactor: 0

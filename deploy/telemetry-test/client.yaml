@@ -1,0 +1,43 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: telemetry-io
+  namespace: daos-system
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: exaci5-3b
+  hostNetwork: true
+  hostIPC: true
+  dnsPolicy: ClusterFirstWithHostNet
+  imagePullSecrets:
+  - name: gitlab-registry
+  containers:
+  - name: client
+    image: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261006-g41c3647d
+    command:
+    - /bin/bash
+    - -lc
+    - sleep infinity
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 256Mi
+      limits:
+        memory: 1Gi
+    volumeMounts:
+    - name: agent
+      mountPath: /var/run/daos_agent
+    - name: config
+      mountPath: /etc/daos/daos_agent.yml
+      subPath: daos_agent.yml
+      readOnly: true
+  volumes:
+  - name: agent
+    hostPath:
+      path: /var/run/daos-operator/agent/telemetry-lab
+      type: Directory
+  - name: config
+    configMap:
+      name: telemetry-lab-agent

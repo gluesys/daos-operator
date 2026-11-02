@@ -19,6 +19,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"path/filepath"
 
@@ -26,11 +27,16 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/utils/ptr"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
+)
+
+const (
+	clientAgentConfigKey       = "daos_agent.yml"
+	clientAgentMetricsPortName = "metrics"
 )
 
 // clientAgentName is the DaemonSet (and its pods' label) for spec.clientAgent.
@@ -62,15 +68,56 @@ func clientAgentSocketDir(sys *daosv1alpha1.DaosSystem) string {
 func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns string) (ready, desired int32, err error) {
 	name := clientAgentName(sys)
 	ds := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
+	telemetry := sys.Spec.ClientAgent.Enabled && sys.Spec.ClientAgent.Telemetry.Enabled
+	port := sys.Spec.ClientAgent.Telemetry.Port
+	if port == 0 {
+		port = 9192
+	}
+	metricsName := name + "-metrics"
+	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: metricsName, Namespace: ns}}
+	configName := sys.Name + "-agent"
+	configHash := ""
+	telemetryConfig := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name + "-telemetry", Namespace: ns}}
+	if !telemetry {
+		if e := client.IgnoreNotFound(r.Delete(ctx, svc)); e != nil {
+			return 0, 0, e
+		}
+		if e := client.IgnoreNotFound(r.Delete(ctx, telemetryConfig)); e != nil {
+			return 0, 0, e
+		}
+	}
 	if !sys.Spec.ClientAgent.Enabled {
 		return 0, 0, client.IgnoreNotFound(r.Delete(ctx, ds))
 	}
+	if telemetry {
+		// Never enable HTTP on the shared sidecar/job config: several agents
+		// can share a host network and would all try to bind the same port.
+		base := &corev1.ConfigMap{}
+		if e := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: configName}, base); e != nil {
+			return 0, 0, e
+		}
+		cfg := base.Data[clientAgentConfigKey] + fmt.Sprintf("telemetry_enabled: true\ntelemetry_port: %d\n", port)
+		configName = telemetryConfig.Name
+		configHash = fmt.Sprintf("%x", sha256.Sum256([]byte(cfg)))
+		if e := r.upsertConfigMap(ctx, sys, ns, configName, "", map[string]string{clientAgentConfigKey: cfg}); e != nil {
+			return 0, 0, e
+		}
+	}
+
 	labels := map[string]string{"app.kubernetes.io/name": "daos-agent", daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelRole: "client-agent"}
 	hostDir, hostDirCreate := corev1.HostPathDirectory, corev1.HostPathDirectoryOrCreate
 	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ds, func() error {
 		labelManaged(&ds.ObjectMeta, sys, "")
 		ds.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
-		ds.Spec.Template.ObjectMeta.Labels = labels
+		ds.Spec.Template.Labels = labels
+		if ds.Spec.Template.Annotations == nil {
+			ds.Spec.Template.Annotations = map[string]string{}
+		}
+		if telemetry {
+			ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"] = configHash
+		} else {
+			delete(ds.Spec.Template.Annotations, "daos.gluesys.com/agent-config-hash")
+		}
 		pod := &ds.Spec.Template.Spec
 		pod.NodeSelector = sys.Spec.ClientAgent.NodeSelector
 		pod.Tolerations = sys.Spec.ClientAgent.Tolerations
@@ -79,6 +126,10 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		// clients must see the same interfaces: host namespace for hostNetwork
 		// clients, pod namespace for ordinary pods (see ClientAgentSpec)
 		pod.HostNetwork = clientAgentHostNetwork(sys)
+		pod.HostIPC = telemetry
+		// Resolve SO_PEERCRED PIDs of clients in other pods, including their
+		// NUMA node and process lifetime, from the host PID namespace.
+		pod.HostPID = telemetry
 		if pod.HostNetwork {
 			pod.DNSPolicy = corev1.DNSClusterFirstWithHostNet
 		} else {
@@ -87,7 +138,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		pod.PriorityClassName = "system-node-critical"
 		pod.Volumes = []corev1.Volume{
 			{Name: "agentcfg", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{Name: sys.Name + "-agent"}}}},
+				LocalObjectReference: corev1.LocalObjectReference{Name: configName}}}},
 			{Name: "agentsock", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: clientAgentSocketDir(sys), Type: &hostDirCreate}}},
 			{Name: "dev", VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/dev", Type: &hostDir}}},
 		}
@@ -96,7 +147,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 			Image:           sys.Spec.Images.Agent,
 			ImagePullPolicy: corev1.PullIfNotPresent,
 			// RDMA devices for the fabric scan, same reason as the sidecars
-			SecurityContext: &corev1.SecurityContext{Privileged: ptr.To(true)},
+			SecurityContext: &corev1.SecurityContext{Privileged: new(true)},
 			VolumeMounts: []corev1.VolumeMount{
 				{Name: "agentcfg", MountPath: "/etc/daos/daos_agent.yml", SubPath: "daos_agent.yml", ReadOnly: true},
 				{Name: "agentsock", MountPath: agentSocketDir},
@@ -115,9 +166,12 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 				Limits:   corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("512Mi")},
 			},
 		}
+		if telemetry {
+			c.Ports = []corev1.ContainerPort{{Name: clientAgentMetricsPortName, ContainerPort: port, Protocol: corev1.ProtocolTCP}}
+		}
 		if s := adminCertsSecret(sys); s != "" {
 			pod.Volumes = append(pod.Volumes, corev1.Volume{Name: "certs", VolumeSource: corev1.VolumeSource{
-				Secret: &corev1.SecretVolumeSource{SecretName: s, DefaultMode: ptr.To(int32(0o400))}}})
+				Secret: &corev1.SecretVolumeSource{SecretName: s, DefaultMode: new(int32(0o400))}}})
 			c.VolumeMounts = append(c.VolumeMounts, corev1.VolumeMount{Name: "certs", MountPath: "/etc/daos/certs", ReadOnly: true})
 		}
 		// The socket lives on a hostPath, so a socket file from a previous agent
@@ -137,6 +191,17 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("client agent daemonset: %w", err)
+	}
+	if telemetry {
+		if _, e := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
+			labelManaged(&svc.ObjectMeta, sys, "")
+			svc.Spec.ClusterIP = corev1.ClusterIPNone
+			svc.Spec.Selector = labels
+			svc.Spec.Ports = []corev1.ServicePort{{Name: clientAgentMetricsPortName, Port: port, TargetPort: intstr.FromString(clientAgentMetricsPortName)}}
+			return controllerutil.SetControllerReference(sys, svc, r.Scheme)
+		}); e != nil {
+			return 0, 0, e
+		}
 	}
 	return ds.Status.NumberReady, ds.Status.DesiredNumberScheduled, nil
 }

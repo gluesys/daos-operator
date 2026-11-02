@@ -37,7 +37,12 @@ spec:
           command: [/manager]
           args:
             - --health-probe-bind-address=:8081
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            - --metrics-secure={{ .Values.metrics.secure }}
+            {{- else }}
             - --metrics-bind-address={{ .Values.metricsBindAddress }}
+            {{- end }}
             {{- if .Values.leaderElect }}
             - --leader-elect
             {{- end }}
@@ -45,6 +50,11 @@ spec:
             - name: DAOS_HOSTPREP_DEFAULT_IMAGE
               value: {{ include "daos-operator.hostprepImage" . | quote }}
           ports:
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
             - name: health
               containerPort: 8081
               protocol: TCP

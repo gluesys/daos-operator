@@ -1,0 +1,52 @@
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosSystem
+metadata:
+  name: telemetry-lab
+spec:
+  allowInsecure: true
+  controlPort: 10121
+  engines:
+  - targets: 1
+    helpers: 0
+    fabricIface: ens19
+    fabricPort: 31926
+    bdevClass: file
+    bdevList:
+    - /var/daos/bdev0
+    bdevSizeGiB: 8
+    scmSizeGiB: 4
+    pinnedNumaNode: 0
+  hostPrep:
+    enabled: false
+  imagePullSecrets:
+  - name: gitlab-registry
+  images:
+    admin: registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261006-g41c3647d
+    agent: registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261006-g41c3647d
+    client: registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261006-g41c3647d
+    server: registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261006-g41c3647d
+  msReplicas: 1
+  namespace: daos-system
+  nodeSelector:
+    kubernetes.io/hostname: exaci5-3b
+  nrHugepages: 1024
+  placement: dedicated
+  provider: ofi+tcp
+  systemName: gpftelemetry
+  systemRamReservedGiB: 8
+  version: 2.8.0
+  telemetry:
+    enabled: true
+    port: 9291
+    serviceMonitor: false
+  server:
+    dataHostPath: /var/daos/gpuflow-telemetry-lab
+    logHostPath: /var/log/daos/gpuflow-telemetry-lab
+    hugepagesRequest: 2Gi
+  clientAgent:
+    enabled: true
+    nodeSelector:
+      kubernetes.io/hostname: exaci5-3b
+    telemetry:
+      enabled: true
+      port: 9292

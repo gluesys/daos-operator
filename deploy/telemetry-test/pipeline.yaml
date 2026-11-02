@@ -1,0 +1,280 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gpuflow-telemetry-test
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: node-agent
+  namespace: gpuflow-telemetry-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: telemetry-pod-discovery
+  namespace: daos-system
+rules:
+- apiGroups:
+  - ''
+  resources:
+  - pods
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: telemetry-pod-discovery
+  namespace: daos-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: telemetry-pod-discovery
+subjects:
+- kind: ServiceAccount
+  name: node-agent
+  namespace: gpuflow-telemetry-test
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: gpuflow-telemetry-metrics-reader
+rules:
+- nonResourceURLs:
+  - /metrics
+  verbs:
+  - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: gpuflow-telemetry-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: gpuflow-telemetry-metrics-reader
+subjects:
+- kind: ServiceAccount
+  name: node-agent
+  namespace: gpuflow-telemetry-test
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: node-agent
+  namespace: gpuflow-telemetry-test
+data:
+  config.yaml: "receivers:\n  prometheus:\n    config:\n      scrape_configs:\n  \
+    \    - job_name: daos-local\n        scrape_interval: 5s\n        static_configs:\n\
+    \        - targets:\n          - 192.168.35.32:9291\n          labels:\n     \
+    \       cluster: daos-operator-telemetry-test\n            node: ${env:NODE_NAME}\n\
+    \            source: gluesys\n            simulated: 'false'\n            data_origin:\
+    \ measured\n            backend: daos\n            transport: tcp\n          \
+    \  storage_media: emulated_file\n            scope: server\n            pod: telemetry-lab-server-exaci5-3b-0\n\
+    \        - targets:\n          - 192.168.35.32:9292\n          labels:\n     \
+    \       cluster: daos-operator-telemetry-test\n            node: ${env:NODE_NAME}\n\
+    \            source: gluesys\n            simulated: 'false'\n            data_origin:\
+    \ measured\n            backend: daos\n            transport: tcp\n          \
+    \  storage_media: emulated_file\n            scope: client\n        relabel_configs:\n\
+    \        - source_labels:\n          - node\n          regex: exaci5-3b\n    \
+    \      action: keep\n        metric_relabel_configs:\n        - source_labels:\n\
+    \          - __name__\n          regex: engine_(pool_(xferred_(fetch|update)|ops_(fetch|update)|vos_space_.*|svc_.*|scrubber_corruption_total)|dmabuff_(active_reqs|queued_reqs|grab_errs|total_chunks|used_chunks_.*)|sched_(wait_queue|sleep_queue|total_reject)|net_(req_timeout|waitq_depth|quota_exceeded)|io_latency_(fetch|update)(_mean|_max|_samples)?|events_dead_ranks)|client_(dfs_.*|pool_(ops_.*|xferred_.*))\n\
+    \          action: keep\n        - source_labels:\n          - __name__\n    \
+    \      regex: engine_pool_ops_fetch\n          target_label: operation\n     \
+    \     replacement: read\n        - source_labels:\n          - __name__\n    \
+    \      regex: engine_pool_ops_update\n          target_label: operation\n    \
+    \      replacement: write\n      - job_name: operator-local\n        scrape_interval:\
+    \ 5s\n        kubernetes_sd_configs:\n        - role: pod\n          namespaces:\n\
+    \            names:\n            - daos-system\n          selectors:\n       \
+    \   - role: pod\n            field: spec.nodeName=${env:NODE_NAME}\n        relabel_configs:\n\
+    \        - source_labels:\n          - __meta_kubernetes_pod_label_app_kubernetes_io_name\n\
+    \          regex: daos-operator\n          action: keep\n        - source_labels:\n\
+    \          - __meta_kubernetes_pod_container_port_name\n          regex: metrics\n\
+    \          action: keep\n        - source_labels:\n          - __meta_kubernetes_pod_name\n\
+    \          target_label: pod\n        - source_labels:\n          - __meta_kubernetes_pod_node_name\n\
+    \          target_label: node\n        - target_label: cluster\n          replacement:\
+    \ daos-operator-telemetry-test\n        scheme: https\n        authorization:\n\
+    \          credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token\n\
+    \        tls_config:\n          insecure_skip_verify: true\n      - job_name:\
+    \ csi-local\n        scrape_interval: 5s\n        kubernetes_sd_configs:\n   \
+    \     - role: pod\n          namespaces:\n            names:\n            - daos-system\n\
+    \          selectors:\n          - role: pod\n            field: spec.nodeName=${env:NODE_NAME}\n\
+    \        relabel_configs:\n        - source_labels:\n          - __meta_kubernetes_pod_label_app_kubernetes_io_name\n\
+    \          regex: daos-csi\n          action: keep\n        - source_labels:\n\
+    \          - __meta_kubernetes_pod_container_port_name\n          regex: metrics\n\
+    \          action: keep\n        - source_labels:\n          - __meta_kubernetes_pod_name\n\
+    \          target_label: pod\n        - source_labels:\n          - __meta_kubernetes_pod_node_name\n\
+    \          target_label: node\n        - target_label: cluster\n          replacement:\
+    \ daos-operator-telemetry-test\nprocessors:\n  memory_limiter:\n    check_interval:\
+    \ 1s\n    limit_mib: 192\n  transform/daos:\n    metric_statements:\n    - context:\
+    \ metric\n      statements:\n      - copy_metric(name=\"gpuflow_storage_target_read_bytes_total\"\
+    , unit=\"bytes\")\n        where metric.name == \"engine_pool_xferred_fetch\"\n\
+    \      - copy_metric(name=\"gpuflow_storage_target_write_bytes_total\", unit=\"\
+    bytes\")\n        where metric.name == \"engine_pool_xferred_update\"\n      -\
+    \ copy_metric(name=\"gpuflow_storage_target_ops_total\", unit=\"1\") where metric.name\n\
+    \        == \"engine_pool_ops_fetch\" or metric.name == \"engine_pool_ops_update\"\
+    \n  batch: {}\nexporters:\n  otlp_grpc:\n    endpoint: collector.gpuflow-telemetry-test.svc:4317\n\
+    \    tls:\n      insecure: true\nservice:\n  pipelines:\n    metrics:\n      receivers:\n\
+    \      - prometheus\n      processors:\n      - memory_limiter\n      - transform/daos\n\
+    \      - batch\n      exporters:\n      - otlp_grpc\n"
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: node-agent
+  namespace: gpuflow-telemetry-test
+spec:
+  selector:
+    matchLabels:
+      app: node-agent
+  template:
+    metadata:
+      labels:
+        app: node-agent
+    spec:
+      containers:
+      - name: node-agent
+        image: otel/opentelemetry-collector-contrib:0.164.0@sha256:ac0bb9cdc844b55d2fd2655d03e596243787d6a8c52dd408b1dc96dd1bd372ee
+        args:
+        - --config=/conf/config.yaml
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+      volumes:
+      - name: config
+        configMap:
+          name: node-agent
+      serviceAccountName: node-agent
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: collector
+  namespace: gpuflow-telemetry-test
+data:
+  config.yaml: "receivers:\n  otlp:\n    protocols:\n      grpc:\n        endpoint:\
+    \ 0.0.0.0:4317\nprocessors:\n  batch: {}\nexporters:\n  prometheusremotewrite:\n\
+    \    endpoint: http://victoriametrics:8428/api/v1/write\n    resource_to_telemetry_conversion:\n\
+    \      enabled: true\nservice:\n  pipelines:\n    metrics:\n      receivers:\n\
+    \      - otlp\n      processors:\n      - batch\n      exporters:\n      - prometheusremotewrite\n"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: collector
+  namespace: gpuflow-telemetry-test
+spec:
+  selector:
+    matchLabels:
+      app: collector
+  template:
+    metadata:
+      labels:
+        app: collector
+    spec:
+      containers:
+      - name: collector
+        image: otel/opentelemetry-collector-contrib:0.164.0@sha256:ac0bb9cdc844b55d2fd2655d03e596243787d6a8c52dd408b1dc96dd1bd372ee
+        args:
+        - --config=/conf/config.yaml
+        volumeMounts:
+        - name: config
+          mountPath: /conf
+          readOnly: true
+        resources:
+          requests:
+            cpu: 50m
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+        env:
+        - name: NODE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.nodeName
+        ports:
+        - name: otlp
+          containerPort: 4317
+      volumes:
+      - name: config
+        configMap:
+          name: collector
+  replicas: 1
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: collector
+  namespace: gpuflow-telemetry-test
+spec:
+  selector:
+    app: collector
+  ports:
+  - name: otlp
+    port: 4317
+    targetPort: otlp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: victoriametrics
+  namespace: gpuflow-telemetry-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: victoriametrics
+  template:
+    metadata:
+      labels:
+        app: victoriametrics
+    spec:
+      containers:
+      - name: victoriametrics
+        image: victoriametrics/victoria-metrics:v1.155.0@sha256:37677492c6e08c70b91df8d0661ec14bd8da9163a4ed8e2bebb3f9a84cd64b84
+        args:
+        - -retentionPeriod=1d
+        - -storageDataPath=/data
+        ports:
+        - name: http
+          containerPort: 8428
+        resources:
+          requests:
+            cpu: 50m
+            memory: 128Mi
+          limits:
+            memory: 512Mi
+        volumeMounts:
+        - name: data
+          mountPath: /data
+      volumes:
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: victoriametrics
+  namespace: gpuflow-telemetry-test
+spec:
+  selector:
+    app: victoriametrics
+  ports:
+  - name: http
+    port: 8428
+    targetPort: http

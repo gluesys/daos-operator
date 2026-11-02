@@ -32,7 +32,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
@@ -67,8 +66,8 @@ var _ = Describe("DaosSystem Controller", func() {
 			Spec: daosv1alpha1.DaosSystemSpec{Version: "2.8.0", Namespace: "daos-test",
 				Images:       daosv1alpha1.ImagesSpec{Server: "s", Agent: "a", Admin: "d"},
 				NodeSelector: map[string]string{daosv1alpha1.LabelRole: "storage"},
-				MsReplicas:   1, Provider: "ofi+verbs;ofi_rxm", NrHugepages: ptr.To(int32(8192)), AllowInsecure: true,
-				Engines: []daosv1alpha1.EngineSpec{{Targets: 8, Helpers: ptr.To(int32(2)), ScmSizeGiB: 32}}}}
+				MsReplicas:   1, Provider: "ofi+verbs;ofi_rxm", NrHugepages: new(int32(8192)), AllowInsecure: true,
+				Engines: []daosv1alpha1.EngineSpec{{Targets: 8, Helpers: new(int32(2)), ScmSizeGiB: 32}}}}
 		Expect(k8sClient.Create(ctx, sys)).To(Succeed())
 	})
 	AfterEach(func() {
@@ -356,7 +355,7 @@ var _ = Describe("DaosSystem Controller", func() {
 
 		By("after engineRestartMax starts the operator stops trying")
 		engineRestartInterval = 0
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			reconcileWith(f)
 		}
 		Expect(f.count(start)).To(Equal(engineRestartMax))
@@ -439,7 +438,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		reconcileWith(f)
 		markServersReady("n2")
 		engineRestartInterval = 0
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			reconcileWith(f)
 		}
 		Expect(f.count(start)).To(Equal(1+engineRestartMax), "three attempts for this outage, not three more after the pod came back")
@@ -533,7 +532,7 @@ var _ = Describe("DaosSystem Controller", func() {
 
 		// pod-network clients (chart-deployed pods that cannot ask for hostNetwork)
 		sys = getSys()
-		sys.Spec.ClientAgent.HostNetwork = ptr.To(false)
+		sys.Spec.ClientAgent.HostNetwork = new(false)
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
@@ -546,6 +545,52 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, &appsv1.DaemonSet{})).NotTo(Succeed())
+	})
+
+	It("isolates client telemetry config, shares IPC, and removes the endpoint on disable", func() {
+		sys := getSys()
+		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true, Telemetry: daosv1alpha1.ClientTelemetrySpec{Enabled: true}}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		key := types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, key, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.HostIPC).To(BeTrue())
+		Expect(ds.Spec.Template.Spec.HostPID).To(BeTrue())
+		Expect(ds.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(9192)))
+		hash := ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"]
+		Expect(hash).NotTo(BeEmpty())
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).NotTo(ContainSubstring("telemetry_enabled"))
+		key.Name = "t1-agent-telemetry"
+		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("telemetry_port: 9192"))
+		key.Name = "t1-agent-metrics"
+		svc := &corev1.Service{}
+		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
+		Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
+		Expect(svc.Spec.Selector).To(HaveKeyWithValue(daosv1alpha1.LabelRole, "client-agent"))
+		sys = getSys()
+		sys.Spec.ClientAgent.Telemetry.Port = 9292
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		key.Name = "t1-agent"
+		Expect(k8sClient.Get(ctx, key, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"]).NotTo(Equal(hash))
+		Expect(ds.Spec.Template.Spec.Containers[0].Ports[0].ContainerPort).To(Equal(int32(9292)))
+		sys = getSys()
+		sys.Spec.ClientAgent.Telemetry.Enabled = false
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, ds)).To(Succeed())
+		Expect(ds.Spec.Template.Spec.HostIPC).To(BeFalse())
+		Expect(ds.Spec.Template.Spec.HostPID).To(BeFalse())
+		Expect(ds.Spec.Template.Spec.Containers[0].Ports).To(BeEmpty())
+		key.Name = "t1-agent-metrics"
+		Expect(k8sClient.Get(ctx, key, svc)).NotTo(Succeed())
+		key.Name = "t1-agent-telemetry"
+		Expect(k8sClient.Get(ctx, key, cm)).NotTo(Succeed())
 	})
 
 	It("creates one pinned server StatefulSet per rendered node (#9)", func() {
@@ -1505,10 +1550,10 @@ var _ = Describe("DaosSystem Controller", func() {
 	It("renders a test-bed engine without SPDK and on the configured control port (#23)", func() {
 		sys := getSys()
 		sys.Spec.ControlPort = 10101
-		sys.Spec.NrHugepages = ptr.To(int32(0))
+		sys.Spec.NrHugepages = new(int32(0))
 		sys.Spec.SystemRamReservedGiB = 2
 		sys.Spec.Provider = "ofi+tcp"
-		sys.Spec.Engines = []daosv1alpha1.EngineSpec{{Targets: 2, Helpers: ptr.To(int32(0)), ScmSizeGiB: 4,
+		sys.Spec.Engines = []daosv1alpha1.EngineSpec{{Targets: 2, Helpers: new(int32(0)), ScmSizeGiB: 4,
 			BdevClass: "file", BdevSizeGiB: 20, BdevList: []string{"/var/daos/bdev0"}, FabricIface: "ens18"}}
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 		reconcileOnce()

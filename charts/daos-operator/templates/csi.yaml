@@ -108,7 +108,19 @@ spec:
       containers:
         - name: csi-provisioner
           image: {{ .Values.csi.sidecars.provisioner }}
-          args: ["--csi-address=/csi/csi.sock", "--leader-election", "--leader-election-namespace=$(NAMESPACE)", "--extra-create-metadata", "--timeout=60s", "--retry-interval-start=2s", "--v=2"]
+          args:
+            - --csi-address=/csi/csi.sock
+            - --leader-election
+            - --leader-election-namespace=$(NAMESPACE)
+            - --extra-create-metadata
+            - --timeout=60s
+            - --retry-interval-start=2s
+            - --v=2
+            {{- if .Values.csi.metrics.enabled }}
+            - --http-endpoint=:{{ .Values.csi.metrics.port }}
+          ports:
+            - {name: metrics, containerPort: {{ .Values.csi.metrics.port }}}
+            {{- end }}
           env:
             - name: NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}

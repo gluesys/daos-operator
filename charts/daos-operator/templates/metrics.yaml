@@ -1,0 +1,53 @@
+{{- if .Values.metrics.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    {{- include "daos-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - {name: metrics, port: {{ .Values.metrics.port }}, targetPort: metrics}
+{{- if and .Values.metrics.secure .Values.rbac.create }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-metrics-auth
+rules:
+  - apiGroups: [authentication.k8s.io]
+    resources: [tokenreviews]
+    verbs: [create]
+  - apiGroups: [authorization.k8s.io]
+    resources: [subjectaccessreviews]
+    verbs: [create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-metrics-auth
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "daos-operator.fullname" . }}-metrics-auth
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "daos-operator.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- end }}
+{{- if and .Values.csi.enabled .Values.csi.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: daos-csi-controller-metrics
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    app.kubernetes.io/name: daos-csi
+    app.kubernetes.io/component: controller
+  ports:
+    - {name: metrics, port: {{ .Values.csi.metrics.port }}, targetPort: metrics}
+{{- end }}

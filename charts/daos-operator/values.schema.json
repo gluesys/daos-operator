@@ -34,6 +34,22 @@
       "type": "string",
       "description": "--metrics-bind-address for the operator's own controller-runtime metrics (\"0\" = off)"
     },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "port": {
+          "type": "integer"
+        },
+        "secure": {
+          "type": "boolean"
+        }
+      },
+      "description": "Managed Service for the operator endpoint. HTTPS + Kubernetes auth by default."
+    },
     "logLevel": {
       "type": "string"
     },
@@ -194,6 +210,19 @@
               "type": "string"
             }
           }
+        },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "port": {
+              "type": "integer"
+            }
+          },
+          "description": "Provisioner operation duration/errors; not the DAOS data path."
         },
         "agentImage": {
           "type": "string",

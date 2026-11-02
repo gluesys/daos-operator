@@ -276,6 +276,20 @@ type ClientAgentSpec struct {
 	// HostNetwork runs the agent in the host network namespace (default true).
 	// Set false to serve pod-network clients; see the type comment.
 	HostNetwork *bool `json:"hostNetwork,omitempty"`
+	// Telemetry enables client metrics on this DaemonSet only. Clients must use
+	// hostIPC: true as well as this agent's socket to share DAOS telemetry memory.
+	// Sidecar agents keep the ordinary, telemetry-disabled configuration.
+	Telemetry ClientTelemetrySpec `json:"telemetry,omitempty"`
+}
+
+// ClientTelemetrySpec exposes the per-node DAOS client's native exporter.
+type ClientTelemetrySpec struct {
+	// Enabled opts into telemetry and host IPC/PID visibility for the agent. Default false.
+	Enabled bool `json:"enabled,omitempty"`
+	// Port is the HTTP metrics port. Default 9192; choose a free port per node.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port,omitempty"`
 }
 
 // ClientSpec tunes the daos_agent config that every DAOS client uses (the CSI
