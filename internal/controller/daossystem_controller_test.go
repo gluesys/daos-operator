@@ -1342,7 +1342,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		reconcileWith(f)
 		Expect(getSys().Status.Formatted).To(BeTrue())
 		pool := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "rf0"},
-			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("1Gi"), RedundancyFactor: ptr.To(int32(0))}}
+			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, Size: resource.MustParse("1Gi"), RedundancyFactor: new(int32(0))}}
 		Expect(k8sClient.Create(ctx, pool)).To(Succeed())
 		DeferCleanup(func() { _ = k8sClient.Delete(ctx, pool) })
 		pool.Status.ReintegrationMode = "data_sync"
