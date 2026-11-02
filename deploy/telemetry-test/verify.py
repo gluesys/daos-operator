@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
 """Verify the local-agent -> collector -> DB test path through a loopback forward."""
 import argparse
 import json

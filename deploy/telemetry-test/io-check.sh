@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
 # Run inside the telemetry-io pod after the pool/container are Ready.
 set -euo pipefail
 mkdir -p /mnt/telemetry
