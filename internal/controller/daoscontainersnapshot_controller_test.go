@@ -24,12 +24,14 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
@@ -213,6 +215,93 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 		rec()
 		Expect(reason()).To(Equal("ContainerReplaced"))
 		Expect(f.count("snap:listsnaps")).To(Equal(lists))
+	})
+
+	It("exposes the snapshot as a read-only claim and waits for it to go before destroying", func() {
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName, Volume: &daosv1alpha1.SnapshotVolumeSpec{ClaimName: "ckpt"}})
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		rec := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec()
+		rec()
+		s := get()
+		Expect(s.Status.Ready).To(BeTrue())
+		pvName := "daossnap-" + string(s.UID)
+		Expect(s.Status.VolumeName).To(Equal(pvName))
+
+		pvc := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "ckpt"}, pvc)).To(Succeed())
+		Expect(pvc.Spec.AccessModes).To(Equal([]corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany}))
+		Expect(pvc.Spec.StorageClassName).To(Equal(ptr.To("")), "no dynamic provisioning")
+		Expect(pvc.Spec.VolumeName).To(Equal(pvName))
+		Expect(metav1.IsControlledBy(pvc, s)).To(BeTrue())
+
+		pv := &corev1.PersistentVolume{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv)).To(Succeed())
+		Expect(pv.Spec.PersistentVolumeReclaimPolicy).To(Equal(corev1.PersistentVolumeReclaimRetain), "CSI DeleteVolume would destroy the container")
+		Expect(pv.Spec.ClaimRef.Name).To(Equal("ckpt"))
+		Expect(pv.Spec.CSI.ReadOnly).To(BeTrue())
+		Expect(pv.Spec.CSI.Driver).To(Equal("daos.csi.gluesys.com"))
+		Expect(pv.Spec.CSI.VolumeAttributes).To(SatisfyAll(
+			HaveKeyWithValue("snapshotEpoch", fmt.Sprint(testSnapEpoch)),
+			HaveKeyWithValue("containerUUID", contUUID),
+			HaveKeyWithValue("pool", poolName), HaveKeyWithValue("container", contName),
+			HaveKeyWithValue("destroyOnDelete", "false")))
+
+		By("approved delete: PVC and PV are removed first, destroy-snap waits while the PV stays")
+		s = get()
+		s.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+		rec()
+		Expect(f.count("snap:destroysnap")).To(BeZero())
+		Expect(reason()).To(Equal("VolumeInUse"))
+
+		By("once the PV is gone (pv-protection released), the snapshot is destroyed")
+		Eventually(func() bool {
+			pv := &corev1.PersistentVolume{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{Name: pvName}, pv); apierrors.IsNotFound(err) {
+				return true
+			}
+			pv.Finalizers = nil // envtest runs no pv-protection controller
+			_ = k8sClient.Update(ctx, pv)
+			return false
+		}).Should(BeTrue())
+		f.set("snap:destroysnap", &dmg.Result{Done: true, Output: `{"response": null, "error": null, "status": 0}`})
+		rec()
+		rec()
+		Expect(f.count("snap:destroysnap")).To(BeNumerically(">=", 1))
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, snapNN, &daosv1alpha1.DaosContainerSnapshot{}))).To(BeTrue())
+	})
+
+	It("does not take over a claim it did not create", func() {
+		taken := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "busy"},
+			Spec: corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+				Resources: corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}}}}
+		Expect(k8sClient.Create(ctx, taken)).To(Succeed())
+		DeferCleanup(func() {
+			p := &corev1.PersistentVolumeClaim{}
+			if k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "busy"}, p) == nil {
+				p.Finalizers = nil
+				_ = k8sClient.Update(ctx, p)
+				_ = k8sClient.Delete(ctx, p)
+			}
+		})
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName, Volume: &daosv1alpha1.SnapshotVolumeSpec{ClaimName: "busy"}})
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		for i := 0; i < 2; i++ {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(reason()).To(Equal("VolumeConflict"))
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: "daossnap-" + string(get().UID)}, &corev1.PersistentVolume{}))).To(BeTrue())
+		p := &corev1.PersistentVolumeClaim{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "busy"}, p)).To(Succeed())
+		Expect(p.Spec.AccessModes).To(Equal([]corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}), "left as it was")
 	})
 
 	It("converts DAOS epochs to wall time like d_hlc2unixnsec", func() {

@@ -26,6 +26,9 @@ spec:
     - jsonPath: .status.creationTime
       name: Taken
       type: date
+    - jsonPath: .spec.volume.claimName
+      name: Claim
+      type: string
     - jsonPath: .status.ready
       name: Ready
       type: boolean
@@ -84,6 +87,27 @@ spec:
                 x-kubernetes-validations:
                 - message: snapshotName is immutable
                   rule: self == oldSelf
+              volume:
+                description: |-
+                  Volume, when set, exposes the snapshot to pods as a read-only
+                  PersistentVolumeClaim of that name in this namespace (ReadOnlyMany). The
+                  operator creates the claim and a PersistentVolume bound to it, whose
+                  reclaim policy is Retain: deleting either never touches the container.
+                  Removing spec.volume removes them. Needs daos-csi with snapshotEpoch support.
+                properties:
+                  claimName:
+                    description: ClaimName is the PersistentVolumeClaim to create
+                      in the snapshot's namespace.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                  driver:
+                    default: daos.csi.gluesys.com
+                    description: Driver is the daos-csi driver name.
+                    type: string
+                required:
+                - claimName
+                type: object
             required:
             - containerRef
             type: object
@@ -176,6 +200,9 @@ spec:
                 type: string
               ready:
                 type: boolean
+              volumeName:
+                description: VolumeName is the PersistentVolume created for spec.volume.
+                type: string
             type: object
         type: object
     served: true

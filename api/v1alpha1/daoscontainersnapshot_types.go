@@ -43,6 +43,25 @@ type DaosContainerSnapshotSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="snapshotName is immutable"
 	// +optional
 	SnapshotName string `json:"snapshotName,omitempty"`
+	// Volume, when set, exposes the snapshot to pods as a read-only
+	// PersistentVolumeClaim of that name in this namespace (ReadOnlyMany). The
+	// operator creates the claim and a PersistentVolume bound to it, whose
+	// reclaim policy is Retain: deleting either never touches the container.
+	// Removing spec.volume removes them. Needs daos-csi with snapshotEpoch support.
+	// +optional
+	Volume *SnapshotVolumeSpec `json:"volume,omitempty"`
+}
+
+// SnapshotVolumeSpec names the read-only claim a snapshot is exposed through.
+type SnapshotVolumeSpec struct {
+	// ClaimName is the PersistentVolumeClaim to create in the snapshot's namespace.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	ClaimName string `json:"claimName"`
+	// Driver is the daos-csi driver name.
+	// +kubebuilder:default="daos.csi.gluesys.com"
+	// +optional
+	Driver string `json:"driver,omitempty"`
 }
 
 // DaosContainerSnapshotStatus mirrors `daos cont list-snaps` for this snapshot.
@@ -58,6 +77,8 @@ type DaosContainerSnapshotStatus struct {
 	ContainerUUID string `json:"containerUUID,omitempty"`
 	PoolUUID      string `json:"poolUUID,omitempty"`
 	Ready         bool   `json:"ready,omitempty"`
+	// VolumeName is the PersistentVolume created for spec.volume.
+	VolumeName string `json:"volumeName,omitempty"`
 	// Operation is the daos Job in flight (create, destroy); empty when idle.
 	Operation          string       `json:"operation,omitempty"`
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
@@ -70,6 +91,7 @@ type DaosContainerSnapshotStatus struct {
 // +kubebuilder:printcolumn:name="Container",type=string,JSONPath=`.spec.containerRef`
 // +kubebuilder:printcolumn:name="Epoch",type=string,JSONPath=`.status.epoch`
 // +kubebuilder:printcolumn:name="Taken",type=date,JSONPath=`.status.creationTime`
+// +kubebuilder:printcolumn:name="Claim",type=string,JSONPath=`.spec.volume.claimName`
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

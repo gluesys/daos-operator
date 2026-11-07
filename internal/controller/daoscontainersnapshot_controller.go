@@ -28,11 +28,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/retry"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -74,6 +76,7 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daoscontainersnapshots,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daoscontainersnapshots/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daoscontainersnapshots/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;create;delete
 
 func snapName(s *daosv1alpha1.DaosContainerSnapshot) string {
 	if s.Spec.SnapshotName != "" {
@@ -114,8 +117,12 @@ func (r *DaosContainerSnapshotReconciler) event(obj runtime.Object, typ, reason,
 	}
 }
 
-// release drops the finalizer without touching DAOS and says why.
+// release drops the finalizer without touching DAOS and says why. The PV and PVC
+// of spec.volume are still removed: they only point at DAOS, they hold no data.
 func (r *DaosContainerSnapshotReconciler) release(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, typ, reason, msg string) (ctrl.Result, error) {
+	if _, err := r.removeVolume(ctx, s); err != nil {
+		return ctrl.Result{}, err
+	}
 	r.event(s, typ, reason, msg)
 	if controllerutil.ContainsFinalizer(s, daosv1alpha1.FinalizerSnapshot) {
 		controllerutil.RemoveFinalizer(s, daosv1alpha1.FinalizerSnapshot)
@@ -258,6 +265,12 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 	if adopted {
 		r.event(s, corev1.EventTypeNormal, "SnapshotAdopted", fmt.Sprintf("existing snapshot %s (epoch %s) of container %s adopted", snapName(s), status.Epoch, contLabel(c)))
 	}
+	if msg, err := r.syncVolume(ctx, s, c, pool, &status); err != nil {
+		return ctrl.Result{}, err
+	} else if msg != "" {
+		setC(metav1.ConditionFalse, "VolumeConflict", msg)
+		return r.updateStatus(ctx, s, status, poolRequeueWait)
+	}
 	setC(metav1.ConditionTrue, "Ready", fmt.Sprintf("snapshot %s of container %s, epoch %s, taken %s", snapName(s), contLabel(c), status.Epoch, status.CreationTime.UTC().Format(time.RFC3339)))
 	logf.FromContext(ctx).Info("snapshot", "name", s.Name, "namespace", s.Namespace, "epoch", status.Epoch)
 	return r.updateStatus(ctx, s, status, snapRequeueIdle)
@@ -337,6 +350,16 @@ func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv
 	if !controllerutil.ContainsFinalizer(s, daosv1alpha1.FinalizerSnapshot) {
 		return ctrl.Result{}, nil
 	}
+	// the claim and volume go first: a snapshot is never destroyed under a mount
+	gone, err := r.removeVolume(ctx, s)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if !gone && status.Epoch != "" && s.Annotations[daosv1alpha1.AnnotationDestroyApproved] == "true" {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "VolumeInUse",
+			Message: "waiting for PersistentVolume " + snapVolumeName(s) + " to go away (a pod still mounts the snapshot) before destroying it", ObservedGeneration: s.Generation})
+		return r.updateStatus(ctx, s, status, poolRequeueWait)
+	}
 	if status.Epoch == "" {
 		// nothing was ever taken (or it is still being taken: a create-snap Job
 		// left running finishes on its own and the snapshot is then unmanaged)
@@ -381,6 +404,124 @@ func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv
 	return ctrl.Result{}, r.Update(ctx, s)
 }
 
+// snapVolumeName is the PersistentVolume of a snapshot's spec.volume. It is
+// keyed by the object's UID so that a re-created object never adopts the PV of
+// an earlier one that is still being released.
+func snapVolumeName(s *daosv1alpha1.DaosContainerSnapshot) string {
+	return "daossnap-" + string(s.UID)
+}
+
+// syncVolume makes the PV and PVC of spec.volume exist (or go away when
+// spec.volume is unset). It returns a message when the claim name is taken by
+// something the operator did not create; it never touches such objects.
+func (r *DaosContainerSnapshotReconciler) syncVolume(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosContainerSnapshotStatus) (string, error) {
+	if s.Spec.Volume == nil {
+		if status.VolumeName != "" {
+			if _, err := r.removeVolume(ctx, s); err != nil {
+				return "", err
+			}
+			status.VolumeName = ""
+		}
+		return "", nil
+	}
+	pvName, claim := snapVolumeName(s), s.Spec.Volume.ClaimName
+	driver := s.Spec.Volume.Driver
+	if driver == "" {
+		driver = "daos.csi.gluesys.com"
+	}
+	capacity := resource.MustParse("1Gi") // nominal: DAOS has no per-container size
+	if pool.Status.TotalBytes > 0 {
+		capacity = *resource.NewQuantity(pool.Status.TotalBytes, resource.BinarySI)
+	}
+	labels := map[string]string{daosv1alpha1.LabelSnapshot: snapJobLabel(s)}
+
+	pvc := &corev1.PersistentVolumeClaim{}
+	err := r.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: claim}, pvc)
+	switch {
+	case apierrors.IsNotFound(err):
+		pvc = &corev1.PersistentVolumeClaim{
+			ObjectMeta: metav1.ObjectMeta{Namespace: s.Namespace, Name: claim, Labels: labels},
+			Spec: corev1.PersistentVolumeClaimSpec{
+				AccessModes:      []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany},
+				StorageClassName: ptr.To(""), // no dynamic provisioning: bind to our PV only
+				VolumeName:       pvName,
+				Resources:        corev1.VolumeResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceStorage: capacity}},
+			},
+		}
+		if err := controllerutil.SetControllerReference(s, pvc, r.Scheme); err != nil {
+			return "", err
+		}
+		if err := r.Create(ctx, pvc); err != nil && !apierrors.IsAlreadyExists(err) {
+			return "", err
+		}
+		r.event(s, corev1.EventTypeNormal, "VolumeCreated", fmt.Sprintf("read-only claim %s for snapshot %s (epoch %s)", claim, snapName(s), status.Epoch))
+	case err != nil:
+		return "", err
+	case !metav1.IsControlledBy(pvc, s):
+		return fmt.Sprintf("PersistentVolumeClaim %s already exists and was not created for this snapshot; pick another spec.volume.claimName", claim), nil
+	}
+
+	pv := &corev1.PersistentVolume{}
+	err = r.Get(ctx, types.NamespacedName{Name: pvName}, pv)
+	if apierrors.IsNotFound(err) {
+		pv = &corev1.PersistentVolume{
+			ObjectMeta: metav1.ObjectMeta{Name: pvName, Labels: labels},
+			Spec: corev1.PersistentVolumeSpec{
+				Capacity:    corev1.ResourceList{corev1.ResourceStorage: capacity},
+				AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadOnlyMany},
+				// Retain: the CSI DeleteVolume of this driver destroys containers
+				PersistentVolumeReclaimPolicy: corev1.PersistentVolumeReclaimRetain,
+				StorageClassName:              "",
+				ClaimRef:                      &corev1.ObjectReference{Kind: "PersistentVolumeClaim", APIVersion: "v1", Namespace: s.Namespace, Name: claim, UID: pvc.UID},
+				PersistentVolumeSource: corev1.PersistentVolumeSource{CSI: &corev1.CSIPersistentVolumeSource{
+					Driver: driver, VolumeHandle: pvName, ReadOnly: true,
+					VolumeAttributes: map[string]string{
+						"pool": poolLabel(pool), "container": contLabel(c),
+						"poolUUID": status.PoolUUID, "containerUUID": status.ContainerUUID,
+						"snapshotEpoch": status.Epoch, "destroyOnDelete": "false",
+					},
+				}},
+			},
+		}
+		if err := r.Create(ctx, pv); err != nil && !apierrors.IsAlreadyExists(err) {
+			return "", err
+		}
+	} else if err != nil {
+		return "", err
+	}
+	status.VolumeName = pvName
+	return "", nil
+}
+
+// removeVolume deletes the PVC and PV this snapshot created and reports
+// whether the PV is gone (it stays while a pod still uses the claim).
+func (r *DaosContainerSnapshotReconciler) removeVolume(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot) (bool, error) {
+	var claims corev1.PersistentVolumeClaimList
+	if err := r.List(ctx, &claims, client.InNamespace(s.Namespace), client.MatchingLabels{daosv1alpha1.LabelSnapshot: snapJobLabel(s)}); err != nil {
+		return false, err
+	}
+	for i := range claims.Items {
+		if metav1.IsControlledBy(&claims.Items[i], s) && claims.Items[i].DeletionTimestamp.IsZero() {
+			if err := r.Delete(ctx, &claims.Items[i]); client.IgnoreNotFound(err) != nil {
+				return false, err
+			}
+		}
+	}
+	pv := &corev1.PersistentVolume{}
+	if err := r.Get(ctx, types.NamespacedName{Name: snapVolumeName(s)}, pv); err != nil {
+		return apierrors.IsNotFound(err), client.IgnoreNotFound(err)
+	}
+	if pv.Labels[daosv1alpha1.LabelSnapshot] != snapJobLabel(s) {
+		return true, nil // not ours
+	}
+	if pv.DeletionTimestamp.IsZero() {
+		if err := r.Delete(ctx, pv); client.IgnoreNotFound(err) != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 func (r *DaosContainerSnapshotReconciler) updateStatus(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, st daosv1alpha1.DaosContainerSnapshotStatus, requeue time.Duration) (ctrl.Result, error) {
 	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		latest := &daosv1alpha1.DaosContainerSnapshot{}
@@ -412,6 +553,7 @@ func (r *DaosContainerSnapshotReconciler) SetupWithManager(mgr ctrl.Manager) err
 	})
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&daosv1alpha1.DaosContainerSnapshot{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
 		Watches(&batchv1.Job{}, jobToSnapshot).
 		Named("daoscontainersnapshot").
 		Complete(r)

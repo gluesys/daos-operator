@@ -11,3 +11,7 @@ metadata:
   namespace: default
 spec:
   containerRef: kv-cache
+  # optional: a ReadOnlyMany PVC "kv-cache-20261107-ro" in this namespace that
+  # mounts the snapshot (daos-csi with snapshotEpoch support)
+  volume:
+    claimName: kv-cache-20261107-ro

@@ -125,8 +125,18 @@ spec: {containerRef: train-data}
 ```
 
 DAOS 2.8 cannot roll a container back (`daos_cont_rollback` is not implemented).
-To get data back, mount the snapshot read-only (`dfuse --snap-epoch <epoch>`) and
-copy what you need out of it. A snapshot keeps the space of everything overwritten
+To get data back, mount the snapshot read-only and copy what you need out of it.
+`spec.volume.claimName` does the mounting part: the operator creates a
+`ReadOnlyMany` PVC of that name next to the snapshot, bound to a PV that daos-csi
+mounts with `dfuse --snap-epoch` (daos-csi with `snapshotEpoch` support). Writes
+fail with `EROFS`. The PV is `Retain`, so deleting the claim never touches the
+container; removing `spec.volume`, or the snapshot, removes both.
+
+```yaml
+spec:
+  containerRef: train-data
+  volume: {claimName: ckpt-20261107}   # mount it in a pod like any PVC, readOnly
+``` A snapshot keeps the space of everything overwritten
 or deleted after it, so old snapshots hold pool capacity until they are destroyed.
 
 As with pools and containers, deleting the object keeps the DAOS snapshot unless
