@@ -55,6 +55,15 @@ func snapListOut(entries ...string) string {
 	return out + `], "error": null, "status": 0}`
 }
 
+func snapCreateOut(epoch uint64) *dmg.Result {
+	return &dmg.Result{Done: true, Output: fmt.Sprintf(`{"response": %s, "error": null, "status": 0}`, snapEntry(epoch, ""))}
+}
+
+// hlcAt is the DAOS epoch of wall time t (inverse of dmg.HLCTime).
+func hlcAt(t time.Time) uint64 {
+	return uint64(t.UnixNano()-time.Unix(1609459200, 0).UnixNano()) * 16
+}
+
 func snapEntry(epoch uint64, name string) string {
 	return fmt.Sprintf(`{"epoch": %d, "timestamp": "2026-11-07T21:00:00.000+09:00", "name": %q}`, epoch, name)
 }
@@ -119,7 +128,7 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 		rec() // finalizer
 		Expect(get().Finalizers).To(ContainElement(daosv1alpha1.FinalizerSnapshot))
 
-		By("no snapshot of that name -> daos cont create-snap with the object name")
+		By("no snapshot yet -> daos cont create-snap, unnamed (DAOS 2.8: named snapshots are DER_NOSYS)")
 		rec()
 		Expect(get().Status.Operation).To(Equal(opSnapCreate))
 		l := f.last("-listsnaps")
@@ -128,7 +137,8 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 		Expect(l.Labels).NotTo(HaveKey(daosv1alpha1.LabelContainer), "container Jobs and snapshot Jobs map back separately")
 		Expect(l.Sidecar.Image).To(Equal("a"))
 		cr := f.last("-createsnap")
-		Expect(cr.Command[2]).To(HaveSuffix("'cont' 'create-snap' 'sp1' 'sc1' '--snap' 'snap1'"))
+		Expect(cr.Command[2]).To(HaveSuffix("'cont' 'create-snap' 'sp1' 'sc1'"))
+		Expect(get().Status.CreateRequestedAt).NotTo(BeNil())
 
 		By("create-snap answers the epoch -> status is filled, list-snaps confirms it")
 		f.set("snap:createsnap", &dmg.Result{Done: true, Output: fmt.Sprintf(`{"response": %s, "error": null, "status": 0}`, snapEntry(testSnapEpoch, "snap1"))})
@@ -151,30 +161,48 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 		Expect(drain(events)).To(ContainElement(SatisfyAll(ContainSubstring("SnapshotOrphaned"), ContainSubstring("--epc "+fmt.Sprint(testSnapEpoch)))))
 	})
 
-	It("adopts an existing snapshot of the same name instead of taking a second one", func() {
-		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName, SnapshotName: "nightly"})
-		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(111, "other"), snapEntry(testSnapEpoch, "nightly"))}}}
+	It("adopts the snapshot a lost create-snap took instead of taking a second one", func() {
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
+		requested := time.Now().Add(-10 * time.Minute)
+		before, after := hlcAt(requested.Add(-time.Hour)), hlcAt(requested.Add(time.Second))
+		held := hlcAt(requested.Add(500 * time.Millisecond)) // taken after too, but another object's
+
+		By("another DaosContainerSnapshot already holds one of the candidates")
+		other := &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "other"},
+			Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName}}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		other.Status.Epoch, other.Status.ContainerUUID = fmt.Sprint(held), contUUID
+		Expect(k8sClient.Status().Update(ctx, other)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, other) })
+
+		By("this one started create-snap and lost the answer (operator restart)")
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(before, ""), snapEntry(held, ""), snapEntry(after, ""))}}}
 		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
-		for i := 0; i < 2; i++ {
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
-			Expect(err).NotTo(HaveOccurred())
-		}
-		Expect(f.count("snap:createsnap")).To(BeZero())
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN}) // finalizer
+		Expect(err).NotTo(HaveOccurred())
 		s := get()
-		Expect(s.Status.Epoch).To(Equal(fmt.Sprint(testSnapEpoch)))
+		t := metav1.NewTime(requested)
+		s.Status.CreateRequestedAt = &t
+		Expect(k8sClient.Status().Update(ctx, s)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(f.count("snap:createsnap")).To(BeZero())
+		s = get()
+		Expect(s.Status.Epoch).To(Equal(fmt.Sprint(after)), "not the older one, not the one another object holds")
 		Expect(s.Status.Ready).To(BeTrue())
 	})
 
 	It("destroys the DAOS snapshot by epoch only with destroy-approved", func() {
 		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
-		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, ""))}, "snap:createsnap": snapCreateOut(testSnapEpoch)}}
 		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
 		rec := func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
 			Expect(err).NotTo(HaveOccurred())
 		}
-		rec()
-		rec()
+		for i := 0; i < 6 && !get().Status.Ready; i++ { // finalizer, create-snap, poll, list-snaps
+			rec()
+		}
 		s := get()
 		Expect(s.Status.Ready).To(BeTrue())
 		s.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
@@ -190,21 +218,23 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 
 	It("does not re-take a snapshot destroyed by hand, nor act on a re-created container", func() {
 		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
-		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, ""))}, "snap:createsnap": snapCreateOut(testSnapEpoch)}}
 		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
 		rec := func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
 			Expect(err).NotTo(HaveOccurred())
 		}
-		rec()
-		rec()
+		for i := 0; i < 6 && !get().Status.Ready; i++ { // finalizer, create-snap, poll, list-snaps
+			rec()
+		}
 		Expect(get().Status.Ready).To(BeTrue())
 
 		By("the snapshot disappears from list-snaps -> SnapshotMissing, no create-snap")
 		f.set("snap:listsnaps", &dmg.Result{Done: true, Output: snapListOut(snapEntry(testSnapEpoch+16, "snap1"))})
+		creates := f.count("snap:createsnap")
 		rec()
 		Expect(reason()).To(Equal("SnapshotMissing"))
-		Expect(f.count("snap:createsnap")).To(BeZero(), "a snapshot of the same name with another epoch is not ours")
+		Expect(f.count("snap:createsnap")).To(Equal(creates), "a snapshot with another epoch is not ours, and a vanished one is not re-taken")
 
 		By("the DaosContainer now points at a different DAOS container -> ContainerReplaced, no Job")
 		c := &daosv1alpha1.DaosContainer{}
@@ -219,14 +249,15 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 
 	It("exposes the snapshot as a read-only claim and waits for it to go before destroying", func() {
 		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName, Volume: &daosv1alpha1.SnapshotVolumeSpec{ClaimName: "ckpt"}})
-		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, ""))}, "snap:createsnap": snapCreateOut(testSnapEpoch)}}
 		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
 		rec := func() {
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
 			Expect(err).NotTo(HaveOccurred())
 		}
-		rec()
-		rec()
+		for i := 0; i < 6 && !get().Status.Ready; i++ { // finalizer, create-snap, poll, list-snaps
+			rec()
+		}
 		s := get()
 		Expect(s.Status.Ready).To(BeTrue())
 		pvName := "daossnap-" + string(s.UID)
@@ -291,9 +322,9 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 			}
 		})
 		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName, Volume: &daosv1alpha1.SnapshotVolumeSpec{ClaimName: "busy"}})
-		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, "snap1"))}}}
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, ""))}, "snap:createsnap": snapCreateOut(testSnapEpoch)}}
 		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
-		for i := 0; i < 2; i++ {
+		for i := 0; i < 4; i++ { // finalizer, create-snap, poll, list-snaps
 			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
 			Expect(err).NotTo(HaveOccurred())
 		}

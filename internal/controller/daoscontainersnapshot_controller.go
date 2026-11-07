@@ -78,12 +78,13 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daoscontainersnapshots/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=persistentvolumes;persistentvolumeclaims,verbs=get;list;watch;create;delete
 
-func snapName(s *daosv1alpha1.DaosContainerSnapshot) string {
-	if s.Spec.SnapshotName != "" {
-		return s.Spec.SnapshotName
-	}
-	return s.Name
-}
+// snapName names the snapshot in messages. DAOS 2.8 snapshots have no name of
+// their own (named snapshots fail with -DER_NOSYS), only an epoch.
+func snapName(s *daosv1alpha1.DaosContainerSnapshot) string { return s.Name }
+
+// adoptSkew allows for the operator's clock running ahead of the DAOS HLC when
+// matching a snapshot to the create-snap that took it.
+const adoptSkew = time.Minute
 
 func snapKey(s *daosv1alpha1.DaosContainerSnapshot) string {
 	return "snap/" + s.Namespace + "/" + s.Name
@@ -104,7 +105,7 @@ func (r *DaosContainerSnapshotReconciler) opSpec(s *daosv1alpha1.DaosContainerSn
 	case opSnapList:
 		spec.Command = clientCommand(systemName(sys), nil, "cont", "list-snaps", pl, cl)
 	case opSnapCreate:
-		spec.Command = clientCommand(systemName(sys), nil, "cont", "create-snap", pl, cl, "--snap", snapName(s))
+		spec.Command = clientCommand(systemName(sys), nil, "cont", "create-snap", pl, cl)
 	case opSnapDelete:
 		spec.Command = clientCommand(systemName(sys), nil, "cont", "destroy-snap", pl, cl, "--epc", s.Status.Epoch)
 	}
@@ -248,7 +249,13 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 	}
 	now := metav1.NewTime(res.QueriedAt(time.Now()))
 	status.LastQueryTime = &now
-	found := findSnapshot(snaps, snapName(s), status.Epoch)
+	found := findSnapshot(snaps, status.Epoch)
+	if found == nil && status.Epoch == "" && status.CreateRequestedAt != nil {
+		// a create-snap was started and its answer was lost: take what it took
+		if found, err = r.unclaimed(ctx, s, c, snaps, status.CreateRequestedAt.Time); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
 	if found == nil {
 		if status.Epoch != "" {
 			setC(metav1.ConditionFalse, "SnapshotMissing", fmt.Sprintf("snapshot %s (epoch %s) no longer exists in container %s; it is not re-taken -- delete this object, or re-create it to take a new one",
@@ -276,21 +283,42 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 	return r.updateStatus(ctx, s, status, snapRequeueIdle)
 }
 
-// findSnapshot picks this object's snapshot: by epoch once known (a name can be
-// given to more than one snapshot by hand), by name before that.
-func findSnapshot(snaps []dmg.SnapshotInfo, name, epoch string) *dmg.SnapshotInfo {
+// findSnapshot picks this object's snapshot by its recorded epoch.
+func findSnapshot(snaps []dmg.SnapshotInfo, epoch string) *dmg.SnapshotInfo {
+	if epoch == "" {
+		return nil
+	}
 	for i := range snaps {
-		if epoch != "" {
-			if strconv.FormatUint(snaps[i].Epoch, 10) == epoch {
-				return &snaps[i]
-			}
-			continue
-		}
-		if snaps[i].Name == name {
+		if strconv.FormatUint(snaps[i].Epoch, 10) == epoch {
 			return &snaps[i]
 		}
 	}
 	return nil
+}
+
+// unclaimed returns the earliest snapshot of the container taken after since
+// (less adoptSkew) that no other DaosContainerSnapshot in the namespace holds.
+func (r *DaosContainerSnapshotReconciler) unclaimed(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, snaps []dmg.SnapshotInfo, since time.Time) (*dmg.SnapshotInfo, error) {
+	var others daosv1alpha1.DaosContainerSnapshotList
+	if err := r.List(ctx, &others, client.InNamespace(s.Namespace)); err != nil {
+		return nil, err
+	}
+	held := map[string]bool{}
+	for _, o := range others.Items {
+		if o.UID != s.UID && o.Status.Epoch != "" && o.Status.ContainerUUID == c.Status.UUID {
+			held[o.Status.Epoch] = true
+		}
+	}
+	var best *dmg.SnapshotInfo
+	for i := range snaps {
+		if held[strconv.FormatUint(snaps[i].Epoch, 10)] || dmg.HLCTime(snaps[i].Epoch).Before(since.Add(-adoptSkew)) {
+			continue
+		}
+		if best == nil || snaps[i].Epoch < best.Epoch {
+			best = &snaps[i]
+		}
+	}
+	return best, nil
 }
 
 func (r *DaosContainerSnapshotReconciler) record(status *daosv1alpha1.DaosContainerSnapshotStatus, snap *dmg.SnapshotInfo, c *daosv1alpha1.DaosContainer) {
@@ -306,6 +334,10 @@ func (r *DaosContainerSnapshotReconciler) startOp(ctx context.Context, s *daosv1
 	}
 	status.Operation = op
 	status.Ready = false
+	if status.CreateRequestedAt == nil {
+		now := metav1.Now()
+		status.CreateRequestedAt = &now
+	}
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "Creating", Message: "daos cont create-snap is running", ObservedGeneration: s.Generation})
 	r.event(s, corev1.EventTypeNormal, "SnapshotCreating", fmt.Sprintf("taking snapshot %s of container %s", snapName(s), contLabel(c)))
 	return r.updateStatus(ctx, s, status, poolRequeueOp)
@@ -332,7 +364,7 @@ func (r *DaosContainerSnapshotReconciler) pollOp(ctx context.Context, s *daosv1a
 	}
 	if perr != nil {
 		// The Job may have taken the snapshot and still failed to report it; the next
-		// list-snaps adopts it by name, so a retry never takes a second one.
+		// list-snaps adopts it (CreateRequestedAt), so a retry never takes a second one.
 		msg := "daos cont create-snap: " + perr.Error()
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "CreatesnapFailed", Message: msg, ObservedGeneration: s.Generation})
 		status.Ready = false
@@ -358,6 +390,7 @@ func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv
 	if !gone && status.Epoch != "" && s.Annotations[daosv1alpha1.AnnotationDestroyApproved] == "true" {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "VolumeInUse",
 			Message: "waiting for PersistentVolume " + snapVolumeName(s) + " to go away (a pod still mounts the snapshot) before destroying it", ObservedGeneration: s.Generation})
+		status.Ready = false
 		return r.updateStatus(ctx, s, status, poolRequeueWait)
 	}
 	if status.Epoch == "" {

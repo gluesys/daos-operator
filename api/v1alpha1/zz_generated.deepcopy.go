@@ -316,6 +316,10 @@ func (in *DaosContainerSnapshotStatus) DeepCopyInto(out *DaosContainerSnapshotSt
 		in, out := &in.CreationTime, &out.CreationTime
 		*out = (*in).DeepCopy()
 	}
+	if in.CreateRequestedAt != nil {
+		in, out := &in.CreateRequestedAt, &out.CreateRequestedAt
+		*out = (*in).DeepCopy()
+	}
 	if in.LastQueryTime != nil {
 		in, out := &in.LastQueryTime, &out.LastQueryTime
 		*out = (*in).DeepCopy()

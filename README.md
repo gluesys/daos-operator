@@ -141,9 +141,11 @@ or deleted after it, so old snapshots hold pool capacity until they are destroye
 
 As with pools and containers, deleting the object keeps the DAOS snapshot unless
 `daos.gluesys.com/destroy-approved: "true"` is set first (Event `SnapshotOrphaned`
-gives the command to remove it by hand). The operator never takes a second
-snapshot for one object: an existing snapshot of the same name is adopted, and one
-destroyed by hand is reported (`SnapshotMissing`), not re-taken.
+gives the command to remove it by hand). DAOS 2.8 snapshots have no names (a named
+create-snap fails with `DER_NOSYS`), so a snapshot is known by its epoch only. The
+operator never takes a second snapshot for one object: if the answer of a
+create-snap is lost, the snapshot taken after it that no other object holds is
+adopted; one destroyed by hand is reported (`SnapshotMissing`), not re-taken.
 
 ### A pool with no redundancy stops serving when a rank leaves
 

@@ -23,7 +23,9 @@ import (
 )
 
 // DaosContainerSnapshotSpec maps to `daos cont create-snap`: a point-in-time,
-// read-only view of one container (a DAOS epoch), taken once.
+// read-only view of one container (a DAOS epoch), taken once. DAOS 2.8 has no
+// named snapshots (a name makes create-snap fail with -DER_NOSYS): a snapshot is
+// known by its epoch only.
 //
 // DAOS 2.8 cannot roll a container back to a snapshot (daos_cont_rollback is
 // not implemented, -DER_NOSYS). A snapshot is read by mounting it read-only
@@ -36,13 +38,6 @@ type DaosContainerSnapshotSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="containerRef is immutable"
 	ContainerRef string `json:"containerRef"`
-	// SnapshotName is the DAOS snapshot name; defaults to metadata.name. An
-	// existing snapshot of that name in the container is adopted, not duplicated.
-	// +kubebuilder:validation:MaxLength=127
-	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9._-]*$`
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="snapshotName is immutable"
-	// +optional
-	SnapshotName string `json:"snapshotName,omitempty"`
 	// Volume, when set, exposes the snapshot to pods as a read-only
 	// PersistentVolumeClaim of that name in this namespace (ReadOnlyMany). The
 	// operator creates the claim and a PersistentVolume bound to it, whose
@@ -79,6 +74,11 @@ type DaosContainerSnapshotStatus struct {
 	Ready         bool   `json:"ready,omitempty"`
 	// VolumeName is the PersistentVolume created for spec.volume.
 	VolumeName string `json:"volumeName,omitempty"`
+	// CreateRequestedAt is when create-snap was started. If its answer is lost
+	// (operator restart, failed Job), the snapshot of the container taken after
+	// it that no other DaosContainerSnapshot holds is adopted instead of taking
+	// a second one.
+	CreateRequestedAt *metav1.Time `json:"createRequestedAt,omitempty"`
 	// Operation is the daos Job in flight (create, destroy); empty when idle.
 	Operation          string       `json:"operation,omitempty"`
 	ObservedGeneration int64        `json:"observedGeneration,omitempty"`

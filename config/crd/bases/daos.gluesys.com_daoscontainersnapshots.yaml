@@ -60,7 +60,9 @@ spec:
           spec:
             description: |-
               DaosContainerSnapshotSpec maps to `daos cont create-snap`: a point-in-time,
-              read-only view of one container (a DAOS epoch), taken once.
+              read-only view of one container (a DAOS epoch), taken once. DAOS 2.8 has no
+              named snapshots (a name makes create-snap fail with -DER_NOSYS): a snapshot is
+              known by its epoch only.
 
               DAOS 2.8 cannot roll a container back to a snapshot (daos_cont_rollback is
               not implemented, -DER_NOSYS). A snapshot is read by mounting it read-only
@@ -76,16 +78,6 @@ spec:
                 type: string
                 x-kubernetes-validations:
                 - message: containerRef is immutable
-                  rule: self == oldSelf
-              snapshotName:
-                description: |-
-                  SnapshotName is the DAOS snapshot name; defaults to metadata.name. An
-                  existing snapshot of that name in the container is adopted, not duplicated.
-                maxLength: 127
-                pattern: ^[A-Za-z0-9._-]*$
-                type: string
-                x-kubernetes-validations:
-                - message: snapshotName is immutable
                   rule: self == oldSelf
               volume:
                 description: |-
@@ -175,6 +167,14 @@ spec:
                 description: |-
                   ContainerUUID and PoolUUID pin the snapshot to the container it was taken
                   from, so a container re-created under the same name is not mistaken for it.
+                type: string
+              createRequestedAt:
+                description: |-
+                  CreateRequestedAt is when create-snap was started. If its answer is lost
+                  (operator restart, failed Job), the snapshot of the container taken after
+                  it that no other DaosContainerSnapshot holds is adopted instead of taking
+                  a second one.
+                format: date-time
                 type: string
               creationTime:
                 description: CreationTime is when DAOS took the snapshot (the epoch's

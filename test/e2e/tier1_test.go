@@ -397,8 +397,7 @@ spec:
 kind: DaosContainerSnapshot
 metadata: {name: e2e-snap}
 spec:
-  containerRef: ` + cont + `
-  snapshotName: e2e-ckpt` + volume)
+  containerRef: ` + cont + volume)
 		start := time.Now()
 		Eventually(func() string { return jsonpath("daoscontainersnapshot", "e2e-snap", ".status.ready") }).WithTimeout(5 * time.Minute).Should(Equal("true"))
 		recordDuration("snapshot ready", time.Since(start))
@@ -418,19 +417,20 @@ spec:
 			kubectl("delete", "pod", "e2e-snap-r", "--wait=true", "--timeout=3m")
 		}
 
-		By("an approved delete destroys it in DAOS: a new object of the same name gets a new epoch")
+		By("an approved delete destroys it in DAOS (the finalizer is only released after destroy-snap succeeds)")
 		kubectl("annotate", "daoscontainersnapshot", "e2e-snap", "daos.gluesys.com/destroy-approved=true", "--overwrite")
 		kubectl("delete", "daoscontainersnapshot", "e2e-snap", "--wait=false")
 		waitGone("daoscontainersnapshot", "e2e-snap", 5*time.Minute)
+		Expect(kubectl("get", "events", "--field-selector", "involvedObject.name=e2e-snap", "-o", "jsonpath={.items[*].reason}")).To(ContainSubstring("SnapshotDestroyed"))
 		if withClaim {
 			waitGone("pvc", "e2e-snap-ro", 3*time.Minute)
 		}
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosContainerSnapshot
 metadata: {name: e2e-snap}
-spec: {containerRef: ` + cont + `, snapshotName: e2e-ckpt}`)
+spec: {containerRef: ` + cont + `}`)
 		Eventually(func() string { return jsonpath("daoscontainersnapshot", "e2e-snap", ".status.ready") }).WithTimeout(5 * time.Minute).Should(Equal("true"))
-		Expect(jsonpath("daoscontainersnapshot", "e2e-snap", ".status.epoch")).NotTo(Equal(epoch), "the first snapshot must be gone, not adopted again")
+		Expect(jsonpath("daoscontainersnapshot", "e2e-snap", ".status.epoch")).NotTo(Equal(epoch), "a new object takes a new snapshot")
 
 		By("an unapproved delete keeps it and says so")
 		kubectl("delete", "daoscontainersnapshot", "e2e-snap", "--wait=true", "--timeout=3m")
