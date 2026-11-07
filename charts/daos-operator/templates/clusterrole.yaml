@@ -101,6 +101,7 @@ rules:
   - daos.gluesys.com
   resources:
   - daoscontainers
+  - daoscontainersnapshots
   - daospools
   - daossystems
   - s3services
@@ -116,6 +117,7 @@ rules:
   - daos.gluesys.com
   resources:
   - daoscontainers/finalizers
+  - daoscontainersnapshots/finalizers
   - daospools/finalizers
   - daossystems/finalizers
   verbs:
@@ -124,6 +126,7 @@ rules:
   - daos.gluesys.com
   resources:
   - daoscontainers/status
+  - daoscontainersnapshots/status
   - daospools/status
   - daossystems/status
   - s3services/status

@@ -676,6 +676,54 @@ func ContainerQuery(e *Envelope) (*ContainerInfo, error) {
 	return &c, nil
 }
 
+// SnapshotInfo is one entry of `daos -j cont list-snaps`, and the response of
+// `daos -j cont create-snap`.
+type SnapshotInfo struct {
+	Epoch     uint64 `json:"epoch"`
+	Timestamp string `json:"timestamp"`
+	Name      string `json:"name,omitempty"`
+}
+
+// Snapshots parses `daos -j cont list-snaps`; a container without snapshots
+// answers null.
+func Snapshots(e *Envelope) ([]SnapshotInfo, error) {
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, nil
+	}
+	var out []SnapshotInfo
+	if err := json.Unmarshal(e.Response, &out); err != nil {
+		return nil, fmt.Errorf("snapshot list response: %w", err)
+	}
+	return out, nil
+}
+
+// SnapshotCreated parses `daos -j cont create-snap`.
+func SnapshotCreated(e *Envelope) (*SnapshotInfo, error) {
+	if len(e.Response) == 0 || string(e.Response) == "null" {
+		return nil, fmt.Errorf("snapshot create: empty response")
+	}
+	var s SnapshotInfo
+	if err := json.Unmarshal(e.Response, &s); err != nil {
+		return nil, fmt.Errorf("snapshot create response: %w", err)
+	}
+	if s.Epoch == 0 {
+		return nil, fmt.Errorf("snapshot create: no epoch in response")
+	}
+	return &s, nil
+}
+
+// hlcStartSec and hlcNsec are D_HLC_START_SEC and D_HLC_NSEC (src/gurt/hlc.c).
+const (
+	hlcStartSec = 1609459200
+	hlcNsec     = 16
+)
+
+// HLCTime converts a DAOS epoch (hybrid logical clock) to wall time, as
+// d_hlc2unixnsec does.
+func HLCTime(epoch uint64) time.Time {
+	return time.Unix(hlcStartSec, int64(epoch/hlcNsec)).UTC()
+}
+
 // ShellQuote quotes s for a POSIX shell.
 func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"

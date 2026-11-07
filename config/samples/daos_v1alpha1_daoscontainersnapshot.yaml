@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# One DAOS snapshot of DaosContainer kv-cache (daos cont create-snap). Read it with
+# dfuse --snap-epoch <status.epoch>; DAOS 2.8 cannot roll a container back.
+# Deleting this object keeps the DAOS snapshot unless
+# daos.gluesys.com/destroy-approved: "true" is set first.
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainerSnapshot
+metadata:
+  name: kv-cache-20261107
+  namespace: default
+spec:
+  containerRef: kv-cache

@@ -84,8 +84,9 @@ const (
 	// according to its maintainers (daos@daos.groups.io, 2026-10-12).
 	AnnotationAutoClearUnclean = "daos.gluesys.com/auto-clear-unclean"
 
-	// AnnotationDestroyApproved on a DaosPool or DaosContainer lets the operator
-	// run `dmg pool destroy` / `daos cont destroy` when the object is deleted.
+	// AnnotationDestroyApproved on a DaosPool, DaosContainer or DaosContainerSnapshot
+	// lets the operator run `dmg pool destroy` / `daos cont destroy` /
+	// `daos cont destroy-snap` when the object is deleted.
 	// Without it, deleting the Kubernetes object only forgets the DAOS object
 	// (Event PoolOrphaned / ContainerOrphaned); data is never removed implicitly.
 	AnnotationDestroyApproved = "daos.gluesys.com/destroy-approved"
@@ -93,12 +94,16 @@ const (
 	// FinalizerPool and FinalizerContainer hold deletion until the destroy decision is made.
 	FinalizerPool      = "daos.gluesys.com/pool"
 	FinalizerContainer = "daos.gluesys.com/container"
+	// FinalizerSnapshot holds a DaosContainerSnapshot until the destroy decision is made.
+	FinalizerSnapshot = "daos.gluesys.com/snapshot"
 
 	// PoolProfileKVCache is DaosPool spec.profile for a loss-tolerant KV cache.
 	PoolProfileKVCache = "kvcache"
 	// LabelPool and LabelContainer mark the dmg/daos Jobs run for an object.
 	LabelPool      = "daos.gluesys.com/pool"
 	LabelContainer = "daos.gluesys.com/container"
+	// LabelSnapshot marks the daos Jobs run for a DaosContainerSnapshot (<namespace>.<name>).
+	LabelSnapshot = "daos.gluesys.com/snapshot"
 
 	// LabelSystem and LabelNode are put on every object the operator creates.
 	LabelSystem = "daos.gluesys.com/system"

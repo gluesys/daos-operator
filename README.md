@@ -100,6 +100,7 @@ helm uninstall daos-operator -n daos-system
 | `DaosSystem` | the engines: node selection, fabric, storage tiers, management-service replicas |
 | `DaosPool` | a pool, its redundancy factor, rank set and space warnings |
 | `DaosContainer` | a container in a pool, POSIX or unstructured |
+| `DaosContainerSnapshot` | one read-only snapshot (DAOS epoch) of a `DaosContainer` |
 | `S3Service` | a versitygw gateway serving one pool |
 
 Two rules the operator does not break:
@@ -110,6 +111,29 @@ Two rules the operator does not break:
 - **There is no second source of truth.** Desired state is the CR spec, actual
   state is the DAOS management service. The operator only compares the two and
   reports what it sees.
+
+### Snapshots are read-only views, not restore points
+
+A `DaosContainerSnapshot` takes one `daos cont create-snap` of a container in its
+namespace and records the epoch (`status.epoch`) and when it was taken:
+
+```yaml
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainerSnapshot
+metadata: {name: ckpt-20261107, namespace: ml}
+spec: {containerRef: train-data}
+```
+
+DAOS 2.8 cannot roll a container back (`daos_cont_rollback` is not implemented).
+To get data back, mount the snapshot read-only (`dfuse --snap-epoch <epoch>`) and
+copy what you need out of it. A snapshot keeps the space of everything overwritten
+or deleted after it, so old snapshots hold pool capacity until they are destroyed.
+
+As with pools and containers, deleting the object keeps the DAOS snapshot unless
+`daos.gluesys.com/destroy-approved: "true"` is set first (Event `SnapshotOrphaned`
+gives the command to remove it by hand). The operator never takes a second
+snapshot for one object: an existing snapshot of the same name is adopted, and one
+destroyed by hand is reported (`SnapshotMissing`), not re-taken.
 
 ### A pool with no redundancy stops serving when a rank leaves
 
