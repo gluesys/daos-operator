@@ -24,6 +24,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -223,6 +224,65 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		p = getPool()
 		Expect(meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpaceLow)).To(BeNil())
 		Expect(p.Status.UsedPercent).To(Equal(int32(1)))
+	})
+
+	It("copies the pool space Events to the PVCs whose volumes live in the pool", func() {
+		const poolUUID = "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d" // dmgPoolQuery
+		mkPV := func(name, uuid string, claim *corev1.ObjectReference) {
+			pv := &corev1.PersistentVolume{
+				ObjectMeta: metav1.ObjectMeta{Name: name},
+				Spec: corev1.PersistentVolumeSpec{
+					Capacity:    corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")},
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteMany},
+					ClaimRef:    claim,
+					PersistentVolumeSource: corev1.PersistentVolumeSource{CSI: &corev1.CSIPersistentVolumeSource{
+						Driver: "daos.csi.gluesys.com", VolumeHandle: name,
+						VolumeAttributes: map[string]string{csiPoolUUIDAttr: uuid},
+					}},
+				},
+			}
+			Expect(k8sClient.Create(ctx, pv)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pv) })
+		}
+		mkPV("pv-in-pool", poolUUID, &corev1.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: "team-a", Name: "train-data", UID: "uid-a"})
+		mkPV("pv-other-pool", "00000000-0000-0000-0000-000000000000", &corev1.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: "team-b", Name: "other", UID: "uid-b"})
+		mkPV("pv-unbound", poolUUID, nil)
+
+		events := record.NewFakeRecorder(32)
+		rec := func(f *fakeDmg) {
+			r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		rec(f) // finalizer
+		p := getPool()
+		p.Spec.ACL = nil
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		rec(f)
+		drain(events)
+
+		By("crossing the threshold warns on the pool and on the one bound PVC in it")
+		p = getPool()
+		p.Spec.SpaceWarningPercent = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Eventually(func() []string { rec(f); return drain(events) }).Should(SatisfyAll(
+			ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), Not(ContainSubstring("(volume ")))),
+			ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), ContainSubstring("(volume pv-in-pool)"))),
+			Not(ContainElement(ContainSubstring("pv-other-pool"))),
+			Not(ContainElement(ContainSubstring("pv-unbound"))),
+		))
+
+		By("staying above the threshold does not repeat it")
+		rec(f)
+		Expect(drain(events)).NotTo(ContainElement(ContainSubstring("PoolSpaceLow")))
+
+		By("dropping back below tells the PVC too")
+		p = getPool()
+		p.Spec.SpaceWarningPercent = ptr.To(int32(90))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		rec(f)
+		Expect(drain(events)).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-in-pool)"))))
 	})
 
 	It("sends rd_fac:0 when the spec says 0 (single fault domain pools)", func() {

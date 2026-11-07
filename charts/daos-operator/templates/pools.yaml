@@ -1,0 +1,54 @@
+{{- /*
+One DaosPool per .Values.pools entry and, when csi.enabled and the entry has a
+storageClass, the StorageClass that provisions PVCs into that pool. DAOS enforces
+capacity per pool, not per container, so the pool size is the hard limit shared
+by every PVC in it: giving each team or use its own pool + StorageClass is how
+capacity is split.
+*/}}
+{{- range .Values.pools }}
+{{- if not .name }}{{ fail "pools[].name is required" }}{{ end }}
+{{- if not .size }}{{ fail (printf "pools[%s].size is required" .name) }}{{ end }}
+---
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata:
+  name: {{ .name }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+  annotations:
+    # uninstall must not delete a pool: even with destroy-approved unset the CR
+    # would disappear while the DAOS pool and its data stay behind, orphaned.
+    helm.sh/resource-policy: keep
+spec:
+  systemRef: {{ .systemRef | default $.Values.system.name }}
+  size: {{ .size | quote }}
+  {{- with .spec }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- /* the key, not its value, asks for the class: "storageClass: {}" means all defaults */}}
+{{- if and $.Values.csi.enabled (hasKey . "storageClass") (not (kindIs "invalid" .storageClass)) }}
+{{- $sc := .storageClass | default dict }}
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ $sc.name | default (printf "daos-%s" .name) }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+  {{- with $sc.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+provisioner: {{ $.Values.csi.driverName }}
+reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
+volumeBindingMode: {{ $sc.volumeBindingMode | default "Immediate" }}
+allowVolumeExpansion: false
+parameters:
+  {{- /* the pool is this entry's; a parameters.pool would point the class elsewhere */}}
+  {{- $params := omit ($sc.parameters | default dict) "pool" }}
+  pool: {{ .name }}
+  {{- with $params }}
+  {{- toYaml . | nindent 2 }}
+  {{- end }}
+{{- end }}
+{{- end }}

@@ -96,6 +96,7 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 
 func poolLabel(pool *daosv1alpha1.DaosPool) string { return pool.Name }
 
@@ -333,7 +334,7 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	// space: one number that decides for every container and PV in this pool.
 	// Reported on every successful query, even when an operation follows.
-	r.checkSpace(pool, &status)
+	r.checkSpace(ctx, pool, &status)
 
 	// The pool answering to this label may not be the one the spec describes:
 	// re-applying a name while the old pool is still being destroyed adopts the
@@ -420,8 +421,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // checkSpace sets usedPercent and the SpaceLow condition, and emits an Event
-// when the answer changes (not on every poll).
-func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus) {
+// when the answer changes (not on every poll). The same Event goes to every PVC
+// whose volume lives in this pool (notifyClaims): DAOS enforces capacity per
+// pool, so a nearly full pool is a nearly full volume for each of them, and a
+// user who can only see their own namespace never sees the DaosPool.
+func (r *DaosPoolReconciler) checkSpace(ctx context.Context, pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus) {
 	threshold := int32(85)
 	if pool.Spec.SpaceWarningPercent != nil {
 		threshold = *pool.Spec.SpaceWarningPercent
@@ -445,6 +449,7 @@ func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *dao
 			Reason: "AboveThreshold", Message: msg, ObservedGeneration: pool.Generation})
 		if !was {
 			r.event(pool, corev1.EventTypeWarning, "PoolSpaceLow", msg)
+			r.notifyClaims(ctx, pool, status.UUID, corev1.EventTypeWarning, "PoolSpaceLow", msg)
 		}
 		return
 	}
@@ -452,6 +457,38 @@ func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *dao
 		Reason: "BelowThreshold", Message: msg, ObservedGeneration: pool.Generation})
 	if was {
 		r.event(pool, corev1.EventTypeNormal, "PoolSpaceRecovered", msg)
+		r.notifyClaims(ctx, pool, status.UUID, corev1.EventTypeNormal, "PoolSpaceRecovered", msg)
+	}
+}
+
+// csiPoolUUIDAttr is the volume attribute daos-csi puts on every PV it provisions
+// (VolumeContext "poolUUID"). Matching on the UUID, not the pool label, keeps a
+// re-created pool with the same label from inheriting the old pool's claims.
+const csiPoolUUIDAttr = "poolUUID"
+
+// notifyClaims repeats a pool space Event on each bound PVC whose CSI volume is
+// in the pool. Best effort: a failed PV list only loses the copies, the Event on
+// the DaosPool itself is already recorded.
+func (r *DaosPoolReconciler) notifyClaims(ctx context.Context, pool *daosv1alpha1.DaosPool, poolUUID, typ, reason, msg string) {
+	if r.Recorder == nil || poolUUID == "" {
+		return
+	}
+	var pvs corev1.PersistentVolumeList
+	if err := r.List(ctx, &pvs); err != nil {
+		logf.FromContext(ctx).Info("pool space event not copied to claims: listing PVs failed", "pool", pool.Name, "err", err.Error())
+		return
+	}
+	for i := range pvs.Items {
+		pv := &pvs.Items[i]
+		if pv.Spec.CSI == nil || pv.Spec.CSI.VolumeAttributes[csiPoolUUIDAttr] != poolUUID || pv.Spec.ClaimRef == nil {
+			continue
+		}
+		ref := pv.Spec.ClaimRef
+		claim := &corev1.PersistentVolumeClaim{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace, UID: ref.UID},
+		}
+		r.Recorder.Eventf(claim, typ, reason, "DAOS pool %s (volume %s): %s", pool.Name, pv.Name, msg)
 	}
 }
 
