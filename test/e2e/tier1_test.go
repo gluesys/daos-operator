@@ -447,7 +447,7 @@ kind: DaosSnapshotPolicy
 metadata: {name: e2e-pol}
 spec: {containerRef: ` + cont + `, interval: 5m, keep: 1}`)
 		start = time.Now()
-		waitGone("daoscontainersnapshot", "e2e-pol-seed", 8*time.Minute)
+		waitGone("daoscontainersnapshot", "e2e-pol-seed", 4*time.Minute) // no interval wait: the seed is older than the policy
 		recordDuration("policy snapshot + prune", time.Since(start))
 		Expect(kubectl("get", "events", "--field-selector", "involvedObject.name=e2e-pol-seed", "-o", "jsonpath={.items[*].reason}")).To(ContainSubstring("SnapshotDestroyed"),
 			"pruning goes through destroy-snap, not just the object")

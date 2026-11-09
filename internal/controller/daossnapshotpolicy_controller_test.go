@@ -236,6 +236,18 @@ var _ = Describe("DaosSnapshotPolicy Controller", func() {
 		Expect(policy().Status.LastScheduleTime).NotTo(BeNil())
 	})
 
+	It("takes its first snapshot at once even when labelled snapshots older than it exist", func() {
+		Expect(k8sClient.Create(ctx, &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "seed",
+			Labels: map[string]string{daosv1alpha1.LabelSnapshotPolicy: polName}},
+			Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName}})).To(Succeed())
+		take("seed", t0.Add(-time.Minute))
+		time.Sleep(1100 * time.Millisecond) // creationTimestamp has second resolution
+		newPolicy(daosv1alpha1.DaosSnapshotPolicySpec{Interval: metav1.Duration{Duration: time.Hour}, Keep: 1})
+		now = time.Now() // the recovery compares real creation times
+		rec()
+		Expect(snapshots()).To(HaveLen(2), "the seed is not one of the policy's runs: no interval to wait")
+	})
+
 	It("rejects an interval under 5m, maxAge under interval and long names", func() {
 		bad := func(name string, spec daosv1alpha1.DaosSnapshotPolicySpec, msg string) {
 			spec.ContainerRef = contName

@@ -111,7 +111,9 @@ func (r *DaosSnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	recoverLast := status.LastScheduleTime == nil
 	for i := range list.Items {
 		s := &list.Items[i]
-		if recoverLast && (status.LastScheduleTime == nil || status.LastScheduleTime.Before(&s.CreationTimestamp)) {
+		// (only its own runs: a labelled snapshot older than the policy is not one)
+		if recoverLast && !s.CreationTimestamp.Before(&p.CreationTimestamp) &&
+			(status.LastScheduleTime == nil || status.LastScheduleTime.Before(&s.CreationTimestamp)) {
 			t := s.CreationTimestamp
 			status.LastScheduleTime = &t
 		}
