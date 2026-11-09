@@ -244,6 +244,9 @@
             },
             "snapshotter": {
               "type": "string"
+            },
+            "resizer": {
+              "type": "string"
             }
           }
         },
@@ -300,6 +303,15 @@
                   "type": "string"
                 }
               }
+            }
+          }
+        },
+        "expansion": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
             }
           }
         },

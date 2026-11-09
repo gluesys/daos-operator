@@ -232,6 +232,28 @@ instead of piling up more. Runs missed while the operator was down are not made
 up; `suspend: true` stops new snapshots but keeps pruning. Deleting the policy
 leaves its snapshots as ordinary `DaosContainerSnapshot`s.
 
+### Container quota needs the extended edition of DAOS
+
+Upstream DAOS 2.8 limits space per pool only. The exastor extended edition (see
+ADR-005) adds a per-container hard limit, and `DaosContainer.spec.spaceLimit` sets it:
+
+```yaml
+spec: {poolRef: train, spaceLimit: 500Gi}
+```
+
+The operator does not assume an edition. It creates the container without the
+limit and reads `daos cont query`: the extended edition reports space usage
+(`status.edition: extended`, `status.spaceUsedBytes`), and only then is the limit
+set with `daos cont set-prop space_limit:<bytes>` (plus `space_amp` for an EC file
+object class). A new container becomes `Ready` once its limit is set; changing or
+removing `spaceLimit` later is applied online without taking it out of service
+(condition `SpaceLimit`: `Applied`, or `ApplyFailed`, retried when the spec changes).
+On upstream DAOS the field is reported, not enforced (`SpaceLimit=Unsupported`,
+`status.edition: upstream`) and the container is served as usual.
+
+daos-csi passes each PVC's size as `spaceLimit` (StorageClass `spaceLimit: "false"`
+to opt out), and with `csi.expansion.enabled` growing a PVC moves the limit.
+
 ### A pool with no redundancy stops serving when a rank leaves
 
 `redundancyFactor: 0` is a valid choice — it is what a pool on a single fault

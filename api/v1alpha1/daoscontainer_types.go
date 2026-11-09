@@ -18,6 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -55,6 +56,15 @@ type DaosContainerSpec struct {
 	ACL        []string          `json:"acl,omitempty"`
 	// Label is the DAOS container label; defaults to metadata.name.
 	Label string `json:"label,omitempty"`
+	// SpaceLimit is a hard quota on the container's logical data (DAOS
+	// property space_limit). Only the exastor extended edition of DAOS has it:
+	// the operator detects the edition from `daos cont query` and sets the
+	// property after the container exists; on upstream DAOS the field is
+	// reported as unsupported (condition SpaceLimit) and nothing else changes.
+	// It can be raised, lowered or removed (unlimited) later. For an EC file
+	// object class the storage amplification (space_amp) is set with it.
+	// +optional
+	SpaceLimit *resource.Quantity `json:"spaceLimit,omitempty"`
 	// RestoreFrom fills the new container with the contents of a snapshot: a
 	// writable copy, since DAOS 2.8 cannot roll a container back. After
 	// `daos cont create` a Job mounts the snapshot read-only (dfuse
@@ -87,10 +97,19 @@ type DaosContainerStatus struct {
 	Ready      bool               `json:"ready,omitempty"`
 	Health     string             `json:"health,omitempty"`
 	Type       string             `json:"type,omitempty"`
-	// Operation is the daos Job in flight (create, acl, restore, destroy); empty when idle.
+	// Operation is the daos Job in flight (create, acl, quota, restore, destroy); empty when idle.
 	Operation          string `json:"operation,omitempty"`
 	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
 	AppliedACLHash     string `json:"appliedACLHash,omitempty"`
+	// Edition is what `daos cont query` says about the DAOS build: "extended"
+	// (exastor, reports space usage and takes space_limit) or "upstream".
+	Edition string `json:"edition,omitempty"`
+	// SpaceUsedBytes is the container's logical data as the extended edition
+	// accounts it against spaceLimit.
+	SpaceUsedBytes *int64 `json:"spaceUsedBytes,omitempty"`
+	// AppliedSpaceLimit is the space_limit the operator last set (bytes, 0 =
+	// unlimited); unset when it never set one.
+	AppliedSpaceLimit *int64 `json:"appliedSpaceLimit,omitempty"`
 	// RestoredFrom is "<snapshot>@<epoch>" once spec.restoreFrom was copied in.
 	RestoredFrom string `json:"restoredFrom,omitempty"`
 	// RestoreStartedAt is when the last copy attempt started; a failed one is
@@ -105,6 +124,8 @@ type DaosContainerStatus struct {
 // +kubebuilder:printcolumn:name="Pool",type=string,JSONPath=`.spec.poolRef`
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Health",type=string,JSONPath=`.status.health`
+// +kubebuilder:printcolumn:name="Limit",type=string,JSONPath=`.spec.spaceLimit`,priority=1
+// +kubebuilder:printcolumn:name="Used",type=integer,JSONPath=`.status.spaceUsedBytes`,priority=1
 // +kubebuilder:printcolumn:name="Ready",type=boolean,JSONPath=`.status.ready`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 

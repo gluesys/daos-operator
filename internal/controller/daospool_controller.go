@@ -88,6 +88,7 @@ const (
 	opDestroy = "destroy"
 	opHeal    = "heal"    // daos cont set-prop status:healthy
 	opRestore = "restore" // dfuse --snap-epoch, cp -a into a new container
+	opQuota   = "quota"   // daos cont set-prop space_limit (extended edition)
 	// opReintMode sets the reintegration property back to the one the spec pins
 	opReintMode = "reintmode"
 	// opSelfHeal sets self_heal back to the one profile kvcache pins

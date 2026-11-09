@@ -104,6 +104,7 @@ csi:
     provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
     registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
     snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
+    resizer: registry.k8s.io/sig-storage/csi-resizer:v1.13.2
   kubeletDir: /var/lib/kubelet
   nodeSelector: {}        # nodes that may mount DAOS PVs (default: all)
   tolerations:
@@ -119,6 +120,12 @@ csi:
   # not implemented. Needs the VolumeSnapshot CRDs and snapshot-controller
   # (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi
   # image with snapshot support.
+  # PVC expansion: a csi-resizer sidecar and allowVolumeExpansion on the StorageClasses.
+  # Growing a PVC moves its DaosContainer's spec.spaceLimit, which is a container quota
+  # in the extended edition of DAOS; on upstream DAOS it only records the size (capacity
+  # is per pool). Needs a daos-csi with EXPAND_VOLUME.
+  expansion:
+    enabled: false
   snapshots:
     enabled: false
     volumeSnapshotClass:
@@ -132,6 +139,8 @@ csi:
   #  - name: daos-kv
   #    reclaimPolicy: Delete
   #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
+  #    # spaceLimit: "false" stops daos-csi from capping each container at its PVC size
+  #    # (spec.spaceLimit; enforced by the extended edition of DAOS only)
 
 # vLLM serving with LMCache writing its KV cache to a DAOS container.
 # This is a reference workload, not part of the storage layer: it is here so a

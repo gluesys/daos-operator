@@ -23,6 +23,7 @@ system:
 csi:
   enabled: true
   snapshots: {enabled: true}   # csi-snapshotter sidecar, snapshot RBAC, VolumeSnapshotClass
+  expansion: {enabled: true}   # csi-resizer sidecar, allowVolumeExpansion
   storageClasses:
     - name: daos-kv
       reclaimPolicy: Delete

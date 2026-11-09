@@ -371,6 +371,11 @@ func (in *DaosContainerSpec) DeepCopyInto(out *DaosContainerSpec) {
 		*out = make([]string, len(*in))
 		copy(*out, *in)
 	}
+	if in.SpaceLimit != nil {
+		in, out := &in.SpaceLimit, &out.SpaceLimit
+		x := (*in).DeepCopy()
+		*out = &x
+	}
 	if in.RestoreFrom != nil {
 		in, out := &in.RestoreFrom, &out.RestoreFrom
 		*out = new(ContainerRestoreSpec)
@@ -397,6 +402,16 @@ func (in *DaosContainerStatus) DeepCopyInto(out *DaosContainerStatus) {
 		for i := range *in {
 			(*in)[i].DeepCopyInto(&(*out)[i])
 		}
+	}
+	if in.SpaceUsedBytes != nil {
+		in, out := &in.SpaceUsedBytes, &out.SpaceUsedBytes
+		*out = new(int64)
+		**out = **in
+	}
+	if in.AppliedSpaceLimit != nil {
+		in, out := &in.AppliedSpaceLimit, &out.AppliedSpaceLimit
+		*out = new(int64)
+		**out = **in
 	}
 	if in.RestoreStartedAt != nil {
 		in, out := &in.RestoreStartedAt, &out.RestoreStartedAt
