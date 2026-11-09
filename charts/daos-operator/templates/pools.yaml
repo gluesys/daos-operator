@@ -8,6 +8,12 @@ capacity is split.
 {{- range .Values.pools }}
 {{- if not .name }}{{ fail "pools[].name is required" }}{{ end }}
 {{- if not .size }}{{ fail (printf "pools[%s].size is required" .name) }}{{ end }}
+{{- /* systemRef and size have their own keys; inside spec they would be rendered twice and the
+     StorageClass check below would look at the wrong system */}}
+{{- $p := . }}
+{{- range $k := list "systemRef" "size" }}
+{{- if and $p.spec (hasKey $p.spec $k) }}{{ fail (printf "pools[%s].spec.%s: set pools[].%s instead" $p.name $k $k) }}{{ end }}
+{{- end }}
 ---
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
