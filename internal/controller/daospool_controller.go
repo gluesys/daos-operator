@@ -436,15 +436,17 @@ func (r *DaosPoolReconciler) checkSpace(ctx context.Context, pool *daosv1alpha1.
 	}
 	used := status.TotalBytes - status.FreeBytes
 	status.UsedPercent = int32(used * 100 / status.TotalBytes)
+	msg := fmt.Sprintf("%d%% used (%s of %s), %s free; DAOS enforces capacity per pool, so this applies to every container in it",
+		status.UsedPercent, humanBytes(used), humanBytes(status.TotalBytes), humanBytes(status.FreeBytes))
 	if threshold <= 0 {
+		// Turning the check off ends any warning: PVCs already told get PoolSpaceRecovered
+		// (kept in SpaceLowClaims until that is delivered).
 		meta.RemoveStatusCondition(&status.Conditions, daosv1alpha1.ConditionSpaceLow)
-		status.SpaceLowClaims = nil
+		r.syncClaims(ctx, pool, status, false, "space warning turned off (spaceWarningPercent: 0); "+msg)
 		return
 	}
 	was := meta.IsStatusConditionTrue(status.Conditions, daosv1alpha1.ConditionSpaceLow)
 	low := status.UsedPercent >= threshold
-	msg := fmt.Sprintf("%d%% used (%s of %s), %s free; DAOS enforces capacity per pool, so this applies to every container in it",
-		status.UsedPercent, humanBytes(used), humanBytes(status.TotalBytes), humanBytes(status.FreeBytes))
 	if low {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionTrue,
 			Reason: "AboveThreshold", Message: msg, ObservedGeneration: pool.Generation})

@@ -314,6 +314,20 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(back).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-late)"))))
 		Expect(back).NotTo(ContainElement(ContainSubstring("pv-reserved")))
 		Expect(getPool().Status.SpaceLowClaims).To(BeEmpty())
+
+		By("turning the check off while low tells the warned PVCs it is over")
+		p = getPool()
+		p.Spec.SpaceWarningPercent = ptr.To(int32(1))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		rec(f)
+		Expect(getPool().Status.SpaceLowClaims).NotTo(BeEmpty())
+		drain(events)
+		p = getPool()
+		p.Spec.SpaceWarningPercent = ptr.To(int32(0))
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		rec(f)
+		Expect(drain(events)).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-in-pool)"), ContainSubstring("turned off"))))
+		Expect(getPool().Status.SpaceLowClaims).To(BeEmpty())
 	})
 
 	It("sends rd_fac:0 when the spec says 0 (single fault domain pools)", func() {
