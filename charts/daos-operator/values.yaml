@@ -103,6 +103,7 @@ csi:
   sidecars:
     provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
     registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
+    snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
   kubeletDir: /var/lib/kubelet
   nodeSelector: {}        # nodes that may mount DAOS PVs (default: all)
   tolerations:
@@ -112,6 +113,20 @@ csi:
     limits: {memory: 128Mi}
   nodeResources:
     requests: {cpu: 50m, memory: 128Mi}
+  # CSI snapshots (VolumeSnapshot). Each snapshot is a DaosContainerSnapshot taken by the
+  # operator. A PVC restored from one (dataSource: VolumeSnapshot) is read-only and must
+  # ask for ReadOnlyMany: DAOS 2.8 cannot roll a container back, and a writable copy is
+  # not implemented. Needs the VolumeSnapshot CRDs and snapshot-controller
+  # (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi
+  # image with snapshot support.
+  snapshots:
+    enabled: false
+    volumeSnapshotClass:
+      create: true
+      name: daos-snapshot
+      default: false
+      # Delete destroys the DAOS snapshot with the VolumeSnapshot; Retain keeps it (and its space)
+      deletionPolicy: Delete
   # StorageClasses to create, one per DaosPool
   storageClasses: []
   #  - name: daos-kv

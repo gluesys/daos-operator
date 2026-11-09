@@ -147,6 +147,29 @@ operator never takes a second snapshot for one object: if the answer of a
 create-snap is lost, the snapshot taken after it that no other object holds is
 adopted; one destroyed by hand is reported (`SnapshotMissing`), not re-taken.
 
+Users who only see their own namespace use the CSI path instead (`csi.snapshots.enabled`,
+plus the VolumeSnapshot CRDs and snapshot-controller from kubernetes-csi/external-snapshotter):
+a `VolumeSnapshot` of a DAOS PVC becomes a `DaosContainerSnapshot`, and a PVC with
+`dataSource: VolumeSnapshot` restores it **read-only** (`ReadOnlyMany`, no copy):
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata: {name: ckpt, namespace: ml}
+spec: {volumeSnapshotClassName: daos-snapshot, source: {persistentVolumeClaimName: train-data}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ckpt-ro, namespace: ml}
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: daos-train
+  dataSource: {apiGroup: snapshot.storage.k8s.io, kind: VolumeSnapshot, name: ckpt}
+  resources: {requests: {storage: 1Gi}}
+```
+
+A writable restore (a copy of the container) is not implemented and is refused.
+
 ### A pool with no redundancy stops serving when a rank leaves
 
 `redundancyFactor: 0` is a valid choice — it is what a pool on a single fault

@@ -29,6 +29,17 @@ for f in sorted(glob.glob(os.path.join(src, "*.yaml"))):
             print(f"schema {g}/{kind}_{v['name']}")
 PY
 
+# VolumeSnapshotClass (csi.snapshots) 는 external-snapshotter CRD 라 상류 스키마 모음에 없다.
+# 그 CRD(snapshot.storage.k8s.io/v1)의 필수 필드와 deletionPolicy enum 만 옮겨 둔다.
+mkdir -p "$out/schemas/snapshot.storage.k8s.io"
+cat > "$out/schemas/snapshot.storage.k8s.io/volumesnapshotclass_v1.json" <<'JSON'
+{"type": "object", "required": ["driver", "deletionPolicy"],
+ "properties": {"apiVersion": {"type": "string"}, "kind": {"type": "string"}, "metadata": {"type": "object"},
+  "driver": {"type": "string"}, "deletionPolicy": {"type": "string", "enum": ["Delete", "Retain"]},
+  "parameters": {"type": "object", "additionalProperties": {"type": "string"}}},
+ "additionalProperties": false}
+JSON
+
 fail=0
 # values.schema.json 은 values.yaml 에서 생성한다(Artifact Hub 표시, helm 의 타입 검사). 어긋나면 실패.
 python3 "$repo/hack/gen-values-schema.py" --check || fail=1

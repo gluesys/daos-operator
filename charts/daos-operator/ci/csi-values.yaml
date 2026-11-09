@@ -22,6 +22,7 @@ system:
       - {targets: 4, helpers: 0, bdevClass: kdev, scmSizeGiB: 4}
 csi:
   enabled: true
+  snapshots: {enabled: true}   # csi-snapshotter sidecar, snapshot RBAC, VolumeSnapshotClass
   storageClasses:
     - name: daos-kv
       reclaimPolicy: Delete
