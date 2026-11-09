@@ -191,7 +191,9 @@ spec: {poolRef: train, restoreFrom: {snapshotRef: ckpt-20261107}}
 ```
 
 After `daos cont create` a Job mounts the snapshot read-only (`dfuse --snap-epoch`,
-by pool and container UUID) and runs `daos fs copy` into the new container. It
+by pool and container UUID) and the new container, and copies with `cp -a`. (Not
+`daos fs copy`: it resolves a dfuse path back to its container and reads the live
+data, skipping the snapshot.) It
 is a full copy: it takes as long and as much space as the data. The container is
 not `Ready` until the copy finished (`RestoreWaiting` until the snapshot was taken,
 `RestoreInProgress`, then `status.restoredFrom: <snapshot>@<epoch>`); a failed copy

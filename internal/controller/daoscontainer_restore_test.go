@@ -134,7 +134,10 @@ var _ = Describe("DaosContainer restore from a snapshot", func() {
 		Expect(j.Command[2]).To(SatisfyAll(
 			HavePrefix("for i in $(seq 1 60); do [ -S /var/run/daos_agent/daos_agent.sock ]"),
 			ContainSubstring(`dfuse --sys-name 'daos_server' --pool '`+srcPoolUUID+`' --container '`+srcUUID+`' --mountpoint '/tmp/daos-restore-src' --snap-epoch '123456' --foreground`),
-			ContainSubstring(`daos -G 'daos_server' fs copy --src '/tmp/daos-restore-src' --dst 'daos://rp1/r1'`),
+			ContainSubstring(`dfuse --sys-name 'daos_server' --pool 'rp1' --container 'r1' --mountpoint '/tmp/daos-restore-dst' --foreground`),
+			ContainSubstring(`cp -a /tmp/daos-restore-src/. /tmp/daos-restore-dst/`),
+			// fs copy resolves a dfuse path to the live container and would skip the snapshot
+			Not(ContainSubstring("fs copy")),
 		))
 
 		By("an approved destroy of the snapshot waits for the copy")
@@ -151,11 +154,11 @@ var _ = Describe("DaosContainer restore from a snapshot", func() {
 		Expect(f.count("snap:destroysnap")).To(BeZero())
 
 		By("a failed copy is reported and retried only after a while")
-		f.set("-daos-restore", &dmg.Result{Done: true, Output: `{"response": null, "error": "daos fs copy failed: DER_NOSPACE", "status": 1}`})
+		f.set("-daos-restore", &dmg.Result{Done: true, Output: `{"response": null, "error": "copy failed: cp: error writing: No space left on device", "status": 1}`})
 		rec()
 		Expect(reason()).To(Equal("RestoreFailed"))
 		Expect(get().Status.Operation).To(BeEmpty())
-		Expect(drain(events)).To(ContainElement(ContainSubstring("DER_NOSPACE")))
+		Expect(drain(events)).To(ContainElement(ContainSubstring("No space left")))
 		n := f.count("-daos-restore")
 		rec()
 		Expect(f.count("-daos-restore")).To(Equal(n), "no immediate retry")

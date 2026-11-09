@@ -39,35 +39,47 @@ import (
 // clone` cannot read an existing snapshot (clone takes a new one of the live
 // container), so the copy goes through POSIX: dfuse mounts the snapshot
 // read-only (--snap-epoch, by pool and container UUID, so a re-created source
-// of the same name is never read) and `daos fs copy` writes it into the new
-// container. fs copy truncates files it writes and accepts existing
-// directories, so a retry after a failed or lost attempt is safe.
+// of the same name is never read), a second dfuse mounts the new container, and
+// `cp -a` copies between the two.
+//
+// Not `daos fs copy --src <snapshot mount>`: fs copy resolves a dfuse path back
+// to its pool and container (duns_resolve_path) and reads the container
+// directly, at its live epoch -- the snapshot mount is bypassed and the copy
+// holds today's data (CI lane B, pipeline 65168: the restore showed v2, not v1).
+//
+// cp overwrites the files it writes and accepts existing directories, so a retry
+// after a failed or lost attempt is safe.
 
 const (
-	restoreMount = "/tmp/daos-restore-src"
-	restoreLog   = "/tmp/daos-restore.log"
+	restoreSrc = "/tmp/daos-restore-src"
+	restoreDst = "/tmp/daos-restore-dst"
+	restoreLog = "/tmp/daos-restore.log"
 	// restoreDeadlineDefault bounds one copy attempt when spec.restoreFrom.deadlineSeconds is unset.
 	restoreDeadlineDefault = int64(24 * 3600)
 )
 
 // restoreCommand is the restore Job's script. It prints exactly one JSON
 // envelope at the end (the tools' own output goes to a log whose tail is put in
-// the error), so dfuse or fs copy messages never parse as the answer.
+// the error), so dfuse or cp messages never parse as the answer.
 func restoreCommand(sysName, srcPoolUUID, srcContUUID, epoch, dstPool, dstCont string) []string {
 	q := dmg.ShellQuote
-	mnt, log := q(restoreMount), q(restoreLog)
+	src, dst, log := q(restoreSrc), q(restoreDst), q(restoreLog)
 	var b strings.Builder
 	b.WriteString(waitForAgent)
 	b.WriteString(`envelope() { python3 -c 'import json,sys; e=sys.argv[1]; print(json.dumps({"response": None if e else {"restored": True}, "error": e or None, "status": 1 if e else 0}))' "$1"; }; `)
-	b.WriteString(`fail() { fusermount3 -uz ` + mnt + ` >/dev/null 2>&1; envelope "$1: $(tail -c 1500 ` + log + ` 2>/dev/null)"; exit 0; }; `)
-	b.WriteString(`mounted() { grep -q " ` + restoreMount + ` fuse" /proc/mounts; }; `)
-	b.WriteString(`mkdir -p ` + mnt + ` && : > ` + log + `; `)
+	b.WriteString(`umount_all() { fusermount3 -uz ` + src + ` >/dev/null 2>&1; fusermount3 -uz ` + dst + ` >/dev/null 2>&1; }; `)
+	b.WriteString(`fail() { umount_all; envelope "$1: $(tail -c 1500 ` + log + ` 2>/dev/null)"; exit 0; }; `)
+	b.WriteString(`mounted() { grep -q " $1 fuse" /proc/mounts; }; `)
+	b.WriteString(`wait_mount() { for i in $(seq 1 60); do mounted "$1" && return 0; sleep 1; done; return 1; }; `)
+	b.WriteString(`mkdir -p ` + src + ` ` + dst + ` && : > ` + log + `; `)
 	b.WriteString(`dfuse --sys-name ` + q(sysName) + ` --pool ` + q(srcPoolUUID) + ` --container ` + q(srcContUUID) +
-		` --mountpoint ` + mnt + ` --snap-epoch ` + q(epoch) + ` --foreground >>` + log + ` 2>&1 & `)
-	b.WriteString(`for i in $(seq 1 60); do mounted && break; sleep 1; done; `)
-	b.WriteString(`mounted || fail "dfuse did not mount the snapshot"; `)
-	b.WriteString(`daos -G ` + q(sysName) + ` fs copy --src ` + mnt + ` --dst ` + q("daos://"+dstPool+"/"+dstCont) + ` >>` + log + ` 2>&1 || fail "daos fs copy failed"; `)
-	b.WriteString(`fusermount3 -u ` + mnt + ` >>` + log + ` 2>&1; envelope ""`)
+		` --mountpoint ` + src + ` --snap-epoch ` + q(epoch) + ` --foreground >>` + log + ` 2>&1 & `)
+	b.WriteString(`dfuse --sys-name ` + q(sysName) + ` --pool ` + q(dstPool) + ` --container ` + q(dstCont) +
+		` --mountpoint ` + dst + ` --foreground >>` + log + ` 2>&1 & `)
+	b.WriteString(`wait_mount ` + restoreSrc + ` || fail "dfuse did not mount the snapshot"; `)
+	b.WriteString(`wait_mount ` + restoreDst + ` || fail "dfuse did not mount the new container"; `)
+	b.WriteString(`cp -a ` + restoreSrc + `/. ` + restoreDst + `/ >>` + log + ` 2>&1 || fail "copy failed"; `)
+	b.WriteString(`sync; umount_all; envelope ""`)
 	return []string{"bash", "-c", b.String()}
 }
 
@@ -109,7 +121,7 @@ func (r *DaosContainerReconciler) restore(ctx context.Context, c *daosv1alpha1.D
 		status.Ready = false
 	}
 	if c.Spec.Type != "" && c.Spec.Type != "POSIX" {
-		setC("RestoreUnsupported", "spec.restoreFrom copies files (daos fs copy): only a POSIX container can be restored into, this one is "+string(c.Spec.Type))
+		setC("RestoreUnsupported", "spec.restoreFrom copies files through dfuse: only a POSIX container can be restored into, this one is "+string(c.Spec.Type))
 		return r.updateStatus(ctx, c, status, poolRequeueIdle)
 	}
 	if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); cond != nil && cond.Reason == "RestoreFailed" && status.RestoreStartedAt != nil {

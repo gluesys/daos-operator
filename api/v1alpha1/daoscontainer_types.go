@@ -58,7 +58,7 @@ type DaosContainerSpec struct {
 	// RestoreFrom fills the new container with the contents of a snapshot: a
 	// writable copy, since DAOS 2.8 cannot roll a container back. After
 	// `daos cont create` a Job mounts the snapshot read-only (dfuse
-	// --snap-epoch) and runs `daos fs copy` into this container; the container
+	// --snap-epoch), mounts this container and copies with `cp -a`; the container
 	// is Ready only once the copy finished. POSIX containers only. Set it at
 	// creation; it cannot change afterwards.
 	// +optional
