@@ -136,8 +136,10 @@ pools:
 When a pool passes `spaceWarningPercent` the operator sets `SpaceLow` on the
 `DaosPool` and records a `PoolSpaceLow` Event on every bound PVC in that pool, so users who
 only see their own namespace (`kubectl describe pvc`) are told too. A PVC bound
-while the pool is already low is warned on the next poll; `status.spaceLowVolumes`
-lists the volumes told, and each gets `PoolSpaceRecovered` when the pool drops back. Pools created this way are
+while the pool is already low is warned on the next poll; `status.spaceLowClaims`
+lists the PVCs told, and each gets `PoolSpaceRecovered` when the pool drops back.
+A `storageClass` is only rendered for a pool in the DaosSystem daos-csi serves
+(`csi.system`); the chart refuses one for a pool in another system. Pools created this way are
 kept on `helm uninstall`, like any `DaosPool`.
 
 ### A pool with no redundancy stops serving when a rank leaves

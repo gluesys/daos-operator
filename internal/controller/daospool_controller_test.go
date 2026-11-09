@@ -281,7 +281,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 			Not(ContainElement(ContainSubstring("pv-unbound"))),
 			Not(ContainElement(ContainSubstring("pv-reserved"))),
 		))
-		Expect(getPool().Status.SpaceLowVolumes).To(Equal([]string{"pv-in-pool"}))
+		Expect(getPool().Status.SpaceLowClaims).To(Equal([]daosv1alpha1.SpaceLowClaim{{Volume: "pv-in-pool", ClaimUID: "uid-train-data"}}))
 
 		By("staying above the threshold does not repeat it")
 		rec(f)
@@ -293,7 +293,16 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		late := drain(events)
 		Expect(late).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), ContainSubstring("(volume pv-late)"))))
 		Expect(late).NotTo(ContainElement(ContainSubstring("pv-in-pool")))
-		Expect(getPool().Status.SpaceLowVolumes).To(Equal([]string{"pv-in-pool", "pv-late"}))
+		Expect(getPool().Status.SpaceLowClaims).To(HaveLen(2))
+
+		By("a PV re-bound to a new PVC while the pool is low warns the new PVC")
+		pv := &corev1.PersistentVolume{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "pv-late"}, pv)).To(Succeed())
+		pv.Spec.ClaimRef = claimRef("team-e", "rebound")
+		Expect(k8sClient.Update(ctx, pv)).To(Succeed())
+		rec(f)
+		Expect(drain(events)).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), ContainSubstring("(volume pv-late)"))))
+		Expect(getPool().Status.SpaceLowClaims).To(ContainElement(daosv1alpha1.SpaceLowClaim{Volume: "pv-late", ClaimUID: "uid-rebound"}))
 
 		By("dropping back below tells the PVC too")
 		p = getPool()
@@ -304,7 +313,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(back).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-in-pool)"))))
 		Expect(back).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-late)"))))
 		Expect(back).NotTo(ContainElement(ContainSubstring("pv-reserved")))
-		Expect(getPool().Status.SpaceLowVolumes).To(BeEmpty())
+		Expect(getPool().Status.SpaceLowClaims).To(BeEmpty())
 	})
 
 	It("sends rd_fac:0 when the spec says 0 (single fault domain pools)", func() {

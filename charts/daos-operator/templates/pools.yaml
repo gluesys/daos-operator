@@ -28,6 +28,10 @@ spec:
 {{- /* the key, not its value, asks for the class: "storageClass: {}" means all defaults */}}
 {{- if and $.Values.csi.enabled (hasKey . "storageClass") (not (kindIs "invalid" .storageClass)) }}
 {{- $sc := .storageClass | default dict }}
+{{- /* daos-csi serves one DaosSystem; a class for a pool in another would never provision */}}
+{{- $poolSys := .systemRef | default $.Values.system.name }}
+{{- $csiSys := $.Values.csi.system | default $.Values.system.name }}
+{{- if ne $poolSys $csiSys }}{{ fail (printf "pools[%s].storageClass: the pool is in DaosSystem %q but daos-csi serves %q (csi.system); drop storageClass or move the pool" .name $poolSys $csiSys) }}{{ end }}
 ---
 apiVersion: storage.k8s.io/v1
 kind: StorageClass

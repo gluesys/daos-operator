@@ -57,4 +57,13 @@ if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
         echo "ok    numeric image.tag refused"
     fi
 fi
+# A StorageClass for a pool in a DaosSystem daos-csi does not serve must be refused (MR !79 review).
+if [ -f "$chart/templates/pools.yaml" ] && grep -q 'csiSys' "$chart/templates/pools.yaml"; then
+    if helm template daos-operator "$chart" -n daos-system -f "$chart/ci/pools-values.yaml" \
+          --set 'pools[0].systemRef=other' >/dev/null 2>&1; then
+        echo "FAIL  pools[] StorageClass for another DaosSystem was accepted"; fail=1
+    else
+        echo "ok    pools[] StorageClass for another DaosSystem refused"
+    fi
+fi
 exit $fail

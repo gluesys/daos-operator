@@ -311,13 +311,27 @@ spec:
                   reported it; empty when it could not be read. Profile kvcache with
                   redundancy none keeps it at none.
                 type: string
-              spaceLowVolumes:
+              spaceLowClaims:
                 description: |-
-                  SpaceLowVolumes are the PVs whose PVCs have been told the pool is low on space.
-                  A PVC bound while the pool is already low is warned on the next poll, and the
-                  ones listed here get PoolSpaceRecovered when it drops back.
+                  SpaceLowClaims are the PVCs that have been told the pool is low on space.
+                  A PVC bound while the pool is already low (including a PV re-bound to a new
+                  PVC) is warned on the next poll, and the ones listed here get
+                  PoolSpaceRecovered when it drops back.
                 items:
-                  type: string
+                  description: SpaceLowClaim is one PVC warned that its pool is low
+                    on space.
+                  properties:
+                    claimUID:
+                      description: ClaimUID is the UID of the PVC the PV was bound
+                        to when it was warned.
+                      type: string
+                    volume:
+                      description: Volume is the PV name.
+                      type: string
+                  required:
+                  - claimUID
+                  - volume
+                  type: object
                 type: array
               state:
                 type: string

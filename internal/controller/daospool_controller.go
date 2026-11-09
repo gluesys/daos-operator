@@ -438,7 +438,7 @@ func (r *DaosPoolReconciler) checkSpace(ctx context.Context, pool *daosv1alpha1.
 	status.UsedPercent = int32(used * 100 / status.TotalBytes)
 	if threshold <= 0 {
 		meta.RemoveStatusCondition(&status.Conditions, daosv1alpha1.ConditionSpaceLow)
-		status.SpaceLowVolumes = nil
+		status.SpaceLowClaims = nil
 		return
 	}
 	was := meta.IsStatusConditionTrue(status.Conditions, daosv1alpha1.ConditionSpaceLow)
@@ -467,12 +467,13 @@ func (r *DaosPoolReconciler) checkSpace(ctx context.Context, pool *daosv1alpha1.
 const csiPoolUUIDAttr = "poolUUID"
 
 // syncClaims repeats the pool space Events on the PVCs bound to CSI volumes in
-// the pool. status.SpaceLowVolumes remembers which ones were warned, so a PVC
-// bound while the pool is already low is warned on the next poll, and a PV list
+// the pool. status.SpaceLowClaims remembers which ones were warned (PV and PVC
+// UID, so a PV re-bound to a new PVC counts as new), so a PVC bound while the
+// pool is already low is warned on the next poll, and a PV list
 // that fails is simply tried again on the next poll. Best effort otherwise: the
 // Event on the DaosPool itself is already recorded.
 func (r *DaosPoolReconciler) syncClaims(ctx context.Context, pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus, low bool, msg string) {
-	if r.Recorder == nil || status.UUID == "" || (!low && len(status.SpaceLowVolumes) == 0) {
+	if r.Recorder == nil || status.UUID == "" || (!low && len(status.SpaceLowClaims) == 0) {
 		return
 	}
 	var pvs corev1.PersistentVolumeList
@@ -480,11 +481,11 @@ func (r *DaosPoolReconciler) syncClaims(ctx context.Context, pool *daosv1alpha1.
 		logf.FromContext(ctx).Info("pool space event not copied to claims yet: listing PVs failed", "pool", pool.Name, "err", err.Error())
 		return
 	}
-	warned := map[string]bool{}
-	for _, n := range status.SpaceLowVolumes {
-		warned[n] = true
+	warned := map[daosv1alpha1.SpaceLowClaim]bool{}
+	for _, c := range status.SpaceLowClaims {
+		warned[c] = true
 	}
-	var now []string
+	var now []daosv1alpha1.SpaceLowClaim
 	for i := range pvs.Items {
 		pv := &pvs.Items[i]
 		if pv.Spec.CSI == nil || pv.Spec.CSI.VolumeAttributes[csiPoolUUIDAttr] != status.UUID {
@@ -494,14 +495,15 @@ func (r *DaosPoolReconciler) syncClaims(ctx context.Context, pool *daosv1alpha1.
 		if pv.Spec.ClaimRef == nil || pv.Status.Phase != corev1.VolumeBound {
 			continue
 		}
+		key := daosv1alpha1.SpaceLowClaim{Volume: pv.Name, ClaimUID: string(pv.Spec.ClaimRef.UID)}
 		typ, reason := corev1.EventTypeWarning, "PoolSpaceLow"
 		if low {
-			now = append(now, pv.Name)
-			if warned[pv.Name] {
+			now = append(now, key)
+			if warned[key] {
 				continue
 			}
 		} else {
-			if !warned[pv.Name] {
+			if !warned[key] {
 				continue
 			}
 			typ, reason = corev1.EventTypeNormal, "PoolSpaceRecovered"
@@ -513,8 +515,8 @@ func (r *DaosPoolReconciler) syncClaims(ctx context.Context, pool *daosv1alpha1.
 		}
 		r.Recorder.Eventf(claim, typ, reason, "DAOS pool %s (volume %s): %s", pool.Name, pv.Name, msg)
 	}
-	sort.Strings(now)
-	status.SpaceLowVolumes = now
+	sort.Slice(now, func(i, j int) bool { return now[i].Volume < now[j].Volume })
+	status.SpaceLowClaims = now
 }
 
 // humanBytes formats a byte count for humans reading conditions.
