@@ -228,7 +228,7 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 
 	It("copies the pool space Events to the PVCs whose volumes live in the pool", func() {
 		const poolUUID = "8a9ca36d-495a-4d50-a0d2-f111b80d5d9d" // dmgPoolQuery
-		mkPV := func(name, uuid string, claim *corev1.ObjectReference) {
+		mkPV := func(name, uuid string, claim *corev1.ObjectReference, bound bool) {
 			pv := &corev1.PersistentVolume{
 				ObjectMeta: metav1.ObjectMeta{Name: name},
 				Spec: corev1.PersistentVolumeSpec{
@@ -243,10 +243,18 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 			}
 			Expect(k8sClient.Create(ctx, pv)).To(Succeed())
 			DeferCleanup(func() { _ = k8sClient.Delete(ctx, pv) })
+			if bound {
+				pv.Status.Phase = corev1.VolumeBound
+				Expect(k8sClient.Status().Update(ctx, pv)).To(Succeed())
+			}
 		}
-		mkPV("pv-in-pool", poolUUID, &corev1.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: "team-a", Name: "train-data", UID: "uid-a"})
-		mkPV("pv-other-pool", "00000000-0000-0000-0000-000000000000", &corev1.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: "team-b", Name: "other", UID: "uid-b"})
-		mkPV("pv-unbound", poolUUID, nil)
+		claimRef := func(ns, name string) *corev1.ObjectReference {
+			return &corev1.ObjectReference{Kind: "PersistentVolumeClaim", Namespace: ns, Name: name, UID: types.UID("uid-" + name)}
+		}
+		mkPV("pv-in-pool", poolUUID, claimRef("team-a", "train-data"), true)
+		mkPV("pv-other-pool", "00000000-0000-0000-0000-000000000000", claimRef("team-b", "other"), true)
+		mkPV("pv-unbound", poolUUID, nil, false)
+		mkPV("pv-reserved", poolUUID, claimRef("team-c", "reserved"), false) // pre-bound, not in use yet
 
 		events := record.NewFakeRecorder(32)
 		rec := func(f *fakeDmg) {
@@ -271,18 +279,32 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 			ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), ContainSubstring("(volume pv-in-pool)"))),
 			Not(ContainElement(ContainSubstring("pv-other-pool"))),
 			Not(ContainElement(ContainSubstring("pv-unbound"))),
+			Not(ContainElement(ContainSubstring("pv-reserved"))),
 		))
+		Expect(getPool().Status.SpaceLowVolumes).To(Equal([]string{"pv-in-pool"}))
 
 		By("staying above the threshold does not repeat it")
 		rec(f)
 		Expect(drain(events)).NotTo(ContainElement(ContainSubstring("PoolSpaceLow")))
+
+		By("a PVC bound while the pool is already low is warned on the next poll")
+		mkPV("pv-late", poolUUID, claimRef("team-d", "late"), true)
+		rec(f)
+		late := drain(events)
+		Expect(late).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceLow"), ContainSubstring("(volume pv-late)"))))
+		Expect(late).NotTo(ContainElement(ContainSubstring("pv-in-pool")))
+		Expect(getPool().Status.SpaceLowVolumes).To(Equal([]string{"pv-in-pool", "pv-late"}))
 
 		By("dropping back below tells the PVC too")
 		p = getPool()
 		p.Spec.SpaceWarningPercent = ptr.To(int32(90))
 		Expect(k8sClient.Update(ctx, p)).To(Succeed())
 		rec(f)
-		Expect(drain(events)).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-in-pool)"))))
+		back := drain(events)
+		Expect(back).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-in-pool)"))))
+		Expect(back).To(ContainElement(SatisfyAll(ContainSubstring("PoolSpaceRecovered"), ContainSubstring("(volume pv-late)"))))
+		Expect(back).NotTo(ContainElement(ContainSubstring("pv-reserved")))
+		Expect(getPool().Status.SpaceLowVolumes).To(BeEmpty())
 	})
 
 	It("sends rd_fac:0 when the spec says 0 (single fault domain pools)", func() {

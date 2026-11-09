@@ -408,6 +408,11 @@ func (in *DaosPoolStatus) DeepCopyInto(out *DaosPoolStatus) {
 		*out = make([]int32, len(*in))
 		copy(*out, *in)
 	}
+	if in.SpaceLowVolumes != nil {
+		in, out := &in.SpaceLowVolumes, &out.SpaceLowVolumes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.LastQueryTime != nil {
 		in, out := &in.LastQueryTime, &out.LastQueryTime
 		*out = (*in).DeepCopy()

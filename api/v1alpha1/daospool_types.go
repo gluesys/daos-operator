@@ -115,6 +115,11 @@ type DaosPoolStatus struct {
 	EnabledRanks []int32 `json:"enabledRanks,omitempty"`
 	// UsedPercent is (total-free)/total from the last query, rounded down.
 	UsedPercent int32 `json:"usedPercent,omitempty"`
+	// SpaceLowVolumes are the PVs whose PVCs have been told the pool is low on space.
+	// A PVC bound while the pool is already low is warned on the next poll, and the
+	// ones listed here get PoolSpaceRecovered when it drops back.
+	// +optional
+	SpaceLowVolumes []string `json:"spaceLowVolumes,omitempty"`
 	// Operation is the dmg Job in flight (create, extend, acl, destroy); empty when idle.
 	Operation string `json:"operation,omitempty"`
 	// ObservedGeneration is the spec generation the last create attempt was made for;
