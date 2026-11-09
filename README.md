@@ -101,6 +101,7 @@ helm uninstall daos-operator -n daos-system
 | `DaosPool` | a pool, its redundancy factor, rank set and space warnings |
 | `DaosContainer` | a container in a pool, POSIX or unstructured |
 | `DaosContainerSnapshot` | one read-only snapshot (DAOS epoch) of a `DaosContainer` |
+| `DaosSnapshotPolicy` | periodic snapshots of a `DaosContainer`, the oldest destroyed |
 | `S3Service` | a versitygw gateway serving one pool |
 
 Two rules the operator does not break:
@@ -136,8 +137,9 @@ container; removing `spec.volume`, or the snapshot, removes both.
 spec:
   containerRef: train-data
   volume: {claimName: ckpt-20261107}   # mount it in a pod like any PVC, readOnly
-``` A snapshot keeps the space of everything overwritten
-or deleted after it, so old snapshots hold pool capacity until they are destroyed.
+```
+
+A snapshot keeps the space of everything overwritten or deleted after it, so old snapshots hold pool capacity until they are destroyed.
 
 As with pools and containers, deleting the object keeps the DAOS snapshot unless
 `daos.gluesys.com/destroy-approved: "true"` is set first (Event `SnapshotOrphaned`
@@ -169,6 +171,35 @@ spec:
 ```
 
 A writable restore (a copy of the container) is not implemented and is refused.
+
+#### Periodic snapshots and retention
+
+A `DaosSnapshotPolicy` takes a snapshot of one container every `interval` and
+keeps the `keep` newest; with `maxAge` it also drops those older than that (the
+newest one is always kept):
+
+```yaml
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosSnapshotPolicy
+metadata: {name: train-6h, namespace: ml}
+spec: {containerRef: train-data, interval: 6h, keep: 8, maxAge: 168h}
+```
+
+Each run creates a `DaosContainerSnapshot` named `<policy>-<UTC yyyymmdd-hhmm>`
+with the label `daos.gluesys.com/snapshot-policy: <policy>`. **Creating a policy
+approves destroying the snapshots it prunes**: it sets
+`daos.gluesys.com/destroy-approved: "true"` on them and deletes them (Event
+`SnapshotPruned`). Only snapshots carrying its label are counted and pruned, so
+snapshots taken by hand or through a `VolumeSnapshot` are never touched. To keep
+one of its snapshots for good, remove the label
+(`kubectl label daossnap <name> daos.gluesys.com/snapshot-policy-`); one exposed
+with `spec.volume` is skipped as well.
+
+One snapshot is taken at a time: while the last one is not taken yet (container
+not ready, create-snap failing), the policy waits and reports `SnapshotPending`
+instead of piling up more. Runs missed while the operator was down are not made
+up; `suspend: true` stops new snapshots but keeps pruning. Deleting the policy
+leaves its snapshots as ordinary `DaosContainerSnapshot`s.
 
 ### A pool with no redundancy stops serving when a rank leaves
 

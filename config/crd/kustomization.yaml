@@ -6,6 +6,7 @@ resources:
 - bases/daos.gluesys.com_daospools.yaml
 - bases/daos.gluesys.com_daoscontainers.yaml
 - bases/daos.gluesys.com_daoscontainersnapshots.yaml
+- bases/daos.gluesys.com_daossnapshotpolicies.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

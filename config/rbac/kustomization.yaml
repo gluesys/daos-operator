@@ -29,6 +29,9 @@ resources:
 - daoscontainersnapshot_admin_role.yaml
 - daoscontainersnapshot_editor_role.yaml
 - daoscontainersnapshot_viewer_role.yaml
+- daossnapshotpolicy_admin_role.yaml
+- daossnapshotpolicy_editor_role.yaml
+- daossnapshotpolicy_viewer_role.yaml
 - daospool_admin_role.yaml
 - daospool_editor_role.yaml
 - daospool_viewer_role.yaml

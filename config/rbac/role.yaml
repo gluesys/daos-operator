@@ -136,12 +136,23 @@ rules:
   - daoscontainers/status
   - daoscontainersnapshots/status
   - daospools/status
+  - daossnapshotpolicies/status
   - daossystems/status
   - s3services/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - daos.gluesys.com
+  resources:
+  - daossnapshotpolicies
+  verbs:
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - monitoring.coreos.com
   resources:
