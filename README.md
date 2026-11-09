@@ -151,8 +151,10 @@ adopted; one destroyed by hand is reported (`SnapshotMissing`), not re-taken.
 
 Users who only see their own namespace use the CSI path instead (`csi.snapshots.enabled`,
 plus the VolumeSnapshot CRDs and snapshot-controller from kubernetes-csi/external-snapshotter):
-a `VolumeSnapshot` of a DAOS PVC becomes a `DaosContainerSnapshot`, and a PVC with
-`dataSource: VolumeSnapshot` restores it **read-only** (`ReadOnlyMany`, no copy):
+a `VolumeSnapshot` of a DAOS PVC becomes a `DaosContainerSnapshot`. A PVC with
+`dataSource: VolumeSnapshot` and only read-only access modes is the snapshot itself
+(`ReadOnlyMany`, no copy, at once); with a writable access mode daos-csi creates a
+`DaosContainer` with `restoreFrom` and the claim binds once the copy finished:
 
 ```yaml
 apiVersion: snapshot.storage.k8s.io/v1
@@ -168,9 +170,36 @@ spec:
   storageClassName: daos-train
   dataSource: {apiGroup: snapshot.storage.k8s.io, kind: VolumeSnapshot, name: ckpt}
   resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ckpt-copy, namespace: ml}
+spec:
+  accessModes: [ReadWriteMany]          # a full, writable copy
+  storageClassName: daos-train
+  dataSource: {apiGroup: snapshot.storage.k8s.io, kind: VolumeSnapshot, name: ckpt}
+  resources: {requests: {storage: 1Gi}}
 ```
 
-A writable restore (a copy of the container) is not implemented and is refused.
+For a writable copy, create a new `DaosContainer` with `spec.restoreFrom`:
+
+```yaml
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainer
+metadata: {name: train-data-restored, namespace: ml}
+spec: {poolRef: train, restoreFrom: {snapshotRef: ckpt-20261107}}
+```
+
+After `daos cont create` a Job mounts the snapshot read-only (`dfuse --snap-epoch`,
+by pool and container UUID) and runs `daos fs copy` into the new container. It
+is a full copy: it takes as long and as much space as the data. The container is
+not `Ready` until the copy finished (`RestoreWaiting` until the snapshot was taken,
+`RestoreInProgress`, then `status.restoredFrom: <snapshot>@<epoch>`); a failed copy
+is reported (`RestoreFailed`) and retried after 5 minutes, which is safe because
+the copy overwrites what it wrote. One attempt is bounded by
+`restoreFrom.deadlineSeconds` (default 24 h). POSIX containers only;
+`restoreFrom` cannot be added to or removed from an existing container. An
+approved destroy of the snapshot waits until every copy from it finished.
 
 #### Periodic snapshots and retention
 

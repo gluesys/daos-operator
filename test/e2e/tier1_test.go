@@ -340,7 +340,7 @@ spec:
 	// only useful if it really holds the old data and goes away when asked. The read-only claim
 	// part (spec.volume) needs a daos-csi image with snapshotEpoch support; the lane pins an
 	// older one until that merges, so it runs only with E2E_CSI_SNAPSHOT=1.
-	It("snapshots a volume, keeps the old data in it, destroys it on approval and prunes by policy (case 14)", func() {
+	It("snapshots a volume, keeps the old data in it, restores a writable copy, destroys it on approval and prunes by policy (case 14)", func() {
 		client := jsonpath("daossystem", sysName, ".spec.images.client")
 		sel := envOr("E2E_CLIENT_SELECTOR", "daos.gluesys.com/client=true")
 		k, v, _ := strings.Cut(sel, "=")
@@ -365,7 +365,7 @@ spec:
 			Expect(kubectl("logs", name)).To(ContainSubstring(want))
 		}
 		DeferCleanup(func() {
-			_, _ = kubectlE("delete", "pod", "e2e-snap-w1", "e2e-snap-w2", "e2e-snap-r", "--ignore-not-found", "--wait=true", "--timeout=3m")
+			_, _ = kubectlE("delete", "pod", "e2e-snap-w1", "e2e-snap-w2", "e2e-snap-r", "e2e-snap-rw", "--ignore-not-found", "--wait=true", "--timeout=3m")
 		})
 
 		By("a volume holding v1")
@@ -416,6 +416,50 @@ spec:
 			Expect(kubectl("logs", "e2e-snap-r")).To(SatisfyAll(ContainSubstring("v1"), Not(ContainSubstring("v2")), Not(ContainSubstring("WRITABLE"))))
 			kubectl("delete", "pod", "e2e-snap-r", "--wait=true", "--timeout=3m")
 		}
+
+		By("a writable restore copies the snapshot into a new container (v1, and writes work)")
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainer
+metadata: {name: e2e-restored}
+spec: {poolRef: e2epool, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyFactor: 0, restoreFrom: {snapshotRef: e2e-snap}}`)
+		start = time.Now()
+		Eventually(func() string {
+			return jsonpath("daoscontainer", "e2e-restored", `.status.conditions[?(@.type=="Ready")].status`)
+		}).
+			WithTimeout(10 * time.Minute).Should(Equal("True"))
+		recordDuration("writable restore", time.Since(start))
+		Expect(jsonpath("daoscontainer", "e2e-restored", ".status.restoredFrom")).To(Equal("e2e-snap@" + epoch))
+		// a static volume for it: any daos-csi stages pool/container attributes
+		apply(`apiVersion: v1
+kind: PersistentVolume
+metadata: {name: e2e-restored}
+spec:
+  capacity: {storage: 1Gi}
+  accessModes: [ReadWriteMany]
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: ` + jsonpath("pv", pv, ".spec.csi.driver") + `
+    volumeHandle: e2e-restored
+    volumeAttributes: {pool: e2epool, container: e2e-restored, destroyOnDelete: "false"}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: e2e-restored}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: ""
+  volumeName: e2e-restored
+  resources: {requests: {storage: 1Gi}}`)
+		Eventually(func() string { return jsonpath("pvc", "e2e-restored", ".status.phase") }).WithTimeout(3 * time.Minute).Should(Equal("Bound"))
+		runPod(pod("e2e-snap-rw", "e2e-restored", false, "cat /data/v; echo w > /data/w && cat /data/w && echo WRITABLE"), "e2e-snap-rw", "WRITABLE")
+		Expect(kubectl("logs", "e2e-snap-rw")).To(SatisfyAll(ContainSubstring("v1"), Not(ContainSubstring("v2"))))
+		kubectl("delete", "pod", "e2e-snap-rw", "--wait=true", "--timeout=3m")
+		kubectl("delete", "pvc", "e2e-restored", "--wait=true", "--timeout=3m")
+		kubectl("delete", "pv", "e2e-restored", "--wait=true", "--timeout=3m")
+		kubectl("annotate", "daoscontainer", "e2e-restored", "daos.gluesys.com/destroy-approved=true", "--overwrite")
+		kubectl("delete", "daoscontainer", "e2e-restored", "--wait=false")
+		waitGone("daoscontainer", "e2e-restored", 5*time.Minute)
 
 		By("an approved delete destroys it in DAOS (the finalizer is only released after destroy-snap succeeds)")
 		kubectl("annotate", "daoscontainersnapshot", "e2e-snap", "daos.gluesys.com/destroy-approved=true", "--overwrite")

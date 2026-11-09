@@ -34,6 +34,7 @@ type ContainerType string
 // nodes). On a single-node system `daos cont create` fails with
 // "grp size (2) is larger than domain nr (1)" (seen on the FlexA test bed,
 // 2026-09-15): use fileOclass SX / dirOclass S1 and redundancyFactor 0 there.
+// +kubebuilder:validation:XValidation:rule="has(self.restoreFrom) == has(oldSelf.restoreFrom)",message="restoreFrom cannot be added or removed after creation"
 type DaosContainerSpec struct {
 	PoolRef string `json:"poolRef"`
 	// +kubebuilder:default=POSIX
@@ -54,6 +55,28 @@ type DaosContainerSpec struct {
 	ACL        []string          `json:"acl,omitempty"`
 	// Label is the DAOS container label; defaults to metadata.name.
 	Label string `json:"label,omitempty"`
+	// RestoreFrom fills the new container with the contents of a snapshot: a
+	// writable copy, since DAOS 2.8 cannot roll a container back. After
+	// `daos cont create` a Job mounts the snapshot read-only (dfuse
+	// --snap-epoch) and runs `daos fs copy` into this container; the container
+	// is Ready only once the copy finished. POSIX containers only. Set it at
+	// creation; it cannot change afterwards.
+	// +optional
+	RestoreFrom *ContainerRestoreSpec `json:"restoreFrom,omitempty"`
+}
+
+// ContainerRestoreSpec names the snapshot a new container is copied from.
+type ContainerRestoreSpec struct {
+	// SnapshotRef is a DaosContainerSnapshot in this namespace. The copy waits
+	// until it was taken; an approved destroy of it waits for the copy.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="snapshotRef is immutable"
+	SnapshotRef string `json:"snapshotRef"`
+	// DeadlineSeconds bounds one copy attempt (the Job's activeDeadlineSeconds).
+	// +kubebuilder:default=86400
+	// +kubebuilder:validation:Minimum=300
+	// +optional
+	DeadlineSeconds int64 `json:"deadlineSeconds,omitempty"`
 }
 
 // DaosContainerStatus mirrors `daos cont query`.
@@ -64,11 +87,16 @@ type DaosContainerStatus struct {
 	Ready      bool               `json:"ready,omitempty"`
 	Health     string             `json:"health,omitempty"`
 	Type       string             `json:"type,omitempty"`
-	// Operation is the daos Job in flight (create, acl, destroy); empty when idle.
-	Operation          string       `json:"operation,omitempty"`
-	ObservedGeneration int64        `json:"observedGeneration,omitempty"`
-	AppliedACLHash     string       `json:"appliedACLHash,omitempty"`
-	LastQueryTime      *metav1.Time `json:"lastQueryTime,omitempty"`
+	// Operation is the daos Job in flight (create, acl, restore, destroy); empty when idle.
+	Operation          string `json:"operation,omitempty"`
+	ObservedGeneration int64  `json:"observedGeneration,omitempty"`
+	AppliedACLHash     string `json:"appliedACLHash,omitempty"`
+	// RestoredFrom is "<snapshot>@<epoch>" once spec.restoreFrom was copied in.
+	RestoredFrom string `json:"restoredFrom,omitempty"`
+	// RestoreStartedAt is when the last copy attempt started; a failed one is
+	// retried poolRequeueFailed after it (the copy overwrites, so a retry is safe).
+	RestoreStartedAt *metav1.Time `json:"restoreStartedAt,omitempty"`
+	LastQueryTime    *metav1.Time `json:"lastQueryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
