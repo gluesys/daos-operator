@@ -268,6 +268,9 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		setC(metav1.ConditionFalse, "PoolNotReady", "DaosPool "+pool.Name+" has no pool yet")
 		return r.updateStatus(ctx, c, status, poolRequeueWait)
 	}
+	if status.Operation == opRestore {
+		return r.pollRestore(ctx, c, pool, sys, ns, status)
+	}
 	if status.Operation != "" {
 		return r.pollOp(ctx, c, pool, sys, ns, status)
 	}
@@ -332,6 +335,9 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); !(cond != nil && cond.Reason == "AclFailed" && status.ObservedGeneration == c.Generation) {
 			return r.startOp(ctx, c, pool, sys, ns, status, opACL)
 		}
+	}
+	if c.Spec.RestoreFrom != nil && status.RestoredFrom == "" {
+		return r.restore(ctx, c, pool, sys, ns, status)
 	}
 	if info.Health == "HEALTHY" || info.Health == "" {
 		setC(metav1.ConditionTrue, "Ready", fmt.Sprintf("%s container %s, health %s", info.Type, info.UUID, info.Health))

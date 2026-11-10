@@ -475,6 +475,19 @@ func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv
 	if status.Epoch == "" {
 		return r.release(ctx, s, corev1.EventTypeNormal, "SnapshotForgotten", "no snapshot was recorded for this object")
 	}
+	if s.Annotations[daosv1alpha1.AnnotationDestroyApproved] == "true" {
+		// a container still being copied from it reads it through dfuse
+		pending, err := restoresPending(ctx, r.Client, s)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if len(pending) > 0 {
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "RestoreInProgress",
+				Message: "waiting for DaosContainer " + strings.Join(pending, ", ") + " to finish copying from this snapshot before destroying it", ObservedGeneration: s.Generation})
+			status.Ready = false
+			return r.updateStatus(ctx, s, status, poolRequeueWait)
+		}
+	}
 	if s.Annotations[daosv1alpha1.AnnotationDestroyApproved] != "true" {
 		return r.release(ctx, s, corev1.EventTypeWarning, "SnapshotOrphaned", kept("DaosContainerSnapshot deleted without "+daosv1alpha1.AnnotationDestroyApproved+"=true"))
 	}

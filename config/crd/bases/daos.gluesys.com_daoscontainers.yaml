@@ -99,6 +99,34 @@ spec:
                 description: RedundancyFactor overrides the pool's rd_fac when set.
                 format: int32
                 type: integer
+              restoreFrom:
+                description: |-
+                  RestoreFrom fills the new container with the contents of a snapshot: a
+                  writable copy, since DAOS 2.8 cannot roll a container back. After
+                  `daos cont create` a Job mounts the snapshot read-only (dfuse
+                  --snap-epoch), mounts this container and copies with `cp -a`; the container
+                  is Ready only once the copy finished. POSIX containers only. Set it at
+                  creation; it cannot change afterwards.
+                properties:
+                  deadlineSeconds:
+                    default: 86400
+                    description: DeadlineSeconds bounds one copy attempt (the Job's
+                      activeDeadlineSeconds).
+                    format: int64
+                    minimum: 300
+                    type: integer
+                  snapshotRef:
+                    description: |-
+                      SnapshotRef is a DaosContainerSnapshot in this namespace. The copy waits
+                      until it was taken; an approved destroy of it waits for the copy.
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: snapshotRef is immutable
+                      rule: self == oldSelf
+                required:
+                - snapshotRef
+                type: object
               type:
                 default: POSIX
                 description: ContainerType is the DAOS container layout.
@@ -111,6 +139,9 @@ spec:
             required:
             - poolRef
             type: object
+            x-kubernetes-validations:
+            - message: restoreFrom cannot be added or removed after creation
+              rule: has(self.restoreFrom) == has(oldSelf.restoreFrom)
           status:
             description: DaosContainerStatus mirrors `daos cont query`.
             properties:
@@ -181,13 +212,54 @@ spec:
                 format: int64
                 type: integer
               operation:
-                description: Operation is the daos Job in flight (create, acl, destroy);
-                  empty when idle.
+                description: Operation is the daos Job in flight (create, acl, restore,
+                  destroy); empty when idle.
                 type: string
               poolUUID:
                 type: string
               ready:
                 type: boolean
+              restoreFailedAt:
+                description: |-
+                  RestoreFailedAt is when the last copy attempt failed; it is retried a while
+                  after that (the copy overwrites, so a retry is safe).
+                format: date-time
+                type: string
+              restoreSource:
+                description: |-
+                  RestoreSource is the snapshot the last copy attempt reads, as it was when
+                  the attempt started: a snapshot deleted and re-created under the same name
+                  meanwhile is not mistaken for it.
+                properties:
+                  containerUUID:
+                    type: string
+                  epoch:
+                    description: Epoch, PoolUUID and ContainerUUID are what dfuse
+                      mounts.
+                    type: string
+                  poolUUID:
+                    type: string
+                  snapshot:
+                    description: Snapshot is the DaosContainerSnapshot name, SnapshotUID
+                      its UID.
+                    type: string
+                  snapshotUID:
+                    type: string
+                required:
+                - containerUUID
+                - epoch
+                - poolUUID
+                - snapshot
+                - snapshotUID
+                type: object
+              restoreStartedAt:
+                description: RestoreStartedAt is when the last copy attempt started.
+                format: date-time
+                type: string
+              restoredFrom:
+                description: RestoredFrom is "<snapshot>@<epoch>" once spec.restoreFrom
+                  was copied in.
+                type: string
               type:
                 type: string
               uuid:
