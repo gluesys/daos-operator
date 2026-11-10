@@ -1,4 +1,4 @@
-lmcache-daos
+daos-operator
 Copyright 2026 Gluesys Co., Ltd.
 
 This product includes software developed at Gluesys Co., Ltd.
@@ -14,28 +14,15 @@ copy of the License in the LICENSE file distributed with this work, or at
 Third-party material
 -------------------------------------------------------------------------------
 
-This repository contains no vendored third-party source. It links to the DAOS
-client libraries (libdaos, libdfs) through ctypes at run time and plugs into
-LMCache through its documented extension points; neither is redistributed here.
+`third_party/external-snapshotter-v8.2.0/` holds the VolumeSnapshot CRDs and
+the snapshot-controller manifests of kubernetes-csi/external-snapshotter v8.2.0
+(Apache-2.0, https://github.com/kubernetes-csi/external-snapshotter), with that
+project's LICENSE next to them and one image tag changed (see its README). The
+end-to-end tests install them; the chart does not ship them.
 
-The directory `gpudirect/patches/` holds patches -- unified diffs -- against
-four upstream projects. A diff necessarily quotes context lines from the file
-it patches, so those fragments remain under the license of the project they
-come from, not under this repository's license:
-
-    DAOS        BSD-2-Clause-Patent      https://github.com/daos-stack/daos
-    UCX         BSD-3-Clause             https://github.com/openucx/ucx
-    Mercury     BSD-3-Clause             https://github.com/mercury-hpc/mercury
-    libfabric   BSD-2-Clause OR GPL-2.0  https://github.com/ofiwg/libfabric
-
-The changes introduced by those patches (the added lines) are contributed by
-Gluesys under the license of the project they target, so that they can be
-submitted upstream without further permission. Submission drafts are kept in
-`doc/upstream/`.
-
-`doc/upstream/lmcache-async-serializer-option.md` quotes short excerpts of
-LMCache (Apache-2.0, https://github.com/LMCache/LMCache) for the purpose of
-describing a proposed change to it.
+The Go modules in `go.mod` are fetched at build time and are not vendored here.
+The operator and hostprep binaries in the published images are built from them,
+each under its own license.
 
 `CODE_OF_CONDUCT.md` is the Contributor Covenant v2.1, reproduced verbatim apart
 from the reporting contact. It is licensed CC BY 4.0 by its authors
@@ -46,11 +33,11 @@ from the reporting contact. It is licensed CC BY 4.0 by its authors
 Interoperating projects
 -------------------------------------------------------------------------------
 
-This software is designed to run with, but does not include or modify:
+This software deploys and manages, but does not include or modify:
 
-    LMCache     Apache-2.0
-    vLLM        Apache-2.0
     DAOS        BSD-2-Clause-Patent
+    daos-csi    Apache-2.0
+    Kubernetes  Apache-2.0
 
-Names of those projects are used only to identify the software this backend
-interoperates with.
+The DAOS container images it runs are built in the daos-images repository,
+whose NOTICE covers what they contain.
