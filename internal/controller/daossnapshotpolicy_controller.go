@@ -21,9 +21,11 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,6 +87,32 @@ func takenAt(s *daosv1alpha1.DaosContainerSnapshot) time.Time {
 	return s.CreationTimestamp.Time
 }
 
+// runTime is when the policy run that created s happened, from its name
+// (<policy>-yyyymmdd-hhmm, the policy's own clock).
+func runTime(p *daosv1alpha1.DaosSnapshotPolicy, s *daosv1alpha1.DaosContainerSnapshot) (time.Time, bool) {
+	if s.CreationTimestamp.Before(&p.CreationTimestamp) || !strings.HasPrefix(s.Name, p.Name+"-") {
+		return time.Time{}, false
+	}
+	t, err := time.ParseInLocation(snapshotNameTime, s.Name[len(p.Name)+1:], time.UTC)
+	return t, err == nil
+}
+
+// nextExpiry is how long until the first of the kept snapshots (but the newest,
+// which maxAge never removes) passes maxAge; 0 when none will.
+func nextExpiry(p *daosv1alpha1.DaosSnapshotPolicy, kept []*daosv1alpha1.DaosContainerSnapshot, now time.Time) time.Duration {
+	if p.Spec.MaxAge == nil || len(kept) < 2 {
+		return 0
+	}
+	var d time.Duration
+	for _, s := range kept[1:] {
+		left := takenAt(s).Add(p.Spec.MaxAge.Duration).Sub(now) + time.Second
+		if d == 0 || left < d {
+			d = left
+		}
+	}
+	return max(d, time.Second)
+}
+
 // Reconcile drives one DaosSnapshotPolicy.
 func (r *DaosSnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	p := &daosv1alpha1.DaosSnapshotPolicy{}
@@ -107,14 +135,14 @@ func (r *DaosSnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	}
 	var taken []*daosv1alpha1.DaosContainerSnapshot
 	var pending *daosv1alpha1.DaosContainerSnapshot
-	// the status write of a run was lost: its snapshot still says when it ran
-	recoverLast := status.LastScheduleTime == nil
 	for i := range list.Items {
 		s := &list.Items[i]
-		// (only its own runs: a labelled snapshot older than the policy is not one)
-		if recoverLast && !s.CreationTimestamp.Before(&p.CreationTimestamp) &&
-			(status.LastScheduleTime == nil || status.LastScheduleTime.Before(&s.CreationTimestamp)) {
-			t := s.CreationTimestamp
+		// The status write of a run may have been lost (all of it, or only the new
+		// lastScheduleTime): the run's snapshot still says when it ran, by its name.
+		// Only its own runs count: not one named otherwise, nor a labelled snapshot
+		// older than the policy (a seed, or a policy of the same name before it).
+		if ran, ok := runTime(p, s); ok && (status.LastScheduleTime == nil || status.LastScheduleTime.Time.Before(ran)) {
+			t := metav1.NewTime(ran)
 			status.LastScheduleTime = &t
 		}
 		switch {
@@ -176,7 +204,8 @@ func (r *DaosSnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 	case p.Spec.Suspend:
 		status.NextScheduleTime = nil
 		setC(metav1.ConditionTrue, "Suspended", fmt.Sprintf("not taking snapshots (spec.suspend); %d kept", len(kept)))
-		return r.updateStatus(ctx, p, status, 0)
+		// pruning by maxAge goes on: come back when the next one expires
+		return r.updateStatus(ctx, p, status, nextExpiry(p, kept, now))
 	case cerr != nil:
 		status.NextScheduleTime = nil
 		setC(metav1.ConditionFalse, "ContainerNotFound", "DaosContainer "+p.Spec.ContainerRef+" does not exist in namespace "+p.Namespace)
@@ -230,18 +259,39 @@ func (r *DaosSnapshotPolicyReconciler) Reconcile(ctx context.Context, req ctrl.R
 
 // prune approves the destroy of one of the policy's snapshots and deletes it;
 // the DaosContainerSnapshot controller then runs destroy-snap.
-func (r *DaosSnapshotPolicyReconciler) prune(ctx context.Context, p *daosv1alpha1.DaosSnapshotPolicy, s *daosv1alpha1.DaosContainerSnapshot, why string) error {
+//
+// The list it was picked from may be stale: the user may have just removed the
+// policy label or set spec.volume to keep it. So the snapshot is read again and
+// re-checked, the approval is patched only onto that version (optimistic lock),
+// and the delete only goes through for that same version; a snapshot changed in
+// between is left for the next reconcile to judge again.
+func (r *DaosSnapshotPolicyReconciler) prune(ctx context.Context, p *daosv1alpha1.DaosSnapshotPolicy, picked *daosv1alpha1.DaosContainerSnapshot, why string) error {
+	s := &daosv1alpha1.DaosContainerSnapshot{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(picked), s); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if s.UID != picked.UID || !s.DeletionTimestamp.IsZero() || s.Labels[daosv1alpha1.LabelSnapshotPolicy] != p.Name ||
+		s.Spec.ContainerRef != p.Spec.ContainerRef || s.Spec.Volume != nil || s.Status.Epoch == "" {
+		return nil
+	}
 	if s.Annotations[daosv1alpha1.AnnotationDestroyApproved] != "true" {
 		orig := s.DeepCopy()
 		if s.Annotations == nil {
 			s.Annotations = map[string]string{}
 		}
 		s.Annotations[daosv1alpha1.AnnotationDestroyApproved] = "true"
-		if err := r.Patch(ctx, s, client.MergeFrom(orig)); err != nil {
+		if err := r.Patch(ctx, s, client.MergeFromWithOptions(orig, client.MergeFromWithOptimisticLock{})); err != nil {
+			if apierrors.IsConflict(err) {
+				return nil
+			}
 			return client.IgnoreNotFound(err)
 		}
 	}
-	if err := r.Delete(ctx, s); client.IgnoreNotFound(err) != nil {
+	rv := s.ResourceVersion
+	if err := r.Delete(ctx, s, client.Preconditions{UID: &s.UID, ResourceVersion: &rv}); err != nil {
+		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
 		return err
 	}
 	r.event(p, corev1.EventTypeNormal, "SnapshotPruned", fmt.Sprintf("DaosContainerSnapshot %s (epoch %s) deleted with destroy approval: %s", s.Name, s.Status.Epoch, why))
@@ -253,6 +303,9 @@ func (r *DaosSnapshotPolicyReconciler) updateStatus(ctx context.Context, p *daos
 		latest := &daosv1alpha1.DaosSnapshotPolicy{}
 		if err := r.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: p.Name}, latest); err != nil {
 			return err
+		}
+		if equality.Semantic.DeepEqual(latest.Status, st) {
+			return nil // unchanged: a write would only wake this controller again
 		}
 		latest.Status = st
 		return r.Status().Update(ctx, latest)
