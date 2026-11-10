@@ -1,0 +1,217 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: daoscontainersnapshots.daos.gluesys.com
+spec:
+  group: daos.gluesys.com
+  names:
+    kind: DaosContainerSnapshot
+    listKind: DaosContainerSnapshotList
+    plural: daoscontainersnapshots
+    shortNames:
+    - daossnap
+    singular: daoscontainersnapshot
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.containerRef
+      name: Container
+      type: string
+    - jsonPath: .status.epoch
+      name: Epoch
+      type: string
+    - jsonPath: .status.creationTime
+      name: Taken
+      type: date
+    - jsonPath: .spec.volume.claimName
+      name: Claim
+      type: string
+    - jsonPath: .status.ready
+      name: Ready
+      type: boolean
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: DaosContainerSnapshot is one DAOS snapshot of a DaosContainer.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              DaosContainerSnapshotSpec maps to `daos cont create-snap`: a point-in-time,
+              read-only view of one container (a DAOS epoch), taken once. DAOS 2.8 has no
+              named snapshots (a name makes create-snap fail with -DER_NOSYS): a snapshot is
+              known by its epoch only.
+
+              DAOS 2.8 cannot roll a container back to a snapshot (daos_cont_rollback is
+              not implemented, -DER_NOSYS). A snapshot is read by mounting it read-only
+              (dfuse --snap) and copying what is needed out of it.
+
+              A snapshot keeps the space of everything overwritten or deleted since it was
+              taken: the pool does not get that space back until the snapshot is destroyed.
+            properties:
+              containerRef:
+                description: ContainerRef is the DaosContainer, in this namespace,
+                  to snapshot.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: containerRef is immutable
+                  rule: self == oldSelf
+              volume:
+                description: |-
+                  Volume, when set, exposes the snapshot to pods as a read-only
+                  PersistentVolumeClaim of that name in this namespace (ReadOnlyMany). The
+                  operator creates the claim and a PersistentVolume bound to it, whose
+                  reclaim policy is Retain: deleting either never touches the container.
+                  Removing spec.volume removes them. Needs daos-csi with snapshotEpoch support.
+                properties:
+                  claimName:
+                    description: |-
+                      ClaimName is the PersistentVolumeClaim to create in the snapshot's namespace.
+                      It cannot be changed in place (the PV stays reserved for the first claim);
+                      remove spec.volume, wait for the claim to go, then set it again.
+                    maxLength: 253
+                    minLength: 1
+                    type: string
+                    x-kubernetes-validations:
+                    - message: claimName is immutable; remove spec.volume and set
+                        it again
+                      rule: self == oldSelf
+                  driver:
+                    default: daos.csi.gluesys.com
+                    description: Driver is the daos-csi driver name.
+                    type: string
+                required:
+                - claimName
+                type: object
+            required:
+            - containerRef
+            type: object
+          status:
+            description: DaosContainerSnapshotStatus mirrors `daos cont list-snaps`
+              for this snapshot.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              containerUUID:
+                description: |-
+                  ContainerUUID and PoolUUID pin the snapshot to the container it was taken
+                  from, so a container re-created under the same name is not mistaken for it.
+                type: string
+              createRequestedAt:
+                description: |-
+                  CreateRequestedAt is when create-snap was started. If its answer is lost
+                  (operator restart, failed Job), the snapshot of the container taken after
+                  it that no other DaosContainerSnapshot holds is adopted instead of taking
+                  a second one.
+                format: date-time
+                type: string
+              creationTime:
+                description: CreationTime is when DAOS took the snapshot (the epoch's
+                  timestamp).
+                format: date-time
+                type: string
+              epoch:
+                description: |-
+                  Epoch identifies the snapshot in DAOS (decimal). It is what
+                  `daos cont destroy-snap --epc` and `dfuse --snap-epoch` take.
+                type: string
+              lastQueryTime:
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              operation:
+                description: Operation is the daos Job in flight (create, destroy);
+                  empty when idle.
+                type: string
+              poolUUID:
+                type: string
+              ready:
+                type: boolean
+              volumeName:
+                description: VolumeName is the PersistentVolume created for spec.volume.
+                type: string
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

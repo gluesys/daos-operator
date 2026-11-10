@@ -100,6 +100,7 @@ helm uninstall daos-operator -n daos-system
 | `DaosSystem` | the engines: node selection, fabric, storage tiers, management-service replicas |
 | `DaosPool` | a pool, its redundancy factor, rank set and space warnings |
 | `DaosContainer` | a container in a pool, POSIX or unstructured |
+| `DaosContainerSnapshot` | one read-only snapshot (DAOS epoch) of a `DaosContainer` |
 | `S3Service` | a versitygw gateway serving one pool |
 
 Two rules the operator does not break:
@@ -110,6 +111,70 @@ Two rules the operator does not break:
 - **There is no second source of truth.** Desired state is the CR spec, actual
   state is the DAOS management service. The operator only compares the two and
   reports what it sees.
+
+### Snapshots are read-only views, not restore points
+
+A `DaosContainerSnapshot` takes one `daos cont create-snap` of a container in its
+namespace and records the epoch (`status.epoch`) and when it was taken:
+
+```yaml
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainerSnapshot
+metadata: {name: ckpt-20261107, namespace: ml}
+spec: {containerRef: train-data}
+```
+
+DAOS 2.8 cannot roll a container back (`daos_cont_rollback` is not implemented).
+To get data back, mount the snapshot read-only and copy what you need out of it.
+`spec.volume.claimName` does the mounting part: the operator creates a
+`ReadOnlyMany` PVC of that name next to the snapshot, bound to a PV that daos-csi
+mounts with `dfuse --snap-epoch` (daos-csi with `snapshotEpoch` support). Writes
+fail with `EROFS`. The PV is `Retain`, so deleting the claim never touches the
+container; removing `spec.volume`, or the snapshot, removes both.
+
+```yaml
+spec:
+  containerRef: train-data
+  volume: {claimName: ckpt-20261107}   # mount it in a pod like any PVC, readOnly
+```
+
+A snapshot keeps the space of everything overwritten or deleted after it, so old snapshots hold pool capacity until they are destroyed.
+
+As with pools and containers, deleting the object keeps the DAOS snapshot unless
+`daos.gluesys.com/destroy-approved: "true"` is set first (Event `SnapshotOrphaned`
+gives the command to remove it by hand). DAOS 2.8 snapshots have no names (a named
+create-snap fails with `DER_NOSYS`), so a snapshot is known by its epoch only. The
+operator never takes a second snapshot for one object: if the answer of a
+create-snap is lost, the snapshot taken after it that no other object holds is
+adopted -- but only when exactly one fits and no other object of the container is
+still taking its own; otherwise the object waits (`AdoptAmbiguous`, listing the
+candidate epochs) for `daos.gluesys.com/adopt-epoch: "<epoch>"`. One destroyed by
+hand is reported (`SnapshotMissing`), not re-taken. Deleting an object while its
+create-snap runs waits for the epoch, so an approved delete destroys it too.
+`spec.volume.claimName` cannot be changed in place: remove `spec.volume`, then set it again.
+
+Users who only see their own namespace use the CSI path instead (`csi.snapshots.enabled`,
+plus the VolumeSnapshot CRDs and snapshot-controller from kubernetes-csi/external-snapshotter):
+a `VolumeSnapshot` of a DAOS PVC becomes a `DaosContainerSnapshot`, and a PVC with
+`dataSource: VolumeSnapshot` restores it **read-only** (`ReadOnlyMany`, no copy):
+
+```yaml
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata: {name: ckpt, namespace: ml}
+spec: {volumeSnapshotClassName: daos-snapshot, source: {persistentVolumeClaimName: train-data}}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: ckpt-ro, namespace: ml}
+spec:
+  accessModes: [ReadOnlyMany]
+  storageClassName: daos-train
+  dataSource: {apiGroup: snapshot.storage.k8s.io, kind: VolumeSnapshot, name: ckpt}
+  resources: {requests: {storage: 1Gi}}
+```
+
+A writable restore (a copy of the container) is not implemented and is refused.
 
 ### Capacity is per pool, not per PVC
 

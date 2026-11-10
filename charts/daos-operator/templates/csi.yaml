@@ -58,6 +58,21 @@ rules:
   - apiGroups: [daos.gluesys.com]
     resources: [daospools]
     verbs: [get, list, watch]
+  {{- if .Values.csi.snapshots.enabled }}
+  # CSI snapshots: the driver makes DaosContainerSnapshots, csi-snapshotter syncs the contents
+  - apiGroups: [daos.gluesys.com]
+    resources: [daoscontainersnapshots]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [snapshot.storage.k8s.io]
+    resources: [volumesnapshotcontents/status]
+    verbs: [update, patch]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -125,6 +140,20 @@ spec:
             - name: NAMESPACE
               valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
           volumeMounts: [{name: socket, mountPath: /csi}]
+        {{- if .Values.csi.snapshots.enabled }}
+        - name: csi-snapshotter
+          image: {{ .Values.csi.sidecars.snapshotter }}
+          args:
+            - --csi-address=/csi/csi.sock
+            - --leader-election
+            - --leader-election-namespace=$(NAMESPACE)
+            - --timeout=60s
+            - --v=2
+          env:
+            - name: NAMESPACE
+              valueFrom: {fieldRef: {fieldPath: metadata.namespace}}
+          volumeMounts: [{name: socket, mountPath: /csi}]
+        {{- end }}
         - name: daos-csi
           image: {{ $img }}
           imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
@@ -238,6 +267,21 @@ spec:
               - {key: admin.crt, path: admin.crt}
               - {key: admin.key, path: admin.key, mode: 0400}
         {{- end }}
+{{- if and .Values.csi.snapshots.enabled .Values.csi.snapshots.volumeSnapshotClass.create }}
+---
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: {{ .Values.csi.snapshots.volumeSnapshotClass.name }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+  {{- if .Values.csi.snapshots.volumeSnapshotClass.default }}
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+  {{- end }}
+driver: {{ .Values.csi.driverName }}
+deletionPolicy: {{ .Values.csi.snapshots.volumeSnapshotClass.deletionPolicy }}
+{{- end }}
 {{- range .Values.csi.storageClasses }}
 ---
 apiVersion: storage.k8s.io/v1

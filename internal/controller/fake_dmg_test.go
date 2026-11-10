@@ -45,6 +45,9 @@ func (f *fakeDmg) Run(_ context.Context, s dmg.RunSpec) (*dmg.Result, error) {
 	if i := strings.LastIndex(s.Name, "-daos-"); i >= 0 && strings.HasPrefix(s.Name, "cont-") {
 		key = s.Name[i:]
 	}
+	if strings.HasPrefix(s.Name, "snap-") { // snapshot Jobs: "snap:<op>"
+		key = "snap:" + s.Name[strings.LastIndex(s.Name, "-")+1:]
+	}
 	f.calls = append(f.calls, key)
 	f.specs = append(f.specs, s)
 	if r, ok := f.script[key]; ok {

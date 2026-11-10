@@ -7,6 +7,7 @@ package e2e
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -335,13 +336,122 @@ spec:
 		Consistently(systemHealthy).WithTimeout(time.Minute).Should(Equal(healthyWant()), "the first system must not notice")
 	})
 
+	// Case 14. Snapshots (DaosContainerSnapshot). DAOS 2.8 has no rollback, so a snapshot is
+	// only useful if it really holds the old data and goes away when asked. The read-only claim
+	// part (spec.volume) needs a daos-csi image with snapshotEpoch support; the lane pins an
+	// older one until that merges, so it runs only with E2E_CSI_SNAPSHOT=1.
+	It("snapshots a volume, keeps the old data in it and destroys it on approval (case 14)", func() {
+		client := jsonpath("daossystem", sysName, ".spec.images.client")
+		sel := envOr("E2E_CLIENT_SELECTOR", "daos.gluesys.com/client=true")
+		k, v, _ := strings.Cut(sel, "=")
+		withClaim := os.Getenv("E2E_CSI_SNAPSHOT") == "1"
+		pod := func(name, claim string, readOnly bool, script string) string {
+			return fmt.Sprintf(`apiVersion: v1
+kind: Pod
+metadata: {name: %s}
+spec:
+  restartPolicy: Never
+  nodeSelector: {%q: %q}
+  containers:
+    - name: c
+      image: %s
+      command: [sh, -c, %q]
+      volumeMounts: [{name: d, mountPath: /data, readOnly: %t}]
+  volumes: [{name: d, persistentVolumeClaim: {claimName: %s, readOnly: %t}}]`, name, k, v, client, script, readOnly, claim, readOnly)
+		}
+		runPod := func(manifest, name, want string) {
+			apply(manifest)
+			Eventually(func() string { return jsonpath("pod", name, ".status.phase") }).WithTimeout(5*time.Minute).Should(Equal("Succeeded"), "pod %s", name)
+			Expect(kubectl("logs", name)).To(ContainSubstring(want))
+		}
+		DeferCleanup(func() {
+			_, _ = kubectlE("delete", "pod", "e2e-snap-w1", "e2e-snap-w2", "e2e-snap-r", "--ignore-not-found", "--wait=true", "--timeout=3m")
+		})
+
+		By("a volume holding v1")
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: e2epool}
+spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
+		Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(5 * time.Minute).Should(Equal("True"))
+		apply(`apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: e2e-snap-src}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: daos-e2e
+  resources: {requests: {storage: 1Gi}}`)
+		Eventually(func() string { return jsonpath("pvc", "e2e-snap-src", ".status.phase") }).WithTimeout(15 * time.Minute).Should(Equal("Bound"))
+		runPod(pod("e2e-snap-w1", "e2e-snap-src", false, "set -e; echo v1 > /data/v; sync; echo WROTE"), "e2e-snap-w1", "WROTE")
+		pv := kubectl("get", "pvc", "e2e-snap-src", "-o", "jsonpath={.spec.volumeName}")
+		cont := jsonpath("pv", pv, ".spec.csi.volumeAttributes.crName")
+		Expect(cont).NotTo(BeEmpty(), "daos-csi names the DaosContainer in the volume context")
+
+		By("taking the snapshot")
+		volume := ""
+		if withClaim {
+			volume = "\n  volume: {claimName: e2e-snap-ro}"
+		}
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainerSnapshot
+metadata: {name: e2e-snap}
+spec:
+  containerRef: ` + cont + volume)
+		start := time.Now()
+		Eventually(func() string { return jsonpath("daoscontainersnapshot", "e2e-snap", ".status.ready") }).WithTimeout(5 * time.Minute).Should(Equal("true"))
+		recordDuration("snapshot ready", time.Since(start))
+		epoch := jsonpath("daoscontainersnapshot", "e2e-snap", ".status.epoch")
+		Expect(epoch).To(MatchRegexp(`^[1-9][0-9]+$`))
+		Expect(jsonpath("daoscontainersnapshot", "e2e-snap", ".status.creationTime")).To(HavePrefix(time.Now().UTC().Format("2006-")), "creation time from the HLC")
+		Expect(jsonpath("daoscontainersnapshot", "e2e-snap", ".status.containerUUID")).To(Equal(jsonpath("daoscontainer", cont, ".status.uuid")))
+
+		By("the live volume moves on to v2")
+		runPod(pod("e2e-snap-w2", "e2e-snap-src", false, "set -e; echo v2 > /data/v; sync; cat /data/v"), "e2e-snap-w2", "v2")
+
+		if withClaim {
+			By("the read-only claim still shows v1 and refuses writes")
+			Eventually(func() string { return jsonpath("pvc", "e2e-snap-ro", ".status.phase") }).WithTimeout(3 * time.Minute).Should(Equal("Bound"))
+			runPod(pod("e2e-snap-r", "e2e-snap-ro", true, "cat /data/v; if echo x > /data/w 2>/dev/null; then echo WRITABLE; else echo READONLY; fi"), "e2e-snap-r", "READONLY")
+			Expect(kubectl("logs", "e2e-snap-r")).To(SatisfyAll(ContainSubstring("v1"), Not(ContainSubstring("v2")), Not(ContainSubstring("WRITABLE"))))
+			kubectl("delete", "pod", "e2e-snap-r", "--wait=true", "--timeout=3m")
+		}
+
+		By("an approved delete destroys it in DAOS (the finalizer is only released after destroy-snap succeeds)")
+		kubectl("annotate", "daoscontainersnapshot", "e2e-snap", "daos.gluesys.com/destroy-approved=true", "--overwrite")
+		kubectl("delete", "daoscontainersnapshot", "e2e-snap", "--wait=false")
+		waitGone("daoscontainersnapshot", "e2e-snap", 5*time.Minute)
+		Expect(kubectl("get", "events", "--field-selector", "involvedObject.name=e2e-snap", "-o", "jsonpath={.items[*].reason}")).To(ContainSubstring("SnapshotDestroyed"))
+		if withClaim {
+			waitGone("pvc", "e2e-snap-ro", 3*time.Minute)
+		}
+		apply(`apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosContainerSnapshot
+metadata: {name: e2e-snap}
+spec: {containerRef: ` + cont + `}`)
+		Eventually(func() string { return jsonpath("daoscontainersnapshot", "e2e-snap", ".status.ready") }).WithTimeout(5 * time.Minute).Should(Equal("true"))
+		Expect(jsonpath("daoscontainersnapshot", "e2e-snap", ".status.epoch")).NotTo(Equal(epoch), "a new object takes a new snapshot")
+
+		By("an unapproved delete keeps it and says so")
+		kubectl("delete", "daoscontainersnapshot", "e2e-snap", "--wait=true", "--timeout=3m")
+		Expect(kubectl("get", "events", "--field-selector", "involvedObject.name=e2e-snap", "-o", "jsonpath={.items[*].reason}")).To(ContainSubstring("SnapshotOrphaned"))
+
+		By("cleaning up: destroying the container takes its snapshots with it")
+		kubectl("delete", "pod", "e2e-snap-w1", "e2e-snap-w2", "--wait=true", "--timeout=3m")
+		kubectl("delete", "pvc", "e2e-snap-src", "--wait=true", "--timeout=3m")
+		waitGone("daoscontainer", cont, 12*time.Minute)
+		kubectl("annotate", "daospool", "e2epool", "daos.gluesys.com/destroy-approved=true", "--overwrite")
+		kubectl("delete", "daospool", "e2epool", "--wait=false")
+		waitGone("daospool", "e2epool", 12*time.Minute)
+	})
+
 	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:
 	// "uninstall must never stop engines"), and pools and containers carry finalizers only the
 	// operator releases. So a clean removal is: tear the DAOS objects down while the operator
 	// still runs, then uninstall. Afterwards nothing may be left behind.
 	It("tears down in order and uninstalls cleanly (case 7)", func() {
 		By("destroying containers, pools and the system while the operator runs")
-		for _, kind := range []string{"daoscontainer", "daospool"} {
+		for _, kind := range []string{"daoscontainersnapshot", "daoscontainer", "daospool"} {
 			for _, name := range strings.Fields(kubectl("get", kind, "-o", "jsonpath={.items[*].metadata.name}")) {
 				kubectl("annotate", kind, name, "daos.gluesys.com/destroy-approved=true", "--overwrite")
 				kubectl("delete", kind, name, "--wait=false")

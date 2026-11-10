@@ -222,6 +222,15 @@ func main() {
 		setupLog.Error(err, "Failed to create controller", "controller", "daoscontainer")
 		os.Exit(1)
 	}
+	if err := (&controller.DaosContainerSnapshotReconciler{
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Dmg:      runner,
+		Recorder: mgr.GetEventRecorderFor("daoscontainersnapshot"),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "daoscontainersnapshot")
+		os.Exit(1)
+	}
 	if err := (&controller.S3ServiceReconciler{
 		Client:   mgr.GetClient(),
 		Scheme:   mgr.GetScheme(),

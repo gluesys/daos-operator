@@ -241,6 +241,9 @@
             },
             "registrar": {
               "type": "string"
+            },
+            "snapshotter": {
+              "type": "string"
             }
           }
         },
@@ -299,6 +302,35 @@
               }
             }
           }
+        },
+        "snapshots": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "volumeSnapshotClass": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "create": {
+                  "type": "boolean"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "default": {
+                  "type": "boolean"
+                },
+                "deletionPolicy": {
+                  "type": "string",
+                  "description": "Delete destroys the DAOS snapshot with the VolumeSnapshot; Retain keeps it (and its space)"
+                }
+              }
+            }
+          },
+          "description": "CSI snapshots (VolumeSnapshot). Each snapshot is a DaosContainerSnapshot taken by the operator. A PVC restored from one (dataSource: VolumeSnapshot) is read-only and must ask for ReadOnlyMany: DAOS 2.8 cannot roll a container back, and a writable copy is not implemented. Needs the VolumeSnapshot CRDs and snapshot-controller (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi image with snapshot support."
         },
         "storageClasses": {
           "type": "array",
