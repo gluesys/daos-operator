@@ -1,6 +1,6 @@
 registry.gitlab.gluesys.com/exastor/daos-operator/daos-operator:65bcaee5
 registry.gitlab.gluesys.com/exastor/daos-operator/daos-hostprep:65bcaee5
-registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi:55f554f9
+registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi:96c28a0b
 registry.gitlab.gluesys.com/exastor/daos-images/daos-server:2.8.0-20261006-g41c3647d
 registry.gitlab.gluesys.com/exastor/daos-images/daos-agent:2.8.0-20261006-g41c3647d
 registry.gitlab.gluesys.com/exastor/daos-images/daos-admin:2.8.0-20261006-g41c3647d

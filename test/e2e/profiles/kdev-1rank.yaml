@@ -45,7 +45,8 @@ csi:
   enabled: true
   image:
     repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
-    tag: 55f554f9
+    tag: 96c28a0b  # main with snapshotEpoch (csi!2) and EXPAND_VOLUME (csi!3)
+  expansion: {enabled: true}
   storageClasses:
     - name: daos-e2e
       reclaimPolicy: Delete
