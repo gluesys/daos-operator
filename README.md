@@ -201,6 +201,37 @@ instead of piling up more. Runs missed while the operator was down are not made
 up; `suspend: true` stops new snapshots but keeps pruning. Deleting the policy
 leaves its snapshots as ordinary `DaosContainerSnapshot`s.
 
+### Capacity is per pool, not per PVC
+
+DAOS 2.8 has no per-container quota. The size a PVC requests is recorded but
+not enforced, and `df` inside the volume shows the whole pool: every PVC in a
+pool shares that pool's size, and one full PVC fills them all.
+
+To give teams or uses their own capacity, give each its own pool and
+StorageClass. The chart does both from one list:
+
+```yaml
+csi:
+  enabled: true
+pools:
+  - name: train
+    size: 1Ti
+    spec: {redundancyFactor: 1, spaceWarningPercent: 85}
+    storageClass: {}                       # creates daos-train
+  - name: kv
+    size: 500Gi
+    storageClass: {name: daos-kv, reclaimPolicy: Retain}
+```
+
+When a pool passes `spaceWarningPercent` the operator sets `SpaceLow` on the
+`DaosPool` and records a `PoolSpaceLow` Event on every bound PVC in that pool, so users who
+only see their own namespace (`kubectl describe pvc`) are told too. A PVC bound
+while the pool is already low is warned on the next poll; `status.spaceLowClaims`
+lists the PVCs told, and each gets `PoolSpaceRecovered` when the pool drops back.
+A `storageClass` is only rendered for a pool in the DaosSystem daos-csi serves
+(`csi.system`); the chart refuses one for a pool in another system. Pools created this way are
+kept on `helm uninstall`, like any `DaosPool`.
+
 ### A pool with no redundancy stops serving when a rank leaves
 
 `redundancyFactor: 0` is a valid choice — it is what a pool on a single fault
