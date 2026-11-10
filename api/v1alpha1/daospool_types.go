@@ -100,6 +100,14 @@ type KVCacheSpec struct {
 	Redundancy string `json:"redundancy,omitempty"`
 }
 
+// SpaceLowClaim is one PVC warned that its pool is low on space.
+type SpaceLowClaim struct {
+	// Volume is the PV name.
+	Volume string `json:"volume"`
+	// ClaimUID is the UID of the PVC the PV was bound to when it was warned.
+	ClaimUID string `json:"claimUID"`
+}
+
 // DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
 // truth: every field is copied from dmg output.
 type DaosPoolStatus struct {
@@ -115,6 +123,12 @@ type DaosPoolStatus struct {
 	EnabledRanks []int32 `json:"enabledRanks,omitempty"`
 	// UsedPercent is (total-free)/total from the last query, rounded down.
 	UsedPercent int32 `json:"usedPercent,omitempty"`
+	// SpaceLowClaims are the PVCs that have been told the pool is low on space.
+	// A PVC bound while the pool is already low (including a PV re-bound to a new
+	// PVC) is warned on the next poll, and the ones listed here get
+	// PoolSpaceRecovered when it drops back.
+	// +optional
+	SpaceLowClaims []SpaceLowClaim `json:"spaceLowClaims,omitempty"`
 	// Operation is the dmg Job in flight (create, extend, acl, destroy); empty when idle.
 	Operation string `json:"operation,omitempty"`
 	// ObservedGeneration is the spec generation the last create attempt was made for;
