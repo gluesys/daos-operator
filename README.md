@@ -149,7 +149,13 @@ operator never takes a second snapshot for one object: if the answer of a
 create-snap is lost, the snapshot taken after it that no other object holds is
 adopted -- but only when exactly one fits and no other object of the container is
 still taking its own; otherwise the object waits (`AdoptAmbiguous`, listing the
-candidate epochs) for `daos.gluesys.com/adopt-epoch: "<epoch>"`. One destroyed by
+candidate epochs) for `daos.gluesys.com/adopt-epoch: "<epoch>"`. Because the time
+is the only link, take snapshots of a container this operator manages only through
+`DaosContainerSnapshot`: one taken by hand (`daos cont create-snap`) while an
+object's create-snap answer is lost can be adopted as that object's, and an
+adopted epoch is not re-matched (`adopt-epoch` only applies before adoption). If
+that happens, delete the object without `destroy-approved` (both snapshots stay in
+DAOS) and remove the unwanted one by hand. One destroyed by
 hand is reported (`SnapshotMissing`), not re-taken. Deleting an object while its
 create-snap runs waits for the epoch, so an approved delete destroys it too.
 `spec.volume.claimName` cannot be changed in place: remove `spec.volume`, then set it again.
