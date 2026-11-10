@@ -192,6 +192,102 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 		Expect(s.Status.Ready).To(BeTrue())
 	})
 
+	It("does not guess when a lost create-snap could have taken more than one snapshot", func() {
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
+		requested := time.Now().Add(-10 * time.Minute)
+		first, second := hlcAt(requested.Add(time.Second)), hlcAt(requested.Add(2*time.Second))
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(first, ""), snapEntry(second, ""))}}}
+		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		rec := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec() // finalizer
+		s := get()
+		t := metav1.NewTime(requested)
+		s.Status.CreateRequestedAt = &t
+		Expect(k8sClient.Status().Update(ctx, s)).To(Succeed())
+
+		By("two snapshots fit (one taken by hand) -> AdoptAmbiguous, neither adopted, none taken")
+		rec()
+		Expect(reason()).To(Equal("AdoptAmbiguous"))
+		Expect(get().Status.Epoch).To(BeEmpty())
+		Expect(f.count("snap:createsnap")).To(BeZero())
+
+		By("the adopt-epoch annotation settles it")
+		s = get()
+		s.Annotations = map[string]string{daosv1alpha1.AnnotationAdoptEpoch: fmt.Sprint(second)}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+		rec()
+		Expect(get().Status.Epoch).To(Equal(fmt.Sprint(second)))
+		Expect(get().Status.Ready).To(BeTrue())
+	})
+
+	It("does not adopt while another object of the same container is still taking its snapshot", func() {
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
+		requested := time.Now().Add(-10 * time.Minute)
+		only := hlcAt(requested.Add(time.Second))
+		other := &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "other"},
+			Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName}}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		ot := metav1.NewTime(requested)
+		other.Status.CreateRequestedAt, other.Status.Operation = &ot, opSnapCreate
+		Expect(k8sClient.Status().Update(ctx, other)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, other) })
+
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(only, ""))}}}
+		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN}) // finalizer
+		Expect(err).NotTo(HaveOccurred())
+		s := get()
+		t := metav1.NewTime(requested)
+		s.Status.CreateRequestedAt = &t
+		Expect(k8sClient.Status().Update(ctx, s)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(reason()).To(Equal("AdoptAmbiguous"))
+		Expect(get().Status.Epoch).To(BeEmpty(), "the one snapshot may be the other object's")
+
+		By("once the other records its epoch, nothing is left to adopt and the snapshot is taken")
+		other.Status.Epoch, other.Status.ContainerUUID, other.Status.Operation = fmt.Sprint(only), contUUID, ""
+		Expect(k8sClient.Status().Update(ctx, other)).To(Succeed())
+		_, err = r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(get().Status.Epoch).To(BeEmpty())
+		Expect(f.count("snap:createsnap")).To(Equal(1))
+	})
+
+	It("an approved delete during create-snap waits for the epoch and destroys it", func() {
+		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
+		events := record.NewFakeRecorder(32)
+		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut()}}}
+		r := &DaosContainerSnapshotReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+		rec := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec() // finalizer
+		rec() // create-snap starts
+		Expect(get().Status.Operation).To(Equal(opSnapCreate))
+		s := get()
+		s.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
+		Expect(k8sClient.Update(ctx, s)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, get())).To(Succeed())
+
+		rec()
+		Expect(reason()).To(Equal("DeletingAfterCreate"))
+		Expect(get().Finalizers).To(ContainElement(daosv1alpha1.FinalizerSnapshot), "kept until the create-snap answers")
+
+		f.set("snap:createsnap", snapCreateOut(testSnapEpoch))
+		f.set("snap:destroysnap", &dmg.Result{Done: true, Output: `{"response": null, "error": null, "status": 0}`})
+		rec()
+		Expect(get().Status.Epoch).To(Equal(fmt.Sprint(testSnapEpoch)))
+		rec()
+		Expect(f.last("-destroysnap").Command[2]).To(HaveSuffix("'--epc' '" + fmt.Sprint(testSnapEpoch) + "'"))
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, snapNN, &daosv1alpha1.DaosContainerSnapshot{}))).To(BeTrue())
+		Expect(drain(events)).To(ContainElement(ContainSubstring("SnapshotDestroyed")))
+	})
+
 	It("destroys the DAOS snapshot by epoch only with destroy-approved", func() {
 		newSnap(daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName})
 		f := &fakeDmg{script: map[string]*dmg.Result{"snap:listsnaps": {Done: true, Output: snapListOut(snapEntry(testSnapEpoch, ""))}, "snap:createsnap": snapCreateOut(testSnapEpoch)}}
@@ -281,6 +377,11 @@ var _ = Describe("DaosContainerSnapshot Controller", func() {
 			HaveKeyWithValue("containerUUID", contUUID),
 			HaveKeyWithValue("pool", poolName), HaveKeyWithValue("container", contName),
 			HaveKeyWithValue("destroyOnDelete", "false")))
+
+		By("the claim name cannot be changed in place (the PV is reserved for the first claim)")
+		s = get()
+		s.Spec.Volume.ClaimName = "ckpt2"
+		Expect(k8sClient.Update(ctx, s)).To(MatchError(ContainSubstring("claimName is immutable")))
 
 		By("approved delete: PVC and PV are removed first, destroy-snap waits while the PV stays")
 		s = get()
