@@ -1,0 +1,213 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.22.0
+  name: daossnapshotpolicies.daos.gluesys.com
+spec:
+  group: daos.gluesys.com
+  names:
+    kind: DaosSnapshotPolicy
+    listKind: DaosSnapshotPolicyList
+    plural: daossnapshotpolicies
+    shortNames:
+    - daossnappol
+    singular: daossnapshotpolicy
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .spec.containerRef
+      name: Container
+      type: string
+    - jsonPath: .spec.interval
+      name: Interval
+      type: string
+    - jsonPath: .spec.keep
+      name: Keep
+      type: integer
+    - jsonPath: .status.snapshots
+      name: Snapshots
+      type: integer
+    - jsonPath: .status.lastSnapshot
+      name: Last
+      type: string
+    - jsonPath: .status.nextScheduleTime
+      name: Next
+      type: date
+    - jsonPath: .spec.suspend
+      name: Suspend
+      type: boolean
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          DaosSnapshotPolicy takes periodic snapshots of a DaosContainer and destroys
+          the oldest ones.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: |-
+              DaosSnapshotPolicySpec takes a DaosContainerSnapshot of one DaosContainer
+              every interval and keeps the newest ones.
+
+              The snapshots it takes carry the label daos.gluesys.com/snapshot-policy=<name>.
+              Creating a policy approves destroying the DAOS snapshots it prunes: they are
+              deleted with daos.gluesys.com/destroy-approved=true. Nothing else is ever
+              pruned: a snapshot without the label (taken by hand, or by a CSI
+              VolumeSnapshot) is not counted and not touched. To keep one of the policy's
+              snapshots for good, remove the label from it; a snapshot exposed as a volume
+              (spec.volume set) is skipped the same way.
+
+              Deleting the policy stops taking and pruning; the snapshots it took stay as
+              ordinary DaosContainerSnapshots.
+            properties:
+              containerRef:
+                description: ContainerRef is the DaosContainer, in this namespace,
+                  to snapshot.
+                minLength: 1
+                type: string
+                x-kubernetes-validations:
+                - message: containerRef is immutable
+                  rule: self == oldSelf
+              interval:
+                description: |-
+                  Interval between snapshots (Go duration, e.g. 1h, 30m), at least 5m. A
+                  snapshot is taken when the policy is created and then every interval; runs
+                  missed while the operator was down are not made up.
+                type: string
+                x-kubernetes-validations:
+                - message: interval must be at least 5m
+                  rule: duration(self) >= duration('5m')
+              keep:
+                description: |-
+                  Keep is how many of the policy's snapshots are kept; the oldest beyond
+                  that are destroyed. Every snapshot keeps the space of what was overwritten
+                  since it was taken, so this bounds the space the policy holds.
+                format: int32
+                maximum: 1000
+                minimum: 1
+                type: integer
+              maxAge:
+                description: |-
+                  MaxAge, when set, also destroys the policy's snapshots older than this
+                  (Go duration, e.g. 168h). The newest snapshot is always kept, so a policy
+                  that cannot take new ones does not end up with none.
+                type: string
+              suspend:
+                description: Suspend stops taking new snapshots; pruning goes on.
+                type: boolean
+            required:
+            - containerRef
+            - interval
+            - keep
+            type: object
+            x-kubernetes-validations:
+            - message: maxAge must not be shorter than interval
+              rule: '!has(self.maxAge) || duration(self.maxAge) >= duration(self.interval)'
+          status:
+            description: DaosSnapshotPolicyStatus reports the snapshots the policy
+              holds.
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+              lastScheduleTime:
+                description: LastScheduleTime is when the policy last created a DaosContainerSnapshot.
+                format: date-time
+                type: string
+              lastSnapshot:
+                description: LastSnapshot is the newest snapshot taken (Ready) under
+                  the policy.
+                type: string
+              nextScheduleTime:
+                description: NextScheduleTime is when it creates the next one (unset
+                  while suspended).
+                format: date-time
+                type: string
+              observedGeneration:
+                format: int64
+                type: integer
+              snapshots:
+                description: Snapshots is how many taken snapshots the policy holds.
+                format: int32
+                type: integer
+            type: object
+        type: object
+        x-kubernetes-validations:
+        - message: name must be at most 40 characters (snapshot names add a 14-character
+            timestamp)
+          rule: self.metadata.name.size() <= 40
+    served: true
+    storage: true
+    subresources:
+      status: {}

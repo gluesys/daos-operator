@@ -108,6 +108,10 @@ const (
 	LabelContainer = "daos.gluesys.com/container"
 	// LabelSnapshot marks the daos Jobs run for a DaosContainerSnapshot (<namespace>.<name>).
 	LabelSnapshot = "daos.gluesys.com/snapshot"
+	// LabelSnapshotPolicy marks the DaosContainerSnapshots a DaosSnapshotPolicy
+	// took (value: the policy name). Only those are counted and pruned by it;
+	// removing the label keeps a snapshot out of the policy for good.
+	LabelSnapshotPolicy = "daos.gluesys.com/snapshot-policy"
 
 	// LabelSystem and LabelNode are put on every object the operator creates.
 	LabelSystem = "daos.gluesys.com/system"

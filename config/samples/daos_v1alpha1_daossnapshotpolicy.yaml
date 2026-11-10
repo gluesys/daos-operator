@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+# A snapshot of DaosContainer kv-cache every 6 hours; the 8 newest (two days)
+# are kept, older ones are destroyed. Creating the policy approves destroying
+# the snapshots it prunes; it never touches snapshots without its label
+# (daos.gluesys.com/snapshot-policy=kv-cache-6h). To keep one for good:
+#   kubectl label daossnap <name> daos.gluesys.com/snapshot-policy-
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosSnapshotPolicy
+metadata:
+  name: kv-cache-6h
+  namespace: default
+spec:
+  containerRef: kv-cache
+  interval: 6h
+  keep: 8
+  # also destroy snapshots older than a week (the newest is always kept)
+  maxAge: 168h
