@@ -143,6 +143,26 @@ csi:
   #    # spaceLimit: "false" stops daos-csi from capping each container at its PVC size
   #    # (spec.spaceLimit; enforced by the extended edition of DAOS only)
 
+# DaosPools to create, each optionally with the StorageClass that provisions into it.
+# DAOS enforces capacity per pool, not per container: a PVC's requested size is not
+# a limit, and every PVC in a pool shares the pool's size. To give teams or uses their
+# own capacity, give each its own pool and StorageClass here. When a pool passes its
+# spaceWarningPercent the operator sets SpaceLow on the DaosPool and also records a
+# PoolSpaceLow Event on each bound PVC in it, so namespace users see it too.
+# Pools are kept on helm uninstall (resource-policy: keep); destroying one needs the
+# daos.gluesys.com/destroy-approved annotation, as for any DaosPool.
+pools: []
+#  - name: train                # DaosPool name, also the StorageClass "pool" parameter
+#    size: 1Ti                  # required; DAOS 2.8 cannot shrink a pool
+#    systemRef: ""              # defaults to system.name
+#    spec:                      # any other DaosPool spec field
+#      redundancyFactor: 1
+#      spaceWarningPercent: 85
+#    storageClass:              # omit (or null) for the pool only; {} for all defaults; needs csi.enabled
+#      name: daos-train         # defaults to daos-<pool name>
+#      reclaimPolicy: Delete
+#      parameters: {oclass: RP_2GX, dirOclass: RP_2G1}   # "pool" is always this entry
+
 # vLLM serving with LMCache writing its KV cache to a DAOS container.
 # This is a reference workload, not part of the storage layer: it is here so a
 # GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md.

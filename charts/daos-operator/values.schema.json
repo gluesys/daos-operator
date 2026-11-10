@@ -352,6 +352,10 @@
       },
       "description": "exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a daos_agent sidecar). One driver per DaosSystem: csi.system names the system whose <system>-agent ConfigMap (and <system>-certs when tls) the node plugin uses."
     },
+    "pools": {
+      "type": "array",
+      "description": "DaosPools to create, each optionally with the StorageClass that provisions into it. DAOS enforces capacity per pool, not per container: a PVC's requested size is not a limit, and every PVC in a pool shares the pool's size. To give teams or uses their own capacity, give each its own pool and StorageClass here. When a pool passes its spaceWarningPercent the operator sets SpaceLow on the DaosPool and also records a PoolSpaceLow Event on each bound PVC in it, so namespace users see it too. Pools are kept on helm uninstall (resource-policy: keep); destroying one needs the daos.gluesys.com/destroy-approved annotation, as for any DaosPool."
+    },
     "vllm": {
       "type": "object",
       "additionalProperties": true,
