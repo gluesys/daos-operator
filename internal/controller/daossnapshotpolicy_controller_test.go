@@ -215,6 +215,70 @@ var _ = Describe("DaosSnapshotPolicy Controller", func() {
 		Expect(policy().Status.NextScheduleTime).To(BeNil())
 	})
 
+	It("while suspended, comes back when the next snapshot passes maxAge", func() {
+		newPolicy(daosv1alpha1.DaosSnapshotPolicySpec{Interval: metav1.Duration{Duration: time.Hour}, Keep: 10,
+			MaxAge: &metav1.Duration{Duration: 3 * time.Hour}, Suspend: true})
+		mine := map[string]string{daosv1alpha1.LabelSnapshotPolicy: polName}
+		for name, age := range map[string]time.Duration{"d": 2 * time.Hour, "e": time.Hour} {
+			Expect(k8sClient.Create(ctx, &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Labels: mine},
+				Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName}})).To(Succeed())
+			take(name, t0.Add(-age))
+		}
+		res := rec()
+		Expect(reason()).To(Equal("Suspended"))
+		Expect(pruned("d")).To(BeFalse())
+		Expect(res.RequeueAfter).To(BeNumerically("~", time.Hour, 2*time.Second), "d is 3h old in an hour")
+		now = t0.Add(time.Hour + 2*time.Second)
+		rec()
+		Expect(pruned("d")).To(BeTrue())
+	})
+
+	It("recovers a lost lastScheduleTime from the newest run's name, not the stale one", func() {
+		newPolicy(daosv1alpha1.DaosSnapshotPolicySpec{Interval: metav1.Duration{Duration: time.Hour}, Keep: 5})
+		rec() // run at 03:00
+		take("pol1-20261109-0300", t0)
+		now = t0.Add(time.Hour)
+		rec() // run at 04:00 ...
+		take("pol1-20261109-0400", now)
+		By("... whose status write was lost: lastScheduleTime still says 03:00")
+		p := policy()
+		lt := metav1.NewTime(t0)
+		p.Status.LastScheduleTime = &lt
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		now = t0.Add(time.Hour + 10*time.Minute)
+		res := rec()
+		Expect(snapshots()).To(HaveLen(2), "04:00 already ran: no run right behind it")
+		Expect(policy().Status.LastScheduleTime.Time).To(BeTemporally("==", t0.Add(time.Hour)))
+		Expect(res.RequeueAfter).To(Equal(50 * time.Minute))
+	})
+
+	It("does not prune a snapshot whose label was removed after it was picked", func() {
+		newPolicy(daosv1alpha1.DaosSnapshotPolicySpec{Interval: metav1.Duration{Duration: time.Hour}, Keep: 1})
+		Expect(k8sClient.Create(ctx, &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: "keepme",
+			Labels: map[string]string{daosv1alpha1.LabelSnapshotPolicy: polName}},
+			Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: contName}})).To(Succeed())
+		take("keepme", t0.Add(-time.Hour))
+		picked := &daosv1alpha1.DaosContainerSnapshot{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "keepme"}, picked)).To(Succeed())
+		cur := picked.DeepCopy()
+		cur.Labels = nil // the user pins it
+		Expect(k8sClient.Update(ctx, cur)).To(Succeed())
+		r := &DaosSnapshotPolicyReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Recorder: events}
+		Expect(r.prune(ctx, policy(), picked, "test")).To(Succeed())
+		Expect(pruned("keepme")).To(BeFalse())
+		s := &daosv1alpha1.DaosContainerSnapshot{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ns, Name: "keepme"}, s)).To(Succeed())
+		Expect(s.Annotations).NotTo(HaveKey(daosv1alpha1.AnnotationDestroyApproved))
+	})
+
+	It("does not rewrite an unchanged status", func() {
+		newPolicy(daosv1alpha1.DaosSnapshotPolicySpec{Interval: metav1.Duration{Duration: time.Hour}, Keep: 1, Suspend: true})
+		rec()
+		rv := policy().ResourceVersion
+		rec()
+		Expect(policy().ResourceVersion).To(Equal(rv))
+	})
+
 	It("takes nothing for a container that does not exist", func() {
 		Expect(k8sClient.Create(ctx, &daosv1alpha1.DaosSnapshotPolicy{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: polName},
 			Spec: daosv1alpha1.DaosSnapshotPolicySpec{ContainerRef: "missing", Interval: metav1.Duration{Duration: time.Hour}, Keep: 3}})).To(Succeed())

@@ -88,11 +88,17 @@ spec:
                   Removing spec.volume removes them. Needs daos-csi with snapshotEpoch support.
                 properties:
                   claimName:
-                    description: ClaimName is the PersistentVolumeClaim to create
-                      in the snapshot's namespace.
+                    description: |-
+                      ClaimName is the PersistentVolumeClaim to create in the snapshot's namespace.
+                      It cannot be changed in place (the PV stays reserved for the first claim);
+                      remove spec.volume, wait for the claim to go, then set it again.
                     maxLength: 253
                     minLength: 1
                     type: string
+                    x-kubernetes-validations:
+                    - message: claimName is immutable; remove spec.volume and set
+                        it again
+                      rule: self == oldSelf
                   driver:
                     default: daos.csi.gluesys.com
                     description: Driver is the daos-csi driver name.

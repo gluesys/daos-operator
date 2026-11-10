@@ -147,7 +147,12 @@ gives the command to remove it by hand). DAOS 2.8 snapshots have no names (a nam
 create-snap fails with `DER_NOSYS`), so a snapshot is known by its epoch only. The
 operator never takes a second snapshot for one object: if the answer of a
 create-snap is lost, the snapshot taken after it that no other object holds is
-adopted; one destroyed by hand is reported (`SnapshotMissing`), not re-taken.
+adopted -- but only when exactly one fits and no other object of the container is
+still taking its own; otherwise the object waits (`AdoptAmbiguous`, listing the
+candidate epochs) for `daos.gluesys.com/adopt-epoch: "<epoch>"`. One destroyed by
+hand is reported (`SnapshotMissing`), not re-taken. Deleting an object while its
+create-snap runs waits for the epoch, so an approved delete destroys it too.
+`spec.volume.claimName` cannot be changed in place: remove `spec.volume`, then set it again.
 
 Users who only see their own namespace use the CSI path instead (`csi.snapshots.enabled`,
 plus the VolumeSnapshot CRDs and snapshot-controller from kubernetes-csi/external-snapshotter):

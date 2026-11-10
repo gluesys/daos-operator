@@ -50,6 +50,9 @@ type DaosContainerSnapshotSpec struct {
 // SnapshotVolumeSpec names the read-only claim a snapshot is exposed through.
 type SnapshotVolumeSpec struct {
 	// ClaimName is the PersistentVolumeClaim to create in the snapshot's namespace.
+	// It cannot be changed in place (the PV stays reserved for the first claim);
+	// remove spec.volume, wait for the claim to go, then set it again.
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="claimName is immutable; remove spec.volume and set it again"
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	ClaimName string `json:"claimName"`
