@@ -2,7 +2,8 @@
 
 The VolumeSnapshot CRDs and snapshot-controller, from
 https://github.com/kubernetes-csi/external-snapshotter at tag v8.2.0 (Apache-2.0, see
-LICENSE). The e2e suite installs them on the CI cluster (`test/e2e`, before the chart:
+LICENSE). The e2e suite installs them on a cluster without the VolumeSnapshot CRD, as
+the CI cluster after its rollback (`test/e2e`, before the chart:
 the profiles turn on `csi.snapshots`, whose VolumeSnapshotClass needs the CRDs). A real
 cluster installs them once, as its distribution says; the chart does not ship them.
 

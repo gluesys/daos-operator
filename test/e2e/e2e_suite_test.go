@@ -83,18 +83,24 @@ func installChart() {
 }
 
 // installSnapshotController installs the VolumeSnapshot CRDs and snapshot-controller
-// (third_party/external-snapshotter-v8.2.0); a real cluster has them from its distribution.
+// (third_party/external-snapshotter-v8.2.0) on a cluster that has no VolumeSnapshot CRD,
+// as the CI cluster after its rollback. A cluster that has them got them from its
+// distribution, which owns them: the suite then uses them as they are.
 func installSnapshotController() {
+	if _, err := runE("kubectl", "get", "crd", "volumesnapshots.snapshot.storage.k8s.io"); err == nil {
+		By("using the cluster's own VolumeSnapshot CRDs and snapshot-controller")
+		return
+	}
 	By("installing the VolumeSnapshot CRDs and snapshot-controller")
 	dir := filepath.Join(repoRoot, "third_party", "external-snapshotter-v8.2.0")
-	run("kubectl", "apply", "--server-side", "--force-conflicts",
+	run("kubectl", "apply", "--server-side",
 		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshotclasses.yaml"),
 		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshotcontents.yaml"),
 		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshots.yaml"))
 	run("kubectl", "wait", "--for=condition=Established", "--timeout=1m",
 		"crd/volumesnapshotclasses.snapshot.storage.k8s.io", "crd/volumesnapshotcontents.snapshot.storage.k8s.io",
 		"crd/volumesnapshots.snapshot.storage.k8s.io")
-	run("kubectl", "apply", "--server-side", "--force-conflicts",
+	run("kubectl", "apply", "--server-side",
 		"-f", filepath.Join(dir, "rbac-snapshot-controller.yaml"), "-f", filepath.Join(dir, "setup-snapshot-controller.yaml"))
 	run("kubectl", "-n", "kube-system", "rollout", "status", "deploy/snapshot-controller", "--timeout=5m")
 }
