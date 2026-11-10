@@ -59,6 +59,8 @@ var _ = BeforeSuite(func() {
 		By("resetting the cluster to the k8s-ready snapshot")
 		run(filepath.Join(repoRoot, "hack", "ci", "rollback.sh"))
 	}
+	// before any chart: the profiles' VolumeSnapshotClass needs the CRDs (the rollback removes them)
+	installSnapshotController()
 	if os.Getenv("E2E_UPGRADE_FROM") != "" || os.Getenv("E2E_NO_INSTALL") == "1" {
 		return // the upgrade and regression cases install their own systems
 	}
@@ -78,6 +80,23 @@ func installChart() {
 	// ready before the suite approves the format below.
 	run("helm", args...)
 	run("kubectl", "-n", ns, "rollout", "status", "deploy/"+release, "--timeout=5m")
+}
+
+// installSnapshotController installs the VolumeSnapshot CRDs and snapshot-controller
+// (third_party/external-snapshotter-v8.2.0); a real cluster has them from its distribution.
+func installSnapshotController() {
+	By("installing the VolumeSnapshot CRDs and snapshot-controller")
+	dir := filepath.Join(repoRoot, "third_party", "external-snapshotter-v8.2.0")
+	run("kubectl", "apply", "--server-side", "--force-conflicts",
+		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshotclasses.yaml"),
+		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshotcontents.yaml"),
+		"-f", filepath.Join(dir, "snapshot.storage.k8s.io_volumesnapshots.yaml"))
+	run("kubectl", "wait", "--for=condition=Established", "--timeout=1m",
+		"crd/volumesnapshotclasses.snapshot.storage.k8s.io", "crd/volumesnapshotcontents.snapshot.storage.k8s.io",
+		"crd/volumesnapshots.snapshot.storage.k8s.io")
+	run("kubectl", "apply", "--server-side", "--force-conflicts",
+		"-f", filepath.Join(dir, "rbac-snapshot-controller.yaml"), "-f", filepath.Join(dir, "setup-snapshot-controller.yaml"))
+	run("kubectl", "-n", "kube-system", "rollout", "status", "deploy/snapshot-controller", "--timeout=5m")
 }
 
 // approveFormatAndWaitReady approves the storage format once the servers are up (the
