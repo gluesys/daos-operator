@@ -196,6 +196,9 @@ helm:
       optional: true
   before_script:
     - podman --version
+    # a login of its own: with the runner's shared auth.json, a job token that expired with
+    # its job (another image job finishing first) broke this job's later pull (daos-operator 65300)
+    - export REGISTRY_AUTH_FILE="/tmp/registry-auth-$CI_JOB_ID.json"
     # this GitLab reports the registry as host:80 while it actually serves TLS on 443: drop the port
     - export REG="${CI_REGISTRY%%:*}"
     - export IMG_BASE="$REG/$CI_PROJECT_PATH"
@@ -216,6 +219,8 @@ helm:
       publish() { push "$1:$CI_COMMIT_SHORT_SHA" || return 1
         [ -n "$CI_MERGE_REQUEST_IID" ] && return 0
         podman tag "$1:$CI_COMMIT_SHORT_SHA" "$1:$VERSION" "$1:latest" && push "$1:$VERSION" && push "$1:latest"; }
+  after_script:
+    - rm -f "/tmp/registry-auth-$CI_JOB_ID.json"
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"   # the nightly Tier 2 jobs deploy these images
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
