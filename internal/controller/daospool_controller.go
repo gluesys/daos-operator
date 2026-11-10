@@ -96,6 +96,7 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 
 func poolLabel(pool *daosv1alpha1.DaosPool) string { return pool.Name }
 
@@ -333,7 +334,7 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	}
 	// space: one number that decides for every container and PV in this pool.
 	// Reported on every successful query, even when an operation follows.
-	r.checkSpace(pool, &status)
+	r.checkSpace(ctx, pool, &status)
 
 	// The pool answering to this label may not be the one the spec describes:
 	// re-applying a name while the old pool is still being destroyed adopts the
@@ -420,8 +421,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 }
 
 // checkSpace sets usedPercent and the SpaceLow condition, and emits an Event
-// when the answer changes (not on every poll).
-func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus) {
+// when the answer changes (not on every poll). The same Event goes to every PVC
+// whose volume lives in this pool (syncClaims): DAOS enforces capacity per
+// pool, so a nearly full pool is a nearly full volume for each of them, and a
+// user who can only see their own namespace never sees the DaosPool.
+func (r *DaosPoolReconciler) checkSpace(ctx context.Context, pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus) {
 	threshold := int32(85)
 	if pool.Spec.SpaceWarningPercent != nil {
 		threshold = *pool.Spec.SpaceWarningPercent
@@ -432,27 +436,89 @@ func (r *DaosPoolReconciler) checkSpace(pool *daosv1alpha1.DaosPool, status *dao
 	}
 	used := status.TotalBytes - status.FreeBytes
 	status.UsedPercent = int32(used * 100 / status.TotalBytes)
+	msg := fmt.Sprintf("%d%% used (%s of %s), %s free; DAOS enforces capacity per pool, so this applies to every container in it",
+		status.UsedPercent, humanBytes(used), humanBytes(status.TotalBytes), humanBytes(status.FreeBytes))
 	if threshold <= 0 {
+		// Turning the check off ends any warning: PVCs already told get PoolSpaceRecovered
+		// (kept in SpaceLowClaims until that is delivered).
 		meta.RemoveStatusCondition(&status.Conditions, daosv1alpha1.ConditionSpaceLow)
+		r.syncClaims(ctx, pool, status, false, "space warning turned off (spaceWarningPercent: 0); "+msg)
 		return
 	}
 	was := meta.IsStatusConditionTrue(status.Conditions, daosv1alpha1.ConditionSpaceLow)
 	low := status.UsedPercent >= threshold
-	msg := fmt.Sprintf("%d%% used (%s of %s), %s free; DAOS enforces capacity per pool, so this applies to every container in it",
-		status.UsedPercent, humanBytes(used), humanBytes(status.TotalBytes), humanBytes(status.FreeBytes))
 	if low {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionTrue,
 			Reason: "AboveThreshold", Message: msg, ObservedGeneration: pool.Generation})
 		if !was {
 			r.event(pool, corev1.EventTypeWarning, "PoolSpaceLow", msg)
 		}
+	} else {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionFalse,
+			Reason: "BelowThreshold", Message: msg, ObservedGeneration: pool.Generation})
+		if was {
+			r.event(pool, corev1.EventTypeNormal, "PoolSpaceRecovered", msg)
+		}
+	}
+	r.syncClaims(ctx, pool, status, low, msg)
+}
+
+// csiPoolUUIDAttr is the volume attribute daos-csi puts on every PV it provisions
+// (VolumeContext "poolUUID"). Matching on the UUID, not the pool label, keeps a
+// re-created pool with the same label from inheriting the old pool's claims.
+const csiPoolUUIDAttr = "poolUUID"
+
+// syncClaims repeats the pool space Events on the PVCs bound to CSI volumes in
+// the pool. status.SpaceLowClaims remembers which ones were warned (PV and PVC
+// UID, so a PV re-bound to a new PVC counts as new), so a PVC bound while the
+// pool is already low is warned on the next poll, and a PV list
+// that fails is simply tried again on the next poll. Best effort otherwise: the
+// Event on the DaosPool itself is already recorded.
+func (r *DaosPoolReconciler) syncClaims(ctx context.Context, pool *daosv1alpha1.DaosPool, status *daosv1alpha1.DaosPoolStatus, low bool, msg string) {
+	if r.Recorder == nil || status.UUID == "" || (!low && len(status.SpaceLowClaims) == 0) {
 		return
 	}
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLow, Status: metav1.ConditionFalse,
-		Reason: "BelowThreshold", Message: msg, ObservedGeneration: pool.Generation})
-	if was {
-		r.event(pool, corev1.EventTypeNormal, "PoolSpaceRecovered", msg)
+	var pvs corev1.PersistentVolumeList
+	if err := r.List(ctx, &pvs); err != nil {
+		logf.FromContext(ctx).Info("pool space event not copied to claims yet: listing PVs failed", "pool", pool.Name, "err", err.Error())
+		return
 	}
+	warned := map[daosv1alpha1.SpaceLowClaim]bool{}
+	for _, c := range status.SpaceLowClaims {
+		warned[c] = true
+	}
+	var now []daosv1alpha1.SpaceLowClaim
+	for i := range pvs.Items {
+		pv := &pvs.Items[i]
+		if pv.Spec.CSI == nil || pv.Spec.CSI.VolumeAttributes[csiPoolUUIDAttr] != status.UUID {
+			continue
+		}
+		// A ClaimRef alone can be a pre-binding reservation; only a Bound PV is in use.
+		if pv.Spec.ClaimRef == nil || pv.Status.Phase != corev1.VolumeBound {
+			continue
+		}
+		key := daosv1alpha1.SpaceLowClaim{Volume: pv.Name, ClaimUID: string(pv.Spec.ClaimRef.UID)}
+		typ, reason := corev1.EventTypeWarning, "PoolSpaceLow"
+		if low {
+			now = append(now, key)
+			if warned[key] {
+				continue
+			}
+		} else {
+			if !warned[key] {
+				continue
+			}
+			typ, reason = corev1.EventTypeNormal, "PoolSpaceRecovered"
+		}
+		ref := pv.Spec.ClaimRef
+		claim := &corev1.PersistentVolumeClaim{
+			TypeMeta:   metav1.TypeMeta{APIVersion: "v1", Kind: "PersistentVolumeClaim"},
+			ObjectMeta: metav1.ObjectMeta{Name: ref.Name, Namespace: ref.Namespace, UID: ref.UID},
+		}
+		r.Recorder.Eventf(claim, typ, reason, "DAOS pool %s (volume %s): %s", pool.Name, pv.Name, msg)
+	}
+	sort.Slice(now, func(i, j int) bool { return now[i].Volume < now[j].Volume })
+	status.SpaceLowClaims = now
 }
 
 // humanBytes formats a byte count for humans reading conditions.

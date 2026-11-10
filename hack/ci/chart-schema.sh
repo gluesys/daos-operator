@@ -57,4 +57,19 @@ if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
         echo "ok    numeric image.tag refused"
     fi
 fi
+# A StorageClass for a pool in a DaosSystem daos-csi does not serve must be refused (MR !79 review).
+# The pool is complete (name, size, storageClass) and the error text is checked, so a render that
+# fails for some other reason does not count as the refusal.
+if [ -f "$chart/templates/pools.yaml" ] && grep -q 'csiSys' "$chart/templates/pools.yaml"; then
+    other="$out/pools-other-system.yaml"
+    printf '%s\n' 'pools:' '  - {name: elsewhere, size: 1Ti, systemRef: other, storageClass: {}}' > "$other"
+    if helm template daos-operator "$chart" -n daos-system -f "$chart/ci/pools-values.yaml" -f "$other" \
+          > "$out/pools-other-system.txt" 2>&1; then
+        echo "FAIL  pools[] StorageClass for another DaosSystem was accepted"; fail=1
+    elif grep -q 'daos-csi serves' "$out/pools-other-system.txt"; then
+        echo "ok    pools[] StorageClass for another DaosSystem refused"
+    else
+        echo "FAIL  pools[] other-system render failed for another reason:"; sed 's/^/    /' "$out/pools-other-system.txt" | head -5; fail=1
+    fi
+fi
 exit $fail
