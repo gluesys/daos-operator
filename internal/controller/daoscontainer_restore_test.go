@@ -23,6 +23,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -136,6 +137,8 @@ var _ = Describe("DaosContainer restore from a snapshot", func() {
 			ContainSubstring(`dfuse --sys-name 'daos_server' --pool '`+srcPoolUUID+`' --container '`+srcUUID+`' --mountpoint '/tmp/daos-restore-src' --snap-epoch '123456' --foreground`),
 			ContainSubstring(`dfuse --sys-name 'daos_server' --pool 'rp1' --container 'r1' --mountpoint '/tmp/daos-restore-dst' --foreground`),
 			ContainSubstring(`cp -a /tmp/daos-restore-src/. /tmp/daos-restore-dst/`),
+			ContainSubstring(`sync -f '/tmp/daos-restore-dst' >>'/tmp/daos-restore.log' 2>&1 || fail`),
+			ContainSubstring(`fusermount3 -u '/tmp/daos-restore-dst' >>'/tmp/daos-restore.log' 2>&1 || fail`),
 			// fs copy resolves a dfuse path to the live container and would skip the snapshot
 			Not(ContainSubstring("fs copy")),
 		))
@@ -164,8 +167,16 @@ var _ = Describe("DaosContainer restore from a snapshot", func() {
 		Expect(f.count("-daos-restore")).To(Equal(n), "no immediate retry")
 		Expect(reason()).To(Equal("RestoreFailed"))
 		c := get()
+		Expect(c.Status.RestoreFailedAt).NotTo(BeNil())
+		By("the wait counts from the failure, not from the start of a long copy")
+		long := metav1.NewTime(time.Now().Add(-2 * poolRequeueFailed))
+		c.Status.RestoreStartedAt = &long
+		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
+		rec()
+		Expect(f.count("-daos-restore")).To(Equal(n))
+		c = get()
 		past := metav1.NewTime(time.Now().Add(-poolRequeueFailed - time.Second))
-		c.Status.RestoreStartedAt = &past
+		c.Status.RestoreFailedAt = &past
 		Expect(k8sClient.Status().Update(ctx, c)).To(Succeed())
 		f.set("-daos-restore", &dmg.Result{}) // the new Job is running
 		rec()
@@ -186,6 +197,65 @@ var _ = Describe("DaosContainer restore from a snapshot", func() {
 		_, err = sr.Reconcile(ctx, reconcile.Request{NamespacedName: snapNN})
 		Expect(err).NotTo(HaveOccurred())
 		Expect(f.count("snap:destroysnap")).To(Equal(1))
+	})
+
+	It("records the snapshot the copy started from, even if it is re-created under the same name meanwhile", func() {
+		newDst(daosv1alpha1.DaosContainerSpec{RestoreFrom: &daosv1alpha1.ContainerRestoreSpec{SnapshotRef: snapNN.Name}})
+		newSnap()
+		f := &fakeDmg{script: map[string]*dmg.Result{"-daos-query": {Done: true, Output: daosContQuery}}}
+		r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		rec := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: dstNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec() // finalizer
+		rec() // restore starts
+		Expect(get().Status.Operation).To(Equal(opRestore))
+		old := &daosv1alpha1.DaosContainerSnapshot{}
+		Expect(k8sClient.Get(ctx, snapNN, old)).To(Succeed())
+		Expect(get().Status.RestoreSource.SnapshotUID).To(Equal(string(old.UID)))
+
+		By("the snapshot object is deleted (without approval) and re-created with another epoch")
+		old.Finalizers = nil
+		Expect(k8sClient.Update(ctx, old)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, old)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(k8sClient.Get(ctx, snapNN, &daosv1alpha1.DaosContainerSnapshot{}))
+		}).Should(BeTrue())
+		s := &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: snapNN.Name}, Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: "rsrc"}}
+		Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		s.Status = daosv1alpha1.DaosContainerSnapshotStatus{Epoch: "999999", ContainerUUID: srcUUID, PoolUUID: srcPoolUUID}
+		Expect(k8sClient.Status().Update(ctx, s)).To(Succeed())
+		pending, err := restoresPending(ctx, k8sClient, s)
+		Expect(err).NotTo(HaveOccurred())
+		Expect(pending).To(BeEmpty(), "the running copy reads the old snapshot, not this one")
+
+		f.set("-daos-restore", restoredOK)
+		rec()
+		Expect(get().Status.RestoredFrom).To(Equal("rsnap@123456"), "what the Job copied, not the new object's epoch")
+	})
+
+	It("refuses a snapshot of another DAOS system", func() {
+		other := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "rp-other"},
+			Spec: daosv1alpha1.DaosPoolSpec{SystemRef: "elsewhere", Size: resource.MustParse("10Gi")}}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		other.Status.UUID = "99999999-8888-7777-6666-555555555555"
+		Expect(k8sClient.Status().Update(ctx, other)).To(Succeed())
+		DeferCleanup(func() { _ = k8sClient.Delete(ctx, other) })
+		s := &daosv1alpha1.DaosContainerSnapshot{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: snapNN.Name}, Spec: daosv1alpha1.DaosContainerSnapshotSpec{ContainerRef: "rsrc"}}
+		Expect(k8sClient.Create(ctx, s)).To(Succeed())
+		s.Status = daosv1alpha1.DaosContainerSnapshotStatus{Epoch: "1", ContainerUUID: srcUUID, PoolUUID: other.Status.UUID}
+		Expect(k8sClient.Status().Update(ctx, s)).To(Succeed())
+		newDst(daosv1alpha1.DaosContainerSpec{RestoreFrom: &daosv1alpha1.ContainerRestoreSpec{SnapshotRef: snapNN.Name}})
+		f := &fakeDmg{script: map[string]*dmg.Result{"-daos-query": {Done: true, Output: daosContQuery}}}
+		r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		for range 2 {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: dstNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(reason()).To(Equal("RestoreUnsupported"))
+		Expect(meta.FindStatusCondition(get().Status.Conditions, daosv1alpha1.ConditionReady).Message).To(ContainSubstring("elsewhere"))
+		Expect(f.count("-daos-restore")).To(BeZero())
 	})
 
 	It("refuses to restore into a container that is not POSIX", func() {

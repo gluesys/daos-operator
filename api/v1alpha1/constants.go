@@ -90,6 +90,10 @@ const (
 	// Without it, deleting the Kubernetes object only forgets the DAOS object
 	// (Event PoolOrphaned / ContainerOrphaned); data is never removed implicitly.
 	AnnotationDestroyApproved = "daos.gluesys.com/destroy-approved"
+	// AnnotationAdoptEpoch tells a DaosContainerSnapshot whose create-snap answer
+	// was lost which snapshot (epoch, decimal) is its own, when the operator cannot
+	// tell on its own (Ready reason AdoptAmbiguous).
+	AnnotationAdoptEpoch = "daos.gluesys.com/adopt-epoch"
 
 	// FinalizerPool and FinalizerContainer hold deletion until the destroy decision is made.
 	FinalizerPool      = "daos.gluesys.com/pool"

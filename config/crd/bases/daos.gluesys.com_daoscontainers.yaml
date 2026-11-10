@@ -252,10 +252,41 @@ spec:
                 type: string
               ready:
                 type: boolean
-              restoreStartedAt:
+              restoreFailedAt:
                 description: |-
-                  RestoreStartedAt is when the last copy attempt started; a failed one is
-                  retried poolRequeueFailed after it (the copy overwrites, so a retry is safe).
+                  RestoreFailedAt is when the last copy attempt failed; it is retried a while
+                  after that (the copy overwrites, so a retry is safe).
+                format: date-time
+                type: string
+              restoreSource:
+                description: |-
+                  RestoreSource is the snapshot the last copy attempt reads, as it was when
+                  the attempt started: a snapshot deleted and re-created under the same name
+                  meanwhile is not mistaken for it.
+                properties:
+                  containerUUID:
+                    type: string
+                  epoch:
+                    description: Epoch, PoolUUID and ContainerUUID are what dfuse
+                      mounts.
+                    type: string
+                  poolUUID:
+                    type: string
+                  snapshot:
+                    description: Snapshot is the DaosContainerSnapshot name, SnapshotUID
+                      its UID.
+                    type: string
+                  snapshotUID:
+                    type: string
+                required:
+                - containerUUID
+                - epoch
+                - poolUUID
+                - snapshot
+                - snapshotUID
+                type: object
+              restoreStartedAt:
+                description: RestoreStartedAt is when the last copy attempt started.
                 format: date-time
                 type: string
               restoredFrom:

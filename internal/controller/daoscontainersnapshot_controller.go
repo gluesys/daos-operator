@@ -148,13 +148,7 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 		return r.updateStatus(ctx, s, status, 0)
 	}
 	deleting := !s.DeletionTimestamp.IsZero()
-	kept := func(why string) string {
-		if status.Epoch == "" {
-			return why
-		}
-		return fmt.Sprintf("%s; DAOS snapshot %s (epoch %s) of container uuid %s is kept, remove it by hand with `daos cont destroy-snap <pool> <container> --epc %s` if that is intended",
-			why, snapName(s), status.Epoch, status.ContainerUUID, status.Epoch)
-	}
+	kept := func(why string) string { return keptMsg(s, &status, why) }
 
 	c := &daosv1alpha1.DaosContainer{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: s.Spec.ContainerRef}, c); err != nil {
@@ -201,7 +195,7 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 		if replaced {
 			return r.release(ctx, s, corev1.EventTypeWarning, "DestroySkipped", kept("DaosContainer "+c.Name+" was re-created"))
 		}
-		return r.finalize(ctx, s, c, pool, sys, ns, status, kept)
+		return r.finalize(ctx, s, c, pool, sys, ns, status)
 	}
 	if replaced {
 		setC(metav1.ConditionFalse, "ContainerReplaced", fmt.Sprintf("snapshot %s was taken of container uuid %s; DaosContainer %s is now uuid %s. Delete this DaosContainerSnapshot (and destroy the old snapshot by hand if the old container still exists)",
@@ -251,9 +245,15 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 	status.LastQueryTime = &now
 	found := findSnapshot(snaps, status.Epoch)
 	if found == nil && status.Epoch == "" && status.CreateRequestedAt != nil {
-		// a create-snap was started and its answer was lost: take what it took
-		if found, err = r.unclaimed(ctx, s, c, snaps, status.CreateRequestedAt.Time); err != nil {
+		// a create-snap was started and its answer was lost: take what it took,
+		// but only when that is certain
+		var ambiguous string
+		if found, ambiguous, err = r.unclaimed(ctx, s, c, snaps, status.CreateRequestedAt.Time); err != nil {
 			return ctrl.Result{}, err
+		}
+		if ambiguous != "" {
+			setC(metav1.ConditionFalse, "AdoptAmbiguous", ambiguous)
+			return r.updateStatus(ctx, s, status, poolRequeueWait)
 		}
 	}
 	if found == nil {
@@ -283,6 +283,16 @@ func (r *DaosContainerSnapshotReconciler) Reconcile(ctx context.Context, req ctr
 	return r.updateStatus(ctx, s, status, snapRequeueIdle)
 }
 
+// keptMsg says that the DAOS snapshot (if one was recorded) stays, and how to
+// remove it by hand.
+func keptMsg(s *daosv1alpha1.DaosContainerSnapshot, st *daosv1alpha1.DaosContainerSnapshotStatus, why string) string {
+	if st.Epoch == "" {
+		return why
+	}
+	return fmt.Sprintf("%s; DAOS snapshot %s (epoch %s) of container uuid %s is kept, remove it by hand with `daos cont destroy-snap <pool> <container> --epc %s` if that is intended",
+		why, snapName(s), st.Epoch, st.ContainerUUID, st.Epoch)
+}
+
 // findSnapshot picks this object's snapshot by its recorded epoch.
 func findSnapshot(snaps []dmg.SnapshotInfo, epoch string) *dmg.SnapshotInfo {
 	if epoch == "" {
@@ -296,29 +306,63 @@ func findSnapshot(snaps []dmg.SnapshotInfo, epoch string) *dmg.SnapshotInfo {
 	return nil
 }
 
-// unclaimed returns the earliest snapshot of the container taken after since
-// (less adoptSkew) that no other DaosContainerSnapshot in the namespace holds.
-func (r *DaosContainerSnapshotReconciler) unclaimed(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, snaps []dmg.SnapshotInfo, since time.Time) (*dmg.SnapshotInfo, error) {
+// unclaimed finds the snapshot a create-snap whose answer was lost took: a
+// snapshot of the container taken after since (less adoptSkew) that no other
+// DaosContainerSnapshot holds. DAOS 2.8 snapshots carry no name, so the time is
+// the only link; it is trusted only when exactly one snapshot fits and no other
+// object of the same container is still waiting for its own create-snap (it
+// could be that one's). Otherwise the second result says why nothing was
+// adopted, and the annotation daos.gluesys.com/adopt-epoch settles it.
+func (r *DaosContainerSnapshotReconciler) unclaimed(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, snaps []dmg.SnapshotInfo, since time.Time) (*dmg.SnapshotInfo, string, error) {
 	var others daosv1alpha1.DaosContainerSnapshotList
 	if err := r.List(ctx, &others, client.InNamespace(s.Namespace)); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	held := map[string]bool{}
+	held := map[string]string{}
+	var pending []string
 	for _, o := range others.Items {
-		if o.UID != s.UID && o.Status.Epoch != "" && o.Status.ContainerUUID == c.Status.UUID {
-			held[o.Status.Epoch] = true
-		}
-	}
-	var best *dmg.SnapshotInfo
-	for i := range snaps {
-		if held[strconv.FormatUint(snaps[i].Epoch, 10)] || dmg.HLCTime(snaps[i].Epoch).Before(since.Add(-adoptSkew)) {
+		if o.UID == s.UID {
 			continue
 		}
-		if best == nil || snaps[i].Epoch < best.Epoch {
-			best = &snaps[i]
+		switch {
+		case o.Status.Epoch != "" && o.Status.ContainerUUID == c.Status.UUID:
+			held[o.Status.Epoch] = o.Name
+		case o.Status.Epoch == "" && o.Spec.ContainerRef == s.Spec.ContainerRef && o.Status.CreateRequestedAt != nil:
+			pending = append(pending, o.Name)
 		}
 	}
-	return best, nil
+	if want := s.Annotations[daosv1alpha1.AnnotationAdoptEpoch]; want != "" {
+		if h, ok := held[want]; ok {
+			return nil, fmt.Sprintf("%s=%s: that snapshot belongs to DaosContainerSnapshot %s", daosv1alpha1.AnnotationAdoptEpoch, want, h), nil
+		}
+		if f := findSnapshot(snaps, want); f != nil {
+			return f, "", nil
+		}
+		return nil, fmt.Sprintf("%s=%s: container %s has no snapshot with that epoch", daosv1alpha1.AnnotationAdoptEpoch, want, contLabel(c)), nil
+	}
+	var fits []*dmg.SnapshotInfo
+	for i := range snaps {
+		if held[strconv.FormatUint(snaps[i].Epoch, 10)] != "" || dmg.HLCTime(snaps[i].Epoch).Before(since.Add(-adoptSkew)) {
+			continue
+		}
+		fits = append(fits, &snaps[i])
+	}
+	if len(fits) == 0 || (len(fits) == 1 && len(pending) == 0) {
+		if len(fits) == 0 {
+			return nil, "", nil
+		}
+		return fits[0], "", nil
+	}
+	epochs := make([]string, len(fits))
+	for i, f := range fits {
+		epochs[i] = strconv.FormatUint(f.Epoch, 10)
+	}
+	msg := fmt.Sprintf("create-snap was started at %s and its answer was lost; cannot tell which snapshot it took (candidates: epochs %s",
+		since.UTC().Format(time.RFC3339), strings.Join(epochs, ", "))
+	if len(pending) > 0 {
+		msg += "; still taking a snapshot of the same container: " + strings.Join(pending, ", ")
+	}
+	return nil, msg + "). Set annotation " + daosv1alpha1.AnnotationAdoptEpoch + "=<epoch> to adopt one, or delete this object", nil
 }
 
 func (r *DaosContainerSnapshotReconciler) record(status *daosv1alpha1.DaosContainerSnapshotStatus, snap *dmg.SnapshotInfo, c *daosv1alpha1.DaosContainer) {
@@ -378,9 +422,44 @@ func (r *DaosContainerSnapshotReconciler) pollOp(ctx context.Context, s *daosv1a
 	return r.updateStatus(ctx, s, status, time.Second)
 }
 
-func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerSnapshotStatus, kept func(string) string) (ctrl.Result, error) {
+func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot, c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosContainerSnapshotStatus) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(s, daosv1alpha1.FinalizerSnapshot) {
 		return ctrl.Result{}, nil
+	}
+	kept := func(why string) string { return keptMsg(s, &status, why) }
+	if status.Epoch == "" && status.Operation == opSnapCreate {
+		// a create-snap is running: wait for its epoch, so that an approved
+		// delete can destroy what it takes instead of leaving it unmanaged
+		res, err := r.Dmg.Run(ctx, r.opSpec(s, c, pool, sys, ns, opSnapCreate))
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("poll %s: %w", opSnapCreate, err)
+		}
+		if !res.Done {
+			if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); cond == nil || cond.Reason != "DeletingAfterCreate" {
+				meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "DeletingAfterCreate",
+					Message: "deleted while daos cont create-snap is running; waiting for it to finish", ObservedGeneration: s.Generation})
+				status.Ready = false
+				return r.updateStatus(ctx, s, status, poolRequeueOp)
+			}
+			return ctrl.Result{RequeueAfter: poolRequeueOp}, nil
+		}
+		status.Operation = ""
+		env, perr := parseResult(res)
+		if perr == nil && env.Error != nil {
+			perr = fmt.Errorf("%s", *env.Error)
+		}
+		var snap *dmg.SnapshotInfo
+		if perr == nil {
+			snap, perr = dmg.SnapshotCreated(env)
+		}
+		if perr != nil {
+			return r.release(ctx, s, corev1.EventTypeWarning, "SnapshotForgotten", "deleted while create-snap was running, and create-snap failed: "+perr.Error()+
+				"; if DAOS took a snapshot anyway it is left in container "+contLabel(c)+" (see `daos cont list-snaps`)")
+		}
+		r.record(&status, snap, c)
+		r.event(s, corev1.EventTypeNormal, "SnapshotCreated", fmt.Sprintf("snapshot %s of container %s taken while deleting, epoch %s", snapName(s), contLabel(c), status.Epoch))
+		// record the epoch first: destroy-snap and the kept message read it from the object
+		return r.updateStatus(ctx, s, status, time.Second)
 	}
 	// the claim and volume go first: a snapshot is never destroyed under a mount
 	gone, err := r.removeVolume(ctx, s)
@@ -394,13 +473,7 @@ func (r *DaosContainerSnapshotReconciler) finalize(ctx context.Context, s *daosv
 		return r.updateStatus(ctx, s, status, poolRequeueWait)
 	}
 	if status.Epoch == "" {
-		// nothing was ever taken (or it is still being taken: a create-snap Job
-		// left running finishes on its own and the snapshot is then unmanaged)
-		msg := "no snapshot was recorded for this object"
-		if status.Operation == opSnapCreate {
-			msg = "deleted while create-snap was running; if it completes, snapshot " + snapName(s) + " is left unmanaged in container " + contLabel(c)
-		}
-		return r.release(ctx, s, corev1.EventTypeNormal, "SnapshotForgotten", msg)
+		return r.release(ctx, s, corev1.EventTypeNormal, "SnapshotForgotten", "no snapshot was recorded for this object")
 	}
 	if s.Annotations[daosv1alpha1.AnnotationDestroyApproved] == "true" {
 		// a container still being copied from it reads it through dfuse
@@ -534,6 +607,8 @@ func (r *DaosContainerSnapshotReconciler) syncVolume(ctx context.Context, s *dao
 		}
 	} else if err != nil {
 		return "", err
+	} else if !pv.DeletionTimestamp.IsZero() {
+		return "PersistentVolume " + pvName + " of an earlier spec.volume is still being released (a pod still mounts it); the new claim is bound once it is gone", nil
 	}
 	status.VolumeName = pvName
 	return "", nil
