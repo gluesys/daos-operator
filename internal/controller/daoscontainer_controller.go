@@ -458,6 +458,8 @@ func (r *DaosContainerReconciler) startOp(ctx context.Context, c *daosv1alpha1.D
 	status.Operation = op
 	title := strings.ToUpper(op[:1]) + op[1:]
 	if op == opQuota {
+		v := quotaWant(c) // c.Status.Operation is not opQuota yet: the spec's
+		status.RequestedSpaceLimit = &v
 		// a new container waits for its limit before it is Ready (CSI hands it out
 		// then); changing the limit of a container in use does not take it down
 		r.event(c, corev1.EventTypeNormal, "SpaceLimitApplying", "daos cont set-prop "+quotaProps(c))
@@ -515,10 +517,8 @@ func (r *DaosContainerReconciler) pollOp(ctx context.Context, c *daosv1alpha1.Da
 		status.AppliedACLHash = aclHash(c.Spec.ACL)
 		r.event(c, corev1.EventTypeNormal, "ContainerACLApplied", "ACL overwritten from spec.acl")
 	case opQuota:
-		v := int64(0)
-		if c.Spec.SpaceLimit != nil {
-			v = c.Spec.SpaceLimit.Value()
-		}
+		// what this Job set; a spec changed meanwhile is set by the next one
+		v := quotaWant(c)
 		status.AppliedSpaceLimit = &v
 		r.event(c, corev1.EventTypeNormal, "SpaceLimitApplied", "daos cont set-prop "+quotaProps(c))
 	case opHeal:

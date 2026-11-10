@@ -61,6 +61,18 @@ func spaceAmp(fileOclass string) int {
 	return (k + p) * 1000 / k
 }
 
+// quotaWant is the space_limit a set-prop Job sets: the one a running Job was
+// started with, else the spec's (0 = unlimited).
+func quotaWant(c *daosv1alpha1.DaosContainer) int64 {
+	if c.Status.Operation == opQuota && c.Status.RequestedSpaceLimit != nil {
+		return *c.Status.RequestedSpaceLimit
+	}
+	if c.Spec.SpaceLimit != nil {
+		return c.Spec.SpaceLimit.Value()
+	}
+	return 0
+}
+
 // wantSpaceLimit is the space_limit the spec asks for: its bytes, 0 when the
 // field was removed after a limit had been set (back to unlimited), nil when
 // there is nothing to do.
@@ -77,10 +89,7 @@ func wantSpaceLimit(c *daosv1alpha1.DaosContainer, applied *int64) *int64 {
 }
 
 func quotaProps(c *daosv1alpha1.DaosContainer) string {
-	want := int64(0)
-	if c.Spec.SpaceLimit != nil {
-		want = c.Spec.SpaceLimit.Value()
-	}
+	want := quotaWant(c)
 	props := "space_limit:" + strconv.FormatInt(want, 10)
 	if amp := spaceAmp(c.Spec.FileOclass); amp > 0 && want > 0 {
 		props += ",space_amp:" + strconv.Itoa(amp)
@@ -125,8 +134,9 @@ func (r *DaosContainerReconciler) syncSpaceLimit(c *daosv1alpha1.DaosContainer, 
 		setQ(metav1.ConditionTrue, "Applied", msg)
 		return false
 	}
-	if prev != nil && prev.Reason == "ApplyFailed" && prev.ObservedGeneration == c.Generation {
-		return false // retried when the spec changes
+	if prev != nil && prev.Reason == "ApplyFailed" && prev.ObservedGeneration == c.Generation &&
+		(status.RequestedSpaceLimit == nil || *status.RequestedSpaceLimit == *want) {
+		return false // retried when the spec changes (to another value than the one that failed)
 	}
 	return true
 }

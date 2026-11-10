@@ -147,8 +147,12 @@ spec:
                   reported as unsupported (condition SpaceLimit) and nothing else changes.
                   It can be raised, lowered or removed (unlimited) later. For an EC file
                   object class the storage amplification (space_amp) is set with it.
+                  Must be positive; remove the field for no limit.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
+                x-kubernetes-validations:
+                - message: spaceLimit must be positive; remove the field for no limit
+                  rule: quantity(string(self)).isGreaterThan(quantity('0'))
               type:
                 default: POSIX
                 description: ContainerType is the DAOS container layout.
@@ -252,6 +256,13 @@ spec:
                 type: string
               ready:
                 type: boolean
+              requestedSpaceLimit:
+                description: |-
+                  RequestedSpaceLimit is the space_limit the last set-prop Job was started
+                  with; what it applied is recorded from this, not from a spec that changed
+                  while it ran.
+                format: int64
+                type: integer
               restoreFailedAt:
                 description: |-
                   RestoreFailedAt is when the last copy attempt failed; it is retried a while

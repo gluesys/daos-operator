@@ -129,6 +129,19 @@ var _ = Describe("DaosContainer spaceLimit (container quota)", func() {
 		Expect(get().Status.Ready).To(BeTrue())
 		Expect(cond(daosv1alpha1.ConditionReady).Status).To(Equal(metav1.ConditionTrue))
 
+		By("changed again while set-prop runs: what the Job set is recorded, then the new value is set")
+		setLimit(ptr.To(resource.MustParse("30Gi")))
+		rec() // starts with 30Gi
+		Expect(*get().Status.RequestedSpaceLimit).To(Equal(int64(30 << 30)))
+		setLimit(ptr.To(resource.MustParse("40Gi")))
+		rec() // the 30Gi Job finishes
+		Expect(*get().Status.AppliedSpaceLimit).To(Equal(int64(30<<30)), "not the 40Gi it never set")
+		rec()
+		Expect(get().Status.Operation).To(Equal(opQuota))
+		Expect(f.last("-daos-quota").Command[2]).To(ContainSubstring("space_limit:42949672960"))
+		rec()
+		Expect(*get().Status.AppliedSpaceLimit).To(Equal(int64(40 << 30)))
+
 		By("removing it sets the container back to unlimited")
 		setLimit(nil)
 		rec()
@@ -138,6 +151,14 @@ var _ = Describe("DaosContainer spaceLimit (container quota)", func() {
 		rec()
 		Expect(cond(daosv1alpha1.ConditionSpaceLimit)).To(BeNil())
 		Expect(drain(events)).To(ContainElement(ContainSubstring("SpaceLimitApplied")))
+	})
+
+	It("rejects a zero or negative spaceLimit", func() {
+		for _, q := range []string{"0", "-1Gi"} {
+			err := k8sClient.Create(ctx, &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: nn.Name},
+				Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, SpaceLimit: ptr.To(resource.MustParse(q))}})
+			Expect(err).To(MatchError(ContainSubstring("spaceLimit must be positive")), q)
+		}
 	})
 
 	It("reports the limit as unsupported on upstream DAOS and serves the container anyway", func() {

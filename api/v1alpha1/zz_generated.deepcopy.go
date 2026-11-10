@@ -413,6 +413,11 @@ func (in *DaosContainerStatus) DeepCopyInto(out *DaosContainerStatus) {
 		*out = new(int64)
 		**out = **in
 	}
+	if in.RequestedSpaceLimit != nil {
+		in, out := &in.RequestedSpaceLimit, &out.RequestedSpaceLimit
+		*out = new(int64)
+		**out = **in
+	}
 	if in.RestoreStartedAt != nil {
 		in, out := &in.RestoreStartedAt, &out.RestoreStartedAt
 		*out = (*in).DeepCopy()

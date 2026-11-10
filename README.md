@@ -295,6 +295,15 @@ On upstream DAOS the field is reported, not enforced (`SpaceLimit=Unsupported`,
 daos-csi passes each PVC's size as `spaceLimit` (StorageClass `spaceLimit: "false"`
 to opt out), and with `csi.expansion.enabled` growing a PVC moves the limit.
 
+`spaceLimit` must be positive (remove it for no limit). If a limit is changed while
+the previous `set-prop` still runs, the value that Job set is recorded and the new
+one is set right after.
+
+> **Upgrading:** `spec.spaceLimit` and its status fields are new in the
+> `DaosContainer` CRD. Helm never upgrades `crds/`, and an API server with the old
+> CRD silently drops the field (so neither a `spaceLimit` nor a CSI PVC size would
+> be enforced). Apply the CRDs first (see [Upgrade](#upgrade)).
+
 ### A pool with no redundancy stops serving when a rank leaves
 
 `redundancyFactor: 0` is a valid choice — it is what a pool on a single fault

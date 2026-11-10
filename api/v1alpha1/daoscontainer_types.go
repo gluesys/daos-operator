@@ -63,6 +63,8 @@ type DaosContainerSpec struct {
 	// reported as unsupported (condition SpaceLimit) and nothing else changes.
 	// It can be raised, lowered or removed (unlimited) later. For an EC file
 	// object class the storage amplification (space_amp) is set with it.
+	// Must be positive; remove the field for no limit.
+	// +kubebuilder:validation:XValidation:rule="quantity(string(self)).isGreaterThan(quantity('0'))",message="spaceLimit must be positive; remove the field for no limit"
 	// +optional
 	SpaceLimit *resource.Quantity `json:"spaceLimit,omitempty"`
 	// RestoreFrom fills the new container with the contents of a snapshot: a
@@ -121,6 +123,10 @@ type DaosContainerStatus struct {
 	// AppliedSpaceLimit is the space_limit the operator last set (bytes, 0 =
 	// unlimited); unset when it never set one.
 	AppliedSpaceLimit *int64 `json:"appliedSpaceLimit,omitempty"`
+	// RequestedSpaceLimit is the space_limit the last set-prop Job was started
+	// with; what it applied is recorded from this, not from a spec that changed
+	// while it ran.
+	RequestedSpaceLimit *int64 `json:"requestedSpaceLimit,omitempty"`
 	// RestoredFrom is "<snapshot>@<epoch>" once spec.restoreFrom was copied in.
 	RestoredFrom string `json:"restoredFrom,omitempty"`
 	// RestoreStartedAt is when the last copy attempt started.
