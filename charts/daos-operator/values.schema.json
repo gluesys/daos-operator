@@ -244,6 +244,9 @@
             },
             "snapshotter": {
               "type": "string"
+            },
+            "resizer": {
+              "type": "string"
             }
           }
         },
@@ -330,7 +333,17 @@
               }
             }
           },
-          "description": "CSI snapshots (VolumeSnapshot). Each snapshot is a DaosContainerSnapshot taken by the operator. A PVC restored from one (dataSource: VolumeSnapshot) is read-only and must ask for ReadOnlyMany: DAOS 2.8 cannot roll a container back, and a writable copy is not implemented. Needs the VolumeSnapshot CRDs and snapshot-controller (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi image with snapshot support."
+          "description": "CSI snapshots (VolumeSnapshot). Each snapshot is a DaosContainerSnapshot taken by the operator. A PVC restored from one (dataSource: VolumeSnapshot) with ReadOnlyMany mounts the snapshot itself; any other access mode gets a new container that a restore Job fills from the snapshot (DaosContainer spec.restoreFrom, POSIX containers only). DAOS 2.8 cannot roll a container back in place. Needs the VolumeSnapshot CRDs and snapshot-controller (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi image with snapshot support."
+        },
+        "expansion": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          },
+          "description": "PVC expansion: a csi-resizer sidecar and allowVolumeExpansion on the StorageClasses. Growing a PVC moves its DaosContainer's spec.spaceLimit, which is a container quota in the extended edition of DAOS; on upstream DAOS it only records the size (capacity is per pool). Needs a daos-csi with EXPAND_VOLUME."
         },
         "storageClasses": {
           "type": "array",

@@ -421,7 +421,7 @@ spec:
 		apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosContainer
 metadata: {name: e2e-restored}
-spec: {poolRef: e2epool, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyFactor: 0, restoreFrom: {snapshotRef: e2e-snap}}`)
+spec: {poolRef: e2epool, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyFactor: 0, restoreFrom: {snapshotRef: e2e-snap}, spaceLimit: 1Gi}`)
 		start = time.Now()
 		Eventually(func() string {
 			return jsonpath("daoscontainer", "e2e-restored", `.status.conditions[?(@.type=="Ready")].status`)
@@ -429,6 +429,9 @@ spec: {poolRef: e2epool, type: POSIX, fileOclass: SX, dirOclass: S1, redundancyF
 			WithTimeout(10 * time.Minute).Should(Equal("True"))
 		recordDuration("writable restore", time.Since(start))
 		Expect(jsonpath("daoscontainer", "e2e-restored", ".status.restoredFrom")).To(Equal("e2e-snap@" + epoch))
+		// the lane runs upstream DAOS: no container quota, said so, served anyway (ADR-005)
+		Expect(jsonpath("daoscontainer", "e2e-restored", ".status.edition")).To(Equal("upstream"))
+		Expect(jsonpath("daoscontainer", "e2e-restored", `.status.conditions[?(@.type=="SpaceLimit")].reason`)).To(Equal("Unsupported"))
 		// a static volume for it: any daos-csi stages pool/container attributes
 		apply(`apiVersion: v1
 kind: PersistentVolume

@@ -104,6 +104,7 @@ csi:
     provisioner: registry.k8s.io/sig-storage/csi-provisioner:v5.2.0
     registrar: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.13.0
     snapshotter: registry.k8s.io/sig-storage/csi-snapshotter:v8.2.0
+    resizer: registry.k8s.io/sig-storage/csi-resizer:v1.13.2
   kubeletDir: /var/lib/kubelet
   nodeSelector: {}        # nodes that may mount DAOS PVs (default: all)
   tolerations:
@@ -114,11 +115,12 @@ csi:
   nodeResources:
     requests: {cpu: 50m, memory: 128Mi}
   # CSI snapshots (VolumeSnapshot). Each snapshot is a DaosContainerSnapshot taken by the
-  # operator. A PVC restored from one (dataSource: VolumeSnapshot) is read-only and must
-  # ask for ReadOnlyMany: DAOS 2.8 cannot roll a container back, and a writable copy is
-  # not implemented. Needs the VolumeSnapshot CRDs and snapshot-controller
-  # (kubernetes-csi/external-snapshotter), installed once per cluster, and a daos-csi
-  # image with snapshot support.
+  # operator. A PVC restored from one (dataSource: VolumeSnapshot) with ReadOnlyMany mounts
+  # the snapshot itself; any other access mode gets a new container that a restore Job
+  # fills from the snapshot (DaosContainer spec.restoreFrom, POSIX containers only).
+  # DAOS 2.8 cannot roll a container back in place. Needs the VolumeSnapshot CRDs and
+  # snapshot-controller (kubernetes-csi/external-snapshotter), installed once per cluster,
+  # and a daos-csi image with snapshot support.
   snapshots:
     enabled: false
     volumeSnapshotClass:
@@ -127,11 +129,19 @@ csi:
       default: false
       # Delete destroys the DAOS snapshot with the VolumeSnapshot; Retain keeps it (and its space)
       deletionPolicy: Delete
+  # PVC expansion: a csi-resizer sidecar and allowVolumeExpansion on the StorageClasses.
+  # Growing a PVC moves its DaosContainer's spec.spaceLimit, which is a container quota
+  # in the extended edition of DAOS; on upstream DAOS it only records the size (capacity
+  # is per pool). Needs a daos-csi with EXPAND_VOLUME.
+  expansion:
+    enabled: false
   # StorageClasses to create, one per DaosPool
   storageClasses: []
   #  - name: daos-kv
   #    reclaimPolicy: Delete
   #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
+  #    # spaceLimit: "false" stops daos-csi from capping each container at its PVC size
+  #    # (spec.spaceLimit; enforced by the extended edition of DAOS only)
 
 # DaosPools to create, each optionally with the StorageClass that provisions into it.
 # DAOS enforces capacity per pool, not per container: a PVC's requested size is not

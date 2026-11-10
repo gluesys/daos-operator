@@ -210,6 +210,8 @@ func (r *DaosContainerReconciler) opSpec(c *daosv1alpha1.DaosContainer, pool *da
 		spec.Command = clientCommand(systemName(sys), nil, "cont", "destroy", pl, cl)
 	case opHeal:
 		spec.Command = clientCommand(systemName(sys), nil, "cont", "set-prop", pl, cl, "--properties", "status:healthy")
+	case opQuota:
+		spec.Command = clientCommand(systemName(sys), nil, "cont", "set-prop", pl, cl, "--properties", quotaProps(c))
 	}
 	return spec
 }
@@ -336,6 +338,9 @@ func (r *DaosContainerReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			return r.startOp(ctx, c, pool, sys, ns, status, opACL)
 		}
 	}
+	if r.syncSpaceLimit(c, &status, info) {
+		return r.startOp(ctx, c, pool, sys, ns, status, opQuota)
+	}
 	if c.Spec.RestoreFrom != nil && status.RestoredFrom == "" {
 		return r.restore(ctx, c, pool, sys, ns, status)
 	}
@@ -451,8 +456,18 @@ func (r *DaosContainerReconciler) startOp(ctx context.Context, c *daosv1alpha1.D
 		return ctrl.Result{}, fmt.Errorf("start %s: %w", op, err)
 	}
 	status.Operation = op
-	status.Ready = false
 	title := strings.ToUpper(op[:1]) + op[1:]
+	if op == opQuota {
+		v := quotaWant(c) // c.Status.Operation is not opQuota yet: the spec's
+		status.RequestedSpaceLimit = &v
+		// a new container waits for its limit before it is Ready (CSI hands it out
+		// then); changing the limit of a container in use does not take it down
+		r.event(c, corev1.EventTypeNormal, "SpaceLimitApplying", "daos cont set-prop "+quotaProps(c))
+		if status.Ready {
+			return r.updateStatus(ctx, c, status, poolRequeueOp)
+		}
+	}
+	status.Ready = false
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: title + "InProgress", Message: "daos cont " + op + " is running", ObservedGeneration: c.Generation})
 	r.event(c, corev1.EventTypeNormal, "Container"+title, "daos cont "+op+" started")
 	return r.updateStatus(ctx, c, status, poolRequeueOp)
@@ -472,6 +487,14 @@ func (r *DaosContainerReconciler) pollOp(ctx context.Context, c *daosv1alpha1.Da
 	title := strings.ToUpper(op[:1]) + op[1:]
 	env, perr := parseResult(res)
 	failed := func(msg string) (ctrl.Result, error) {
+		if op == opQuota {
+			// a quota that did not take does not take the container out of service
+			meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpaceLimit, Status: metav1.ConditionFalse, Reason: "ApplyFailed",
+				Message: msg + "; retried when the spec changes", ObservedGeneration: c.Generation})
+			r.event(c, corev1.EventTypeWarning, "SpaceLimitFailed", msg)
+			clearHold(contKey(c))
+			return r.updateStatus(ctx, c, status, time.Second)
+		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: title + "Failed", Message: msg, ObservedGeneration: c.Generation})
 		status.Ready = false
 		r.event(c, corev1.EventTypeWarning, title+"Failed", msg)
@@ -493,10 +516,17 @@ func (r *DaosContainerReconciler) pollOp(ctx context.Context, c *daosv1alpha1.Da
 	case opACL:
 		status.AppliedACLHash = aclHash(c.Spec.ACL)
 		r.event(c, corev1.EventTypeNormal, "ContainerACLApplied", "ACL overwritten from spec.acl")
+	case opQuota:
+		// what this Job set; a spec changed meanwhile is set by the next one
+		v := quotaWant(c)
+		status.AppliedSpaceLimit = &v
+		r.event(c, corev1.EventTypeNormal, "SpaceLimitApplied", "daos cont set-prop "+quotaProps(c))
 	case opHeal:
 		r.event(c, corev1.EventTypeNormal, "ContainerHealthRestored", "container status set to healthy after the pool was reintegrated")
 	}
-	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "daos cont " + op + " succeeded; refreshing", ObservedGeneration: c.Generation})
+	if !(op == opQuota && status.Ready) {
+		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "daos cont " + op + " succeeded; refreshing", ObservedGeneration: c.Generation})
+	}
 	clearHold(contKey(c))
 	return r.updateStatus(ctx, c, status, time.Second)
 }

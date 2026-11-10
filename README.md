@@ -243,7 +243,8 @@ leaves its snapshots as ordinary `DaosContainerSnapshot`s.
 
 ### Capacity is per pool, not per PVC
 
-DAOS 2.8 has no per-container quota. The size a PVC requests is recorded but
+Upstream DAOS 2.8 has no per-container quota (the extended edition does, see the
+next section). On upstream, the size a PVC requests is recorded but
 not enforced, and `df` inside the volume shows the whole pool: every PVC in a
 pool shares that pool's size, and one full PVC fills them all.
 
@@ -271,6 +272,37 @@ lists the PVCs told, and each gets `PoolSpaceRecovered` when the pool drops back
 A `storageClass` is only rendered for a pool in the DaosSystem daos-csi serves
 (`csi.system`); the chart refuses one for a pool in another system. Pools created this way are
 kept on `helm uninstall`, like any `DaosPool`.
+
+### Container quota needs the extended edition of DAOS
+
+Upstream DAOS 2.8 limits space per pool only. The exastor extended edition (see
+ADR-005) adds a per-container hard limit, and `DaosContainer.spec.spaceLimit` sets it:
+
+```yaml
+spec: {poolRef: train, spaceLimit: 500Gi}
+```
+
+The operator does not assume an edition. It creates the container without the
+limit and reads `daos cont query`: the extended edition reports space usage
+(`status.edition: extended`, `status.spaceUsedBytes`), and only then is the limit
+set with `daos cont set-prop space_limit:<bytes>` (plus `space_amp` for an EC file
+object class). A new container becomes `Ready` once its limit is set; changing or
+removing `spaceLimit` later is applied online without taking it out of service
+(condition `SpaceLimit`: `Applied`, or `ApplyFailed`, retried when the spec changes).
+On upstream DAOS the field is reported, not enforced (`SpaceLimit=Unsupported`,
+`status.edition: upstream`) and the container is served as usual.
+
+daos-csi passes each PVC's size as `spaceLimit` (StorageClass `spaceLimit: "false"`
+to opt out), and with `csi.expansion.enabled` growing a PVC moves the limit.
+
+`spaceLimit` must be positive (remove it for no limit). If a limit is changed while
+the previous `set-prop` still runs, the value that Job set is recorded and the new
+one is set right after.
+
+> **Upgrading:** `spec.spaceLimit` and its status fields are new in the
+> `DaosContainer` CRD. Helm never upgrades `crds/`, and an API server with the old
+> CRD silently drops the field (so neither a `spaceLimit` nor a CSI PVC size would
+> be enforced). Apply the CRDs first (see [Upgrade](#upgrade)).
 
 ### A pool with no redundancy stops serving when a rank leaves
 

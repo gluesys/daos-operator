@@ -662,6 +662,9 @@ type ContainerInfo struct {
 	ChunkSize        int64  `json:"chunk_size"`
 	DirObjectClass   string `json:"dir_object_class"`
 	FileObjectClass  string `json:"file_object_class"`
+	// SpaceUsedBytes is only in the exastor extended edition's output (container
+	// space accounting for space_limit); nil means upstream DAOS.
+	SpaceUsedBytes *uint64 `json:"space_used_bytes"`
 }
 
 // ContainerQuery parses `daos -j cont query` (also the create output, same struct).

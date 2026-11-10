@@ -156,6 +156,11 @@ const (
 	// hits every container and PV in it at once.
 	ConditionSpaceLow = "SpaceLow"
 
+	// ConditionSpaceLimit is set on a DaosContainer with spec.spaceLimit (or one
+	// that had it): True once space_limit is set in DAOS, False with Unsupported
+	// on upstream DAOS (no container quota) or ApplyFailed. It does not gate Ready.
+	ConditionSpaceLimit = "SpaceLimit"
+
 	// ConditionSpecMismatch is True when the pool that answers to this label is
 	// not the one the spec describes (size). It does not take the pool out of
 	// service: the data path is fine, the resource simply is not describing it.

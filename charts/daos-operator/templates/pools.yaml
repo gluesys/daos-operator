@@ -52,7 +52,7 @@ metadata:
 provisioner: {{ $.Values.csi.driverName }}
 reclaimPolicy: {{ $sc.reclaimPolicy | default "Delete" }}
 volumeBindingMode: {{ $sc.volumeBindingMode | default "Immediate" }}
-allowVolumeExpansion: false
+allowVolumeExpansion: {{ $.Values.csi.expansion.enabled }}
 parameters:
   {{- /* the pool is this entry's; a parameters.pool would point the class elsewhere */}}
   {{- $params := omit ($sc.parameters | default dict) "pool" }}
