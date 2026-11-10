@@ -202,10 +202,14 @@ data, skipping the snapshot.) It
 is a full copy: it takes as long and as much space as the data. The container is
 not `Ready` until the copy finished (`RestoreWaiting` until the snapshot was taken,
 `RestoreInProgress`, then `status.restoredFrom: <snapshot>@<epoch>`); a failed copy
-is reported (`RestoreFailed`) and retried after 5 minutes, which is safe because
-the copy overwrites what it wrote. One attempt is bounded by
-`restoreFrom.deadlineSeconds` (default 24 h). POSIX containers only;
-`restoreFrom` cannot be added to or removed from an existing container. An
+is reported (`RestoreFailed`) and retried 5 minutes after it failed, which is safe
+because the copy overwrites what it wrote; success needs the new container flushed
+and unmounted cleanly. One attempt is bounded by
+`restoreFrom.deadlineSeconds` (default 24 h). Each attempt pins the snapshot it
+reads (`status.restoreSource`: UID, epoch, pool and container UUID), so a snapshot
+re-created under the same name meanwhile is not mistaken for it. POSIX containers
+only, and within one DAOS system (a snapshot in a pool of another `DaosSystem` is
+`RestoreUnsupported`); `restoreFrom` cannot be added to or removed from an existing container. An
 approved destroy of the snapshot waits until every copy from it finished.
 
 #### Periodic snapshots and retention

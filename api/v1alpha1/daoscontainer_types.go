@@ -65,6 +65,17 @@ type DaosContainerSpec struct {
 	RestoreFrom *ContainerRestoreSpec `json:"restoreFrom,omitempty"`
 }
 
+// RestoreSource pins the snapshot a restore copies.
+type RestoreSource struct {
+	// Snapshot is the DaosContainerSnapshot name, SnapshotUID its UID.
+	Snapshot    string `json:"snapshot"`
+	SnapshotUID string `json:"snapshotUID"`
+	// Epoch, PoolUUID and ContainerUUID are what dfuse mounts.
+	Epoch         string `json:"epoch"`
+	PoolUUID      string `json:"poolUUID"`
+	ContainerUUID string `json:"containerUUID"`
+}
+
 // ContainerRestoreSpec names the snapshot a new container is copied from.
 type ContainerRestoreSpec struct {
 	// SnapshotRef is a DaosContainerSnapshot in this namespace. The copy waits
@@ -93,10 +104,16 @@ type DaosContainerStatus struct {
 	AppliedACLHash     string `json:"appliedACLHash,omitempty"`
 	// RestoredFrom is "<snapshot>@<epoch>" once spec.restoreFrom was copied in.
 	RestoredFrom string `json:"restoredFrom,omitempty"`
-	// RestoreStartedAt is when the last copy attempt started; a failed one is
-	// retried poolRequeueFailed after it (the copy overwrites, so a retry is safe).
+	// RestoreStartedAt is when the last copy attempt started.
 	RestoreStartedAt *metav1.Time `json:"restoreStartedAt,omitempty"`
-	LastQueryTime    *metav1.Time `json:"lastQueryTime,omitempty"`
+	// RestoreFailedAt is when the last copy attempt failed; it is retried a while
+	// after that (the copy overwrites, so a retry is safe).
+	RestoreFailedAt *metav1.Time `json:"restoreFailedAt,omitempty"`
+	// RestoreSource is the snapshot the last copy attempt reads, as it was when
+	// the attempt started: a snapshot deleted and re-created under the same name
+	// meanwhile is not mistaken for it.
+	RestoreSource *RestoreSource `json:"restoreSource,omitempty"`
+	LastQueryTime *metav1.Time   `json:"lastQueryTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true

@@ -79,7 +79,11 @@ func restoreCommand(sysName, srcPoolUUID, srcContUUID, epoch, dstPool, dstCont s
 	b.WriteString(`wait_mount ` + restoreSrc + ` || fail "dfuse did not mount the snapshot"; `)
 	b.WriteString(`wait_mount ` + restoreDst + ` || fail "dfuse did not mount the new container"; `)
 	b.WriteString(`cp -a ` + restoreSrc + `/. ` + restoreDst + `/ >>` + log + ` 2>&1 || fail "copy failed"; `)
-	b.WriteString(`sync; umount_all; envelope ""`)
+	// cp returning is not the data being in DAOS: flush the new container and
+	// unmount it cleanly, and fail (retry) when either does not succeed
+	b.WriteString(`sync -f ` + dst + ` >>` + log + ` 2>&1 || fail "flushing the new container failed"; `)
+	b.WriteString(`fusermount3 -u ` + dst + ` >>` + log + ` 2>&1 || fail "unmounting the new container failed"; `)
+	b.WriteString(`fusermount3 -uz ` + src + ` >/dev/null 2>&1; envelope ""`)
 	return []string{"bash", "-c", b.String()}
 }
 
@@ -102,14 +106,34 @@ func (r *DaosContainerReconciler) restoreSnapshot(ctx context.Context, c *daosv1
 	return s, "", nil
 }
 
-func (r *DaosContainerReconciler) restoreSpec(c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, s *daosv1alpha1.DaosContainerSnapshot) dmg.RunSpec {
+// restoreSourceOf pins snapshot s as a restore source.
+func restoreSourceOf(s *daosv1alpha1.DaosContainerSnapshot) *daosv1alpha1.RestoreSource {
+	return &daosv1alpha1.RestoreSource{Snapshot: s.Name, SnapshotUID: string(s.UID), Epoch: s.Status.Epoch, PoolUUID: s.Status.PoolUUID, ContainerUUID: s.Status.ContainerUUID}
+}
+
+// sourceSystem is the DaosSystem of the pool snapshot s lives in, "" when no
+// DaosPool of that UUID is known.
+func (r *DaosContainerReconciler) sourceSystem(ctx context.Context, s *daosv1alpha1.DaosContainerSnapshot) (string, error) {
+	var pools daosv1alpha1.DaosPoolList
+	if err := r.List(ctx, &pools); err != nil {
+		return "", err
+	}
+	for _, p := range pools.Items {
+		if p.Status.UUID != "" && p.Status.UUID == s.Status.PoolUUID {
+			return p.Spec.SystemRef, nil
+		}
+	}
+	return "", nil
+}
+
+func (r *DaosContainerReconciler) restoreSpec(c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, src *daosv1alpha1.RestoreSource) dmg.RunSpec {
 	spec := r.opSpec(c, pool, sys, ns, "query")
 	spec.Name = jobName("cont", c.Namespace+"/"+c.Name, "daos-"+opRestore)
 	spec.DeadlineSeconds = c.Spec.RestoreFrom.DeadlineSeconds
 	if spec.DeadlineSeconds <= 0 {
 		spec.DeadlineSeconds = restoreDeadlineDefault
 	}
-	spec.Command = restoreCommand(systemName(sys), s.Status.PoolUUID, s.Status.ContainerUUID, s.Status.Epoch, poolLabel(pool), contLabel(c))
+	spec.Command = restoreCommand(systemName(sys), src.PoolUUID, src.ContainerUUID, src.Epoch, poolLabel(pool), contLabel(c))
 	return spec
 }
 
@@ -124,9 +148,16 @@ func (r *DaosContainerReconciler) restore(ctx context.Context, c *daosv1alpha1.D
 		setC("RestoreUnsupported", "spec.restoreFrom copies files through dfuse: only a POSIX container can be restored into, this one is "+string(c.Spec.Type))
 		return r.updateStatus(ctx, c, status, poolRequeueIdle)
 	}
-	if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); cond != nil && cond.Reason == "RestoreFailed" && status.RestoreStartedAt != nil {
-		if wait := time.Until(status.RestoreStartedAt.Add(poolRequeueFailed)); wait > 0 {
-			return r.updateStatus(ctx, c, status, wait)
+	if cond := meta.FindStatusCondition(status.Conditions, daosv1alpha1.ConditionReady); cond != nil && cond.Reason == "RestoreFailed" {
+		// wait from when it failed: a long copy that failed late is not re-run at once
+		failedAt := status.RestoreFailedAt
+		if failedAt == nil {
+			failedAt = status.RestoreStartedAt
+		}
+		if failedAt != nil {
+			if wait := time.Until(failedAt.Add(poolRequeueFailed)); wait > 0 {
+				return r.updateStatus(ctx, c, status, wait)
+			}
 		}
 	}
 	s, why, err := r.restoreSnapshot(ctx, c)
@@ -137,11 +168,21 @@ func (r *DaosContainerReconciler) restore(ctx context.Context, c *daosv1alpha1.D
 		setC("RestoreWaiting", why+"; the container stays empty and not Ready until it is copied in")
 		return r.updateStatus(ctx, c, status, poolRequeueWait)
 	}
-	if _, err := r.Dmg.Run(ctx, r.restoreSpec(c, pool, sys, ns, s)); err != nil {
+	// the copy Job runs against this container's DAOS system: a snapshot in a
+	// pool of another system cannot be mounted from there
+	if srcSys, err := r.sourceSystem(ctx, s); err != nil {
+		return ctrl.Result{}, err
+	} else if srcSys != "" && srcSys != pool.Spec.SystemRef {
+		setC("RestoreUnsupported", fmt.Sprintf("DaosContainerSnapshot %s is in a pool of DaosSystem %s, this container in DaosSystem %s: a restore copies within one DAOS system only",
+			s.Name, srcSys, pool.Spec.SystemRef))
+		return r.updateStatus(ctx, c, status, poolRequeueIdle)
+	}
+	src := restoreSourceOf(s)
+	if _, err := r.Dmg.Run(ctx, r.restoreSpec(c, pool, sys, ns, src)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("start restore: %w", err)
 	}
 	now := metav1.Now()
-	status.Operation, status.RestoreStartedAt = opRestore, &now
+	status.Operation, status.RestoreStartedAt, status.RestoreSource = opRestore, &now, src
 	setC("RestoreInProgress", fmt.Sprintf("copying snapshot %s (epoch %s of container uuid %s) into the container", s.Name, s.Status.Epoch, s.Status.ContainerUUID))
 	r.event(c, corev1.EventTypeNormal, "ContainerRestoring", fmt.Sprintf("copying DaosContainerSnapshot %s (epoch %s) into container %s", s.Name, s.Status.Epoch, contLabel(c)))
 	return r.updateStatus(ctx, c, status, poolRequeueOp)
@@ -154,19 +195,27 @@ func (r *DaosContainerReconciler) pollRestore(ctx context.Context, c *daosv1alph
 		msg += fmt.Sprintf("; retried in %s (the copy overwrites what it wrote)", poolRequeueFailed)
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "RestoreFailed", Message: msg, ObservedGeneration: c.Generation})
 		status.Ready = false
+		now := metav1.Now()
+		status.RestoreFailedAt = &now
 		r.event(c, corev1.EventTypeWarning, "RestoreFailed", msg)
 		return r.updateStatus(ctx, c, status, poolRequeueFailed)
 	}
-	s, why, err := r.restoreSnapshot(ctx, c)
-	if err != nil {
-		return ctrl.Result{}, err
+	// The Job reads the snapshot pinned when it started, whatever happened to the
+	// DaosContainerSnapshot object since (a delete without approval keeps the
+	// DAOS snapshot; an approved one waits for this copy).
+	src := status.RestoreSource
+	if src == nil { // started by an operator that did not pin it
+		s, why, err := r.restoreSnapshot(ctx, c)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		if s == nil {
+			return failed("restore source went away: " + why)
+		}
+		src = restoreSourceOf(s)
+		status.RestoreSource = src
 	}
-	if s == nil {
-		// deleted under a running copy (without destroy approval: an approved
-		// destroy waits for the copy); the next attempt waits for it to come back
-		return failed("restore source went away: " + why)
-	}
-	res, err := r.Dmg.Run(ctx, r.restoreSpec(c, pool, sys, ns, s))
+	res, err := r.Dmg.Run(ctx, r.restoreSpec(c, pool, sys, ns, src))
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("poll restore: %w", err)
 	}
@@ -178,11 +227,11 @@ func (r *DaosContainerReconciler) pollRestore(ctx context.Context, c *daosv1alph
 		perr = fmt.Errorf("%s", *env.Error)
 	}
 	if perr != nil {
-		return failed("restore from " + s.Name + ": " + perr.Error())
+		return failed("restore from " + src.Snapshot + ": " + perr.Error())
 	}
 	status.Operation = ""
-	status.RestoredFrom = s.Name + "@" + s.Status.Epoch
-	r.event(c, corev1.EventTypeNormal, "ContainerRestored", fmt.Sprintf("DaosContainerSnapshot %s (epoch %s) copied into container %s", s.Name, s.Status.Epoch, contLabel(c)))
+	status.RestoredFrom = src.Snapshot + "@" + src.Epoch
+	r.event(c, corev1.EventTypeNormal, "ContainerRestored", fmt.Sprintf("DaosContainerSnapshot %s (epoch %s) copied into container %s", src.Snapshot, src.Epoch, contLabel(c)))
 	meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionUnknown, Reason: "Querying", Message: "restore finished; refreshing", ObservedGeneration: c.Generation})
 	clearHold(contKey(c))
 	return r.updateStatus(ctx, c, status, time.Second)
@@ -197,9 +246,15 @@ func restoresPending(ctx context.Context, cl client.Client, s *daosv1alpha1.Daos
 	}
 	var out []string
 	for _, c := range list.Items {
-		if c.Spec.RestoreFrom != nil && c.Spec.RestoreFrom.SnapshotRef == s.Name && c.Status.RestoredFrom == "" && c.DeletionTimestamp.IsZero() {
-			out = append(out, c.Name)
+		if c.Spec.RestoreFrom == nil || c.Spec.RestoreFrom.SnapshotRef != s.Name || c.Status.RestoredFrom != "" || !c.DeletionTimestamp.IsZero() {
+			continue
 		}
+		// a running copy reads the snapshot it pinned; one of an earlier object
+		// of the same name does not hold this one
+		if c.Status.Operation == opRestore && c.Status.RestoreSource != nil && c.Status.RestoreSource.SnapshotUID != string(s.UID) {
+			continue
+		}
+		out = append(out, c.Name)
 	}
 	return out, nil
 }
