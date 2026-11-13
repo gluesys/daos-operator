@@ -262,7 +262,8 @@ vllm:
   #      l2StorePolicy: skip_l1      # store straight to DAOS (optional)
   #      workers: 16                 # adapter I/O threads
   #      maxCapacityGB: 600          # bound on what this server keeps in the container (optional)
-  #      # port: 5555, root: /mp, evictionPolicy: LRU, extraArgs: []   # defaults / more server flags
+  #      # port: <port + 10000>        # the node's (hostNetwork); unique per node, an occupied port fails the pod
+  #      # root: /mp, evictionPolicy: LRU, startTimeoutSeconds: 300, extraArgs: []   # defaults / more server flags
   #    # kvConnector: LMCacheMPConnector         # default for mp; DaosMPConnector + kvConnectorModulePath:
   #    #                                         # lmcache_daos.mp.vllm_connector for vLLM 0.18
   #    shmSizeLimit: 16Gi            # /dev/shm (default 8Gi)

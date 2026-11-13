@@ -100,4 +100,47 @@ if grep -q 'lmcacheMode' "$chart/templates/vllm.yaml"; then
         fi
     done
 fi
+# The mp launcher itself (rendered bash): run it with a stub python3.12 that plays the MP server
+# and vLLM. A port someone else already listens on must fail the pod without starting vLLM (the
+# node's port under hostNetwork; !94 review); the normal path must hand vLLM the chart's args.
+if grep -q 'lmcacheMode' "$chart/templates/vllm.yaml"; then
+    t="$out/mp-launcher"; rm -rf "$t"; mkdir -p "$t/bin"
+    port=$((20000 + RANDOM % 20000))
+    printf '%s\n' 'vllm:' '  services:' '    - {name: l, image: x, lmcacheMode: mp, poolRef: p, containerRef: c, model: {path: /m},' \
+        "       port: 8100, mp: {port: $port, startTimeoutSeconds: 20}}" > "$t/values.yaml"
+    helm template daos-operator "$chart" -n daos-system -f "$t/values.yaml" --show-only templates/vllm.yaml \
+        | python3 -c 'import sys,yaml
+for d in yaml.safe_load_all(sys.stdin):
+    if d and d["kind"] == "Deployment":
+        c = d["spec"]["template"]["spec"]["containers"][0]
+        open(sys.argv[1], "w").write(c["command"][2]); open(sys.argv[2], "w").write("\n".join(c["args"]) + "\n")' "$t/launch.sh" "$t/args"
+    cat > "$t/bin/python3.12" <<STUB
+#!/bin/bash
+case "\$2" in
+  lmcache_daos.mp.server) exec python3 -c 'import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(("127.0.0.1", $port)); s.listen(); time.sleep(20)' ;;
+  vllm.entrypoints.openai.api_server) shift 2; printf '%s\n' "\$@" > "$t/vllm-called"; exit 0 ;;
+esac
+STUB
+    chmod +x "$t/bin/python3.12"
+    # 1) occupied port: refused, vLLM never runs
+    python3 -c "import socket,time; s=socket.socket(); s.bind(('127.0.0.1', $port)); s.listen(); time.sleep(15)" & occ=$!; sleep 1
+    rm -f "$t/vllm-called"
+    if PATH="$t/bin:$PATH" bash -c "$(cat "$t/launch.sh")" vllm $(cat "$t/args") > "$t/occupied.log" 2>&1; then
+        echo "FAIL  mp launcher started with port $port already taken"; fail=1
+    elif [ -e "$t/vllm-called" ]; then
+        echo "FAIL  mp launcher ran vLLM against someone else's server"; fail=1
+    else
+        echo "ok    mp launcher refuses an occupied port"
+    fi
+    kill $occ 2>/dev/null || true; wait $occ 2>/dev/null || true; sleep 1
+    # 2) normal: our server comes up, vLLM gets the chart's args unchanged
+    rm -f "$t/vllm-called"
+    if PATH="$t/bin:$PATH" bash -c "$(cat "$t/launch.sh")" vllm $(cat "$t/args") > "$t/normal.log" 2>&1 \
+          && cmp -s "$t/args" "$t/vllm-called"; then
+        echo "ok    mp launcher starts vLLM with the chart's args"
+    else
+        echo "FAIL  mp launcher normal path:"; sed 's/^/    /' "$t/normal.log" | head -5; fail=1
+    fi
+    pkill -f "s.bind((\"127.0.0.1\", $port))" 2>/dev/null || true
+fi
 exit $fail

@@ -98,7 +98,9 @@ chart creates the DaosSystem; otherwise the host daos_agent's own directory */}}
 {{- $agentDir := .agentSocketHostPath | default (ternary (printf "/var/run/daos-operator/agent/%s" $.Values.system.name) "/var/run/daos_agent" (eq ($.Values.system.create | toString) "true")) }}
 {{- $url := printf "plugin://daos/%s/%s%s" (required "vllm.services[].poolRef is required" .poolRef) (required "vllm.services[].containerRef is required" .containerRef) (ternary (printf "?sys=%s" .systemName) "" (not (empty .systemName))) }}
 {{- $failPolicy := .kvLoadFailurePolicy | default (ternary "recompute" "" (eq ($guard.enabled | toString) "true")) }}
-{{- $mpPort := $mp.port | default 5555 }}
+{{- /* hostNetwork: the MP port is the node's. Derived from the vLLM port (itself unique per
+node, §5.4) so two mp services on one node do not meet on a shared default. */}}
+{{- $mpPort := $mp.port | default (add $port 10000) }}
 {{- $chunk := .lmcacheChunkSize | default 256 }}
 {{- if not $isMP }}
 apiVersion: v1
@@ -185,6 +187,12 @@ spec:
             - -c
             - |
               set -e
+              port={{ $mpPort }}
+              # hostNetwork: a listener already on the port is not ours -- connecting to it would
+              # hand vLLM another service's cache server (and its pool/container)
+              if (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then
+                echo "port $port is already in use on this node: set vllm.services[].mp.port" >&2; exit 1
+              fi
               python3.12 -m lmcache_daos.mp.server --host 127.0.0.1 --port {{ $mpPort }} \
                 --chunk-size {{ $chunk }} --l1-size-gb {{ $mp.l1SizeGB | default 20 }} \
                 --eviction-policy {{ $mp.evictionPolicy | default "LRU" }} --disable-observability \
@@ -196,12 +204,16 @@ spec:
                 {{- end }}
                 --l2-adapter "$DAOS_MP_L2_ADAPTER" &
               srv=$!
-              for i in $(seq 1 300); do
-                (echo > /dev/tcp/127.0.0.1/{{ $mpPort }}) 2>/dev/null && break
+              up=
+              for i in $(seq 1 {{ $mp.startTimeoutSeconds | default 300 }}); do
                 kill -0 $srv 2>/dev/null || { echo "lmcache MP server exited before listening" >&2; exit 1; }
+                if (echo > /dev/tcp/127.0.0.1/$port) 2>/dev/null; then up=1; break; fi
                 sleep 1
               done
-              echo "lmcache MP server listening after ${i} s"
+              [ -n "$up" ] || { echo "lmcache MP server did not listen on $port in ${i} s" >&2; exit 1; }
+              # the listener must still be our child (it could have died on EADDRINUSE meanwhile)
+              kill -0 $srv 2>/dev/null || { echo "lmcache MP server exited" >&2; exit 1; }
+              echo "lmcache MP server listening on $port after ${i} s"
               exec python3.12 -m vllm.entrypoints.openai.api_server "$@"
             - vllm
           {{- else }}
