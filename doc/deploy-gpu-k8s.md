@@ -495,8 +495,9 @@ If step 3 passes, the KV cache lives in DAOS, outside the GPU node.
 
 Moved to [compatibility.md](compatibility.md). Each combination there carries a date and the
 evidence. That includes the A6000 / CRI-O setup this guide was written on and the GPU
-Operator + 400G RoCE run of 2026-10-01. The unverified paths are listed there too: containerd,
-managed Kubernetes, and the GPU Operator managing the NIC driver.
+Operator + 400G RoCE run of 2026-10-01, and moon on containerd 2.2.1 (2026-11-13). The
+unverified paths are listed there too: managed Kubernetes, the pod-network agent, and the GPU
+Operator managing the NIC driver.
 
 ## When the fabric is RDMA (ofi+verbs, ucx)
 

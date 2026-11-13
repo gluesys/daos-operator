@@ -23,9 +23,9 @@ what *should* work. A row without a date is not a claim.
 | 1.31.14 / CRI-O 1.31.5 | ofi+tcp | operator pods, kdev and nvme engines, 1–3 ranks | **CI** (e2e tier 1) | every main pipeline (last 2026-11-14, pipeline 66466) | lane B (vdi5 VMs), `test/e2e`, doc/ci-design-2026-10-02.md |
 | 1.31.14 / CRI-O 1.31.5 | ofi+tcp | operator pods | verified | 2026-09-22 | exaci4-2, doc/testbed-k8s-pod-servers.md |
 | 1.31.14 / CRI-O 1.31.5 | ofi+verbs, IB 100G | operator pods, 3 ranks, MS ×3 | verified | 2026-09-28 | da1~da4, doc/testbed-da-ib-verbs.md |
-| 1.32.6 (kubeadm) / not recorded | ofi+verbs, IB 100G | operator pods, 2 ranks, MD-on-SSD, NVMe via SPDK | verified | 2026-11-13 | moon (gpu-node1~3), FlexA Hub `3ee2473f` |
+| 1.32.6 (kubeadm) / containerd 2.2.1, Ubuntu 24.04 | ofi+verbs, IB 100G | operator pods, 2 ranks, MD-on-SSD, NVMe via SPDK | verified | 2026-11-13 | moon (gpu-node1~3), FlexA Hub `3ee2473f` |
 | 1.29 · 1.31 · 1.34 | — | — | **CI** (rendered) | every main pipeline | `hack/ci/chart-schema.sh` (kubeconform) |
-| containerd (any version) | any | any | unverified | — | — |
+| containerd other than 2.2.1 · CRI-O other than 1.31 | any | any | unverified | — | — |
 | managed (EKS · GKE · AKS) | any | external DAOS only | unverified | — | configuration in deploy-gpu-k8s §2.3 |
 | any | any | `clientAgent.hostNetwork: false` (pod-network agent) | unverified | — | serving-integration.md §2 |
 
@@ -36,7 +36,7 @@ what *should* work. A row without a date is not a claim.
 | RTX A6000 · device plugin + nvidia-container-toolkit, CRI-O | — (tcp) | in-process · Llama-3.1-8B | verified | 2026-09-27 | deploy-gpu-k8s §2.2, §6; [note A](#a-rtx-a6000-2026-09-27) |
 | H100 NVL · GPU Operator v26.7.1 (`driver.enabled=false`) | `/dev/infiniband` + privileged, RoCE 400G | agent + DAOS pools seen from the GPU pod | verified | 2026-10-01 | [note B](#b-h100--gpu-operator-2026-10-01) |
 | H100 NVL · GPU Operator | RDMA shared device plugin (Network Operator 26.4.2) + `IPC_LOCK` | 64 MiB round trip, 2777 / 12162 MB/s | verified | 2026-10-01 | deploy-gpu-k8s "When the fabric is RDMA" |
-| A100 80GB · device plugin (CDI) | `/dev/infiniband` + privileged, IB 100G | **MP** · Qwen3.8-27B INT4, hand-written Deployment | verified | 2026-11-13 | moon, Hub `3ee2473f` §4 |
+| A100 80GB · device plugin (CDI), containerd 2.2.1 | `/dev/infiniband` + privileged, IB 100G | **MP** · Qwen3.8-27B INT4, hand-written Deployment | verified | 2026-11-13 | moon, Hub `3ee2473f` §4 |
 | any | any | MP via the chart (`lmcacheMode: mp`) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh` |
 | Rebellions NPU · `accelerator: rbln` | any | in-process (lmcache-rbln) | rendered | 2026-10-13 | chart 0.1.6 |
 | GPU Operator managing the NIC driver (MOFED/DOCA) | any | any | unverified | — | touches the NIC driver the DAOS client uses; needs its own test |
