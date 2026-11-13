@@ -72,7 +72,7 @@ func TestDiscoverClassifyAnnotate(t *testing.T) {
 	mounts := filepath.Join(root, "mounts")
 	os.WriteFile(mounts, []byte("/dev/sda1 / ext4 rw 0 0\n"), 0o644)
 
-	s := Sys{Root: root, Mounts: mounts}
+	s := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps")}
 	devs, err := s.NVMeDevices()
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestSignatureMakesADeviceInUse(t *testing.T) {
 	mounts := filepath.Join(root, "mounts")
 	os.WriteFile(mounts, nil, 0o644)
 
-	devs, err := Sys{Root: root, Mounts: mounts}.NVMeDevices()
+	devs, err := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps")}.NVMeDevices()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,13 @@ func TestBlockSignature(t *testing.T) {
 		os.WriteFile(p, b, 0o644)
 		return p
 	}
+	gpt4k := put(4096, "EFI PART")
+	if b, err := os.ReadFile(gpt4k); err == nil { // protective MBR too: GPT must win
+		b[510], b[511] = 0x55, 0xaa
+		os.WriteFile(gpt4k, b, 0o644)
+	}
 	cases := map[string]string{
+		gpt4k: "GPT", put(0x438, "\x53\xef"): "ext2/3/4", put(4086, "SWAP-SPACE"): "swap", put(0, "LABELONE"): "LVM2",
 		put(0, "XFSB"): "xfs", put(0x10040, "_BHRfS_M"): "btrfs", put(4086, "SWAPSPACE2"): "swap",
 		put(512, "LABELONE"): "LVM2", put(512, "EFI PART"): "GPT", put(510, "\x55\xaa"): "MBR", put(0, ""): "",
 	}
@@ -218,5 +224,69 @@ func TestBindAndKubeletWarnings(t *testing.T) {
 	}
 	if KubeletHugepagesWarning(6144, 6144*2<<20) != "" || KubeletHugepagesWarning(0, 0) != "" {
 		t.Error("no warning expected")
+	}
+}
+
+// A disk the host mounted whole, or swaps on, is in use -- not a "signature to wipe" -- even
+// though hostprep's own /proc/mounts does not show it (review of !92).
+func TestHostMountsAndSwapsWin(t *testing.T) {
+	root := t.TempDir()
+	fakeNVMe(t, root, "0000:04:00.0", "nvme", 0, 0, "nvme1n1", false)
+	fakeNVMe(t, root, "0000:05:00.0", "nvme", 0, 0, "nvme2n1", false)
+	os.MkdirAll(filepath.Join(root, "dev"), 0o755)
+	img := make([]byte, 0x10048)
+	img[0x438], img[0x439] = 0x53, 0xef
+	os.WriteFile(filepath.Join(root, "dev/nvme1n1"), img, 0o644)
+	sw := make([]byte, 0x10048)
+	copy(sw[4086:], "SWAPSPACE2")
+	os.WriteFile(filepath.Join(root, "dev/nvme2n1"), sw, 0o644)
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, []byte("/dev/nvme1n1 /data ext4 rw 0 0\n"), 0o644)
+	swaps := filepath.Join(root, "swaps")
+	os.WriteFile(swaps, []byte("Filename\tType\tSize\tUsed\tPriority\n/dev/nvme2n1 partition 1000 0 -2\n"), 0o644)
+	devs, err := Sys{Root: root, Mounts: mounts, Swaps: swaps}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range devs {
+		if !d.InUse || strings.Contains(d.InUseWhy, "wipefs") || !strings.Contains(d.InUseWhy, "mounted") {
+			t.Errorf("%s: InUse=%v why=%q", d.PCI, d.InUse, d.InUseWhy)
+		}
+	}
+}
+
+// Two namespaces: the reason of the first one that made the device in use stays.
+func TestFirstInUseReasonStays(t *testing.T) {
+	root := t.TempDir()
+	fakeNVMe(t, root, "0000:04:00.0", "nvme", 0, 0, "nvme1n1", true) // n1 partitioned
+	b := filepath.Join(root, "sys/bus/pci/devices/0000:04:00.0/nvme/nvme0/nvme1n2")
+	os.MkdirAll(filepath.Join(b, "holders"), 0o755)
+	os.MkdirAll(filepath.Join(root, "dev"), 0o755)
+	img := make([]byte, 0x10048)
+	copy(img, "XFSB")
+	os.WriteFile(filepath.Join(root, "dev/nvme1n2"), img, 0o644) // n2 only a signature
+	devs, err := Sys{Root: root, Mounts: filepath.Join(root, "none"), Swaps: filepath.Join(root, "none")}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devs) != 1 || devs[0].InUseWhy != "nvme1n1 has partitions" {
+		t.Fatalf("%+v", devs)
+	}
+}
+
+func TestHugepages2M(t *testing.T) {
+	root := t.TempDir()
+	s := Sys{Root: root}
+	if s.Hugepages2M() != -1 {
+		t.Error("missing file should be -1")
+	}
+	d := filepath.Join(root, "sys/kernel/mm/hugepages/hugepages-2048kB")
+	os.MkdirAll(d, 0o755)
+	os.WriteFile(filepath.Join(d, "nr_hugepages"), []byte("6144\n"), 0o644)
+	if s.Hugepages2M() != 6144 {
+		t.Error("Hugepages2M")
+	}
+	if KubeletHugepagesWarning(-1, 0) != "" {
+		t.Error("unknown 2M count must not warn")
 	}
 }

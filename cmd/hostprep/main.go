@@ -215,7 +215,7 @@ func runOnce(ctx context.Context, cs kubernetes.Interface, sys hostprep.Sys, nod
 	}
 	if n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{}); err == nil {
 		q := n.Status.Capacity[corev1.ResourceName("hugepages-2Mi")]
-		if w := hostprep.KubeletHugepagesWarning(f.Hugepages, q.Value()); w != "" {
+		if w := hostprep.KubeletHugepagesWarning(sys.Hugepages2M(), q.Value()); w != "" {
 			f.Warnings = append(f.Warnings, w)
 		}
 	}

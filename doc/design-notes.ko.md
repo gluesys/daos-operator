@@ -59,9 +59,9 @@ HPE K3000 의 CSC(`csc daos system create --nodecount 4`, `csc daos pool create`
 `cmd/hostprep` 가 주기(`intervalSeconds`, 기본 300초)마다:
 
 1. `/sys/bus/pci/devices` 에서 NVMe(class 0x010802)를 찾아 드라이버(nvme / vfio-pci / uio_pci_generic), NUMA, **PCI Device Serial
-   Number**(확장 캡 ID 3; 에뮬레이션 NVMe 처럼 256B 설정공간이면 없음)를 읽고, 파티션·마운트·holder 가 있거나 **파일시스템·파티션 테이블 서명**(ext2/3/4·xfs·btrfs·swap·LVM2·GPT·MBR)이 남은 디스크는 "사용 중"으로 분류한다. 서명만 남은 디스크는 SPDK setup.sh 가 조용히 건너뛰어 `bound=0` 으로 끝났기 때문이다(moon, 11-13). 이유는 상태의 `inUseReasons` 에, `bindNvme` 일 때는 `wipefs -a` 안내가 `warnings` 에 남는다.
+   Number**(확장 캡 ID 3; 에뮬레이션 NVMe 처럼 256B 설정공간이면 없음)를 읽고, 파티션·마운트(호스트 기준 `/proc/1/mounts`)·활성 swap·holder 가 있거나 **파일시스템·파티션 테이블 서명**(ext2/3/4·xfs·btrfs·swap·LVM2·GPT·MBR)이 남은 디스크는 "사용 중"으로 분류한다. 서명만 남은 디스크는 SPDK setup.sh 가 조용히 건너뛰어 `bound=0` 으로 끝났기 때문이다(moon, 11-13). 이유는 상태의 `inUseReasons` 에, `bindNvme` 일 때는 `wipefs -a` 안내가 `warnings` 에 남는다.
 2. `/sys/class/net/*/device/infiniband` 가 있는 RDMA NIC 중 `fabricCIDR` 에 맞는(없으면 IPv4 가 있는 첫) 것을 fabric 으로 고른다.
-3. `vm.nr_hugepages` 가 `spec.nrHugepages` 보다 작으면 올린다(0 이면 건드리지 않음). kubelet 은 휴지페이지를 기동할 때만 세므로, Node capacity `hugepages-2Mi` 가 호스트 값보다 작으면 `warnings` 에 "kubelet 재시작" 을 남긴다.
+3. `vm.nr_hugepages` 가 `spec.nrHugepages` 보다 작으면 올린다(0 이면 건드리지 않음). kubelet 은 휴지페이지를 기동할 때만 세므로, Node capacity `hugepages-2Mi` 가 호스트의 2 MiB 페이지 수(`hugepages-2048kB/nr_hugepages`, 기본 크기가 2 MiB 가 아닐 수 있어 `vm.nr_hugepages` 가 아님)보다 작으면 `warnings` 에 "kubelet 재시작" 을 남긴다.
    THP 값을 읽어 상태 `thp` 에 싣고, `never` 가 아니면 경고한다(daos_server 가 code 623 으로 기동 거부). `hostPrep.disableTHP: true` 이면 매 회 `never` 로 쓴다(호스트 전역이라 opt-in).
 4. `hostPrep.bindNvme: true` 일 때만 "사용 중이 아닌 커널 NVMe" 를 `daos_server nvme prepare <pci-allow-list>` 로 SPDK 에 넘긴다.
    기본값 false 에서는 탐색·어노테이션만 한다. 어떤 경우에도 format/wipe 는 하지 않는다. prepare 뒤에도 묶이지 않은 장치는 `warnings` 에 남긴다.

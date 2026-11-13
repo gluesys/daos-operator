@@ -53,7 +53,8 @@ func (n NVMe) BoundForSPDK() bool { return n.Driver == "vfio-pci" || n.Driver ==
 // Sys wraps the filesystem roots.
 type Sys struct {
 	Root   string // "" -> "/"
-	Mounts string // "" -> /proc/mounts
+	Mounts string // "" -> /proc/1/mounts (the host's, hostPID), else /proc/mounts
+	Swaps  string // "" -> /proc/swaps (not namespaced: the host's list)
 }
 
 func (s Sys) path(p string) string {
@@ -98,12 +99,13 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 			parts, _ := filepath.Glob(filepath.Join(b, name+"p*"))
 			holders, _ := os.ReadDir(filepath.Join(b, "holders"))
 			switch {
+			case n.InUse: // another namespace already decided it; keep that reason
 			case len(parts) > 0:
 				n.InUse, n.InUseWhy = true, name+" has partitions"
 			case len(holders) > 0:
 				n.InUse, n.InUseWhy = true, name+" has holders (LVM, md, dm)"
 			case mounted["/dev/"+name]:
-				n.InUse, n.InUseWhy = true, name+" is mounted"
+				n.InUse, n.InUseWhy = true, name+" is mounted or an active swap"
 			default:
 				// SPDK setup.sh (daos_server nvme prepare) skips a device that still carries
 				// a filesystem or partition-table signature and reports success: hostprep then
@@ -128,7 +130,7 @@ func blockSignature(dev string) string {
 		return ""
 	}
 	defer f.Close()
-	b := make([]byte, 0x10048)
+	b := make([]byte, 0x10048) // up to the btrfs magic; covers GPT on 4 KiB-block disks too
 	n, _ := f.ReadAt(b, 0)
 	b = b[:n]
 	has := func(off int, magic string) bool {
@@ -145,12 +147,27 @@ func blockSignature(dev string) string {
 		return "swap"
 	case has(512, "LABELONE"), has(0, "LABELONE"):
 		return "LVM2"
-	case has(512, "EFI PART"):
+	case has(512, "EFI PART"), has(4096, "EFI PART"): // 512 B or 4 KiB logical blocks
 		return "GPT"
 	case has(510, "\x55\xaa"):
 		return "MBR"
 	}
 	return ""
+}
+
+// Hugepages2M reads the number of 2 MiB pages, which is what the kubelet advertises as
+// hugepages-2Mi and DAOS uses. It differs from vm.nr_hugepages when the default hugepage
+// size is not 2 MiB (default_hugepagesz=1G, arm64 with 64 KiB pages). -1 when unknown.
+func (s Sys) Hugepages2M() int {
+	b, err := os.ReadFile(s.path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"))
+	if err != nil {
+		return -1
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return -1
+	}
+	return v
 }
 
 // THP returns the selected value of /sys/kernel/mm/transparent_hugepage/enabled
@@ -197,23 +214,44 @@ func parseDSN(cfg []byte) string {
 }
 
 func (s Sys) mountedSources() map[string]bool {
-	p := s.Mounts
-	if p == "" {
-		p = "/proc/mounts"
-	}
 	out := map[string]bool{}
-	f, err := os.Open(p)
-	if err != nil {
-		return out
+	add := func(src string) {
+		out[src] = true
+		// /dev/nvme0n1p1 mounted -> nvme0n1 in use
+		if i := strings.LastIndex(src, "p"); i > 0 {
+			out[src[:i]] = true
+		}
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if fields := strings.Fields(sc.Text()); len(fields) > 0 {
-			out[fields[0]] = true
-			// /dev/nvme0n1p1 mounted -> nvme0n1 in use
-			if i := strings.LastIndex(fields[0], "p"); i > 0 {
-				out[fields[0][:i]] = true
+	// /proc/mounts is hostprep's own mount namespace, which does not show a disk the host
+	// mounted whole (a /data ext4 on nvme1n1); that disk then looked unused and, with the
+	// signature check, drew a "wipefs" hint. PID 1's table is the host's (hostPID).
+	mounts := []string{s.Mounts}
+	if s.Mounts == "" {
+		mounts = []string{"/proc/1/mounts", "/proc/mounts"}
+	}
+	for _, p := range mounts {
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			if fields := strings.Fields(sc.Text()); len(fields) > 0 {
+				add(fields[0])
+			}
+		}
+		f.Close()
+		break
+	}
+	// an active swap device is in neither table
+	swaps := s.Swaps
+	if swaps == "" {
+		swaps = "/proc/swaps"
+	}
+	if b, err := os.ReadFile(swaps); err == nil {
+		for i, l := range strings.Split(string(b), "\n") {
+			if fields := strings.Fields(l); i > 0 && len(fields) > 0 {
+				add(fields[0])
 			}
 		}
 	}
@@ -375,6 +413,7 @@ func BindWarnings(requested []string, after []NVMe) []string {
 // advertises. The kubelet counts hugepages only when it starts, so pages raised
 // later (by hostprep or by hand) stay invisible to the scheduler and the server
 // pods wait with "Insufficient hugepages-2Mi" (moon, 2026-11-13).
+// hostPages is the 2 MiB page count (Hugepages2M); <= 0 skips the check.
 func KubeletHugepagesWarning(hostPages int, kubeletBytes int64) string {
 	want := int64(hostPages) * 2 << 20
 	if hostPages <= 0 || kubeletBytes >= want {
