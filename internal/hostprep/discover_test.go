@@ -19,8 +19,10 @@ package hostprep
 
 import (
 	"encoding/binary"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,5 +130,93 @@ func TestDiscoverClassifyAnnotate(t *testing.T) {
 	empty := Annotations(Facts{FabricErr: "none"}, time.Unix(0, 0))
 	if empty[daosv1alpha1.AnnotationNumaNode] != "" || empty[daosv1alpha1.AnnotationFabricIface] != "" {
 		t.Errorf("empty facts must yield empty numa/fabric, got %q/%q", empty[daosv1alpha1.AnnotationNumaNode], empty[daosv1alpha1.AnnotationFabricIface])
+	}
+}
+
+// A whole-disk ext4 left on an unmounted NVMe: SPDK setup.sh skipped it and hostprep
+// reported bound=0 with nothing to say why (moon, 2026-11-13).
+func TestSignatureMakesADeviceInUse(t *testing.T) {
+	root := t.TempDir()
+	fakeNVMe(t, root, "0000:04:00.0", "nvme", 0, 0, "nvme1n1", false)
+	fakeNVMe(t, root, "0000:05:00.0", "nvme", 0, 0, "nvme2n1", false)
+	os.MkdirAll(filepath.Join(root, "dev"), 0o755)
+	img := make([]byte, 0x10048)
+	img[0x438], img[0x439] = 0x53, 0xef
+	os.WriteFile(filepath.Join(root, "dev/nvme1n1"), img, 0o644)
+	os.WriteFile(filepath.Join(root, "dev/nvme2n1"), make([]byte, 0x10048), 0o644) // blank: still a candidate
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, nil, 0o644)
+
+	devs, err := Sys{Root: root, Mounts: mounts}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cand, skipped := Classify(devs)
+	if len(cand) != 1 || cand[0].PCI != "0000:05:00.0" {
+		t.Fatalf("candidates %+v", cand)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0].InUseWhy, "ext2/3/4 signature") || !strings.Contains(skipped[0].InUseWhy, "wipefs -a /dev/nvme1n1") {
+		t.Fatalf("skipped %+v", skipped)
+	}
+	st := Annotations(Facts{Skipped: skipped}, time.Now())[AnnotationHostPrepStatus]
+	if !strings.Contains(st, "inUseReasons") || !strings.Contains(st, "0000:04:00.0") {
+		t.Errorf("status %s", st)
+	}
+}
+
+func TestBlockSignature(t *testing.T) {
+	dir := t.TempDir()
+	put := func(off int, magic string) string {
+		b := make([]byte, 0x10048)
+		copy(b[off:], magic)
+		p := filepath.Join(dir, fmt.Sprint(off, magic))
+		os.WriteFile(p, b, 0o644)
+		return p
+	}
+	cases := map[string]string{
+		put(0, "XFSB"): "xfs", put(0x10040, "_BHRfS_M"): "btrfs", put(4086, "SWAPSPACE2"): "swap",
+		put(512, "LABELONE"): "LVM2", put(512, "EFI PART"): "GPT", put(510, "\x55\xaa"): "MBR", put(0, ""): "",
+	}
+	for p, want := range cases {
+		if got := blockSignature(p); got != want {
+			t.Errorf("%s: got %q want %q", filepath.Base(p), got, want)
+		}
+	}
+	if got := blockSignature(filepath.Join(dir, "missing")); got != "" {
+		t.Errorf("missing device: %q", got)
+	}
+}
+
+func TestTHP(t *testing.T) {
+	root := t.TempDir()
+	p := filepath.Join(root, "sys/kernel/mm/transparent_hugepage")
+	os.MkdirAll(p, 0o755)
+	os.WriteFile(filepath.Join(p, "enabled"), []byte("always [madvise] never\n"), 0o644)
+	s := Sys{Root: root}
+	if got := s.THP(); got != "madvise" {
+		t.Fatalf("THP = %q", got)
+	}
+	if THPWarning("madvise") == "" || THPWarning("never") != "" || THPWarning("") != "" {
+		t.Error("THPWarning")
+	}
+	if err := s.DisableTHP(); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.THP(); got != "never" { // a plain file keeps what was written
+		t.Fatalf("after DisableTHP: %q", got)
+	}
+}
+
+func TestBindAndKubeletWarnings(t *testing.T) {
+	after := []NVMe{{PCI: "a", Driver: "vfio-pci"}, {PCI: "b", Driver: "nvme"}}
+	w := BindWarnings([]string{"a", "b"}, after)
+	if len(w) != 1 || !strings.Contains(w[0], "b on driver \"nvme\"") {
+		t.Errorf("BindWarnings %v", w)
+	}
+	if KubeletHugepagesWarning(6144, 0) == "" {
+		t.Error("kubelet saw none of 6144 pages")
+	}
+	if KubeletHugepagesWarning(6144, 6144*2<<20) != "" || KubeletHugepagesWarning(0, 0) != "" {
+		t.Error("no warning expected")
 	}
 }

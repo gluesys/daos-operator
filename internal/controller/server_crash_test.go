@@ -12,6 +12,9 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+
+	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 )
 
 // A server that exits at start (THP enabled, too little RAM, no space for a file bdev) used to
@@ -27,7 +30,7 @@ func TestPodNotReadyMessageCarriesTheCrashCause(t *testing.T) {
 		LastTerminationState: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Message: thp}},
 	}}}}
 	msg := podNotReadyMessage(p)
-	for _, want := range []string{"CrashLoopBackOff", "code = 623", "transparent hugepage"} {
+	for _, want := range []string{"CrashLoopBackOff", "code = 623", "transparent hugepage", "disableTHP"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q lacks %q", msg, want)
 		}
@@ -76,7 +79,7 @@ func TestPodNotReadyMessageSaysWhyItIsUnschedulable(t *testing.T) {
 	p := corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "daos2-server-n1-0"}, Status: corev1.PodStatus{Phase: corev1.PodPending,
 		Conditions: []corev1.PodCondition{{Type: corev1.PodScheduled, Status: corev1.ConditionFalse, Reason: corev1.PodReasonUnschedulable,
 			Message: "0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector."}}}}
-	want := "server pod daos2-server-n1-0: Unschedulable: 0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector."
+	want := "server pod daos2-server-n1-0: Unschedulable: 0/3 nodes are available: 1 Insufficient hugepages-2Mi, 2 node(s) didn't match Pod's node affinity/selector.; " + hugepagesHint
 	if got := podNotReadyMessage(p); got != want {
 		t.Fatalf("got %q\nwant %q", got, want)
 	}
@@ -117,5 +120,19 @@ func TestEngineBdevLayouts(t *testing.T) {
 	})
 	if s := hostprep.FormatBdevLayouts(got); s != "0=aio:/dev/sdb;1=nvme:0000:00:03.0,0000:00:04.0;4=aio:/var/daos/bdev0" {
 		t.Errorf("layouts: %s", s)
+	}
+}
+
+func TestPoolCreateHint(t *testing.T) {
+	p := &daosv1alpha1.DaosPool{}
+	if h := poolCreateHint(p, "pool create failed: DER_NOSPACE(-1007): No space on storage target"); !strings.Contains(h, "memRatioPercent") {
+		t.Errorf("NOSPACE without memRatioPercent: %q", h)
+	}
+	if h := poolCreateHint(p, "requested NVMe capacity too small"); h != "" {
+		t.Errorf("other error: %q", h)
+	}
+	p.Spec.MemRatioPercent = ptr.To(int32(10))
+	if h := poolCreateHint(p, "DER_NOSPACE"); h != "" {
+		t.Errorf("memRatioPercent already set: %q", h)
 	}
 }

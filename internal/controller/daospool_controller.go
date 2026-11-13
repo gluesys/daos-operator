@@ -757,6 +757,9 @@ func (r *DaosPoolReconciler) pollOp(ctx context.Context, pool *daosv1alpha1.Daos
 		return failed("dmg pool " + opCommand(op) + ": " + perr.Error())
 	}
 	if env.Error != nil {
+		if op == opCreate {
+			return failed("dmg pool " + opCommand(op) + ": " + *env.Error + poolCreateHint(pool, *env.Error))
+		}
 		return failed("dmg pool " + opCommand(op) + ": " + *env.Error)
 	}
 	switch op {
@@ -871,4 +874,15 @@ func (r *DaosPoolReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&batchv1.Job{}).
 		Named("daospool").
 		Complete(r)
+}
+
+// poolCreateHint adds what usually fixes a DER_NOSPACE create on an MD-on-SSD system: at the
+// default mem-ratio of 100 every rank's metadata must fit its RAM memory file, which capped a
+// 2 TiB pool on a 16 GiB ram tier (moon, 2026-11-13; da1~3, 2026-09-28).
+func poolCreateHint(pool *daosv1alpha1.DaosPool, errMsg string) string {
+	if pool.Spec.MemRatioPercent != nil || !strings.Contains(errMsg, "DER_NOSPACE") {
+		return ""
+	}
+	return "; on an MD-on-SSD system each rank's metadata must fit its RAM tier at the default mem-ratio 100: " +
+		"set spec.memRatioPercent (e.g. 10) or ask for a smaller pool"
 }

@@ -126,13 +126,21 @@ type ImagesSpec struct {
 // HostPrepSpec controls the per-node preparation DaemonSet (#8). It discovers
 // NVMe/DSN/RDMA facts into Node annotations, raises hugepages, and only when
 // BindNvme is true hands unused NVMe to SPDK. It never touches devices that
-// have partitions, mounts or holders, and never formats anything.
+// have partitions, mounts, holders or a filesystem/partition-table signature,
+// and never formats anything. What it could not fix (a signature to wipe, THP,
+// a kubelet that has not seen the hugepages) is listed under "warnings" in the
+// node's daos.gluesys.com/hostprep-status annotation.
 type HostPrepSpec struct {
 	// Enabled deploys the DaemonSet. Default true.
 	Enabled *bool `json:"enabled,omitempty"`
 	// BindNvme lets hostprep unbind unused NVMe from the kernel (daos_server nvme prepare).
 	// Default false: discover and annotate only.
 	BindNvme bool `json:"bindNvme,omitempty"`
+	// DisableTHP lets hostprep set transparent_hugepage to never on every run.
+	// daos_server refuses to start while it is always or madvise (code 623). It is a
+	// host-wide setting that other workloads see, hence opt-in; the node's
+	// hostprep-status reports the current value either way. Default false.
+	DisableTHP bool `json:"disableTHP,omitempty"`
 	// FabricCIDR picks the RDMA NIC whose IPv4 address is in this network, e.g. 172.28.136.0/24.
 	// Empty = first RDMA NIC with an address.
 	FabricCIDR string `json:"fabricCIDR,omitempty"`

@@ -73,6 +73,21 @@ func Annotations(f Facts, now time.Time) map[string]string {
 	if f.HugepagesErr != "" {
 		st["hugepagesError"] = f.HugepagesErr
 	}
+	if f.THP != "" {
+		st["thp"] = f.THP
+	}
+	why := map[string]string{}
+	for _, d := range f.Skipped {
+		if d.InUseWhy != "" {
+			why[d.PCI] = d.InUseWhy
+		}
+	}
+	if len(why) > 0 {
+		st["inUseReasons"] = why
+	}
+	if len(f.Warnings) > 0 {
+		st["warnings"] = f.Warnings
+	}
 	j, _ := json.Marshal(st)
 	a[AnnotationHostPrepStatus] = string(j)
 	return a

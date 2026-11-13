@@ -34,6 +34,7 @@ import (
 	"syscall"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -51,6 +52,7 @@ func main() {
 		hugepages  = flag.Int("hugepages", envInt("DAOS_HOSTPREP_HUGEPAGES", 0), "raise vm.nr_hugepages to at least this (0 = leave)")
 		interval   = flag.Duration("interval", envDur("DAOS_HOSTPREP_INTERVAL", 5*time.Minute), "rediscovery interval (0 = run once)")
 		sysRoot    = flag.String("sys-root", os.Getenv("DAOS_HOSTPREP_SYS_ROOT"), "prefix for /sys and /proc (host mounts); empty = /")
+		disableTHP = flag.Bool("disable-thp", os.Getenv("DAOS_HOSTPREP_DISABLE_THP") == "true", "set transparent_hugepage to never (daos_server refuses to start otherwise)")
 		daosServer = flag.String("daos-server", "daos_server", "daos_server binary used for nvme prepare")
 		kubeconfig = flag.String("kubeconfig", os.Getenv("KUBECONFIG"), "kubeconfig (empty = in-cluster)")
 		dryRun     = flag.Bool("dry-run", false, "discover once and print facts + annotations as JSON; no hugepages, no nvme prepare, no Node patch")
@@ -82,7 +84,7 @@ func main() {
 	defer stop()
 	sys := hostprep.Sys{Root: *sysRoot}
 	for {
-		if err := runOnce(ctx, cs, sys, *nodeName, *bind, *cidr, *hugepages, *daosServer); err != nil {
+		if err := runOnce(ctx, cs, sys, *nodeName, options{bind: *bind, cidr: *cidr, hugepages: *hugepages, disableTHP: *disableTHP, daosServer: *daosServer}); err != nil {
 			fmt.Fprintln(os.Stderr, "hostprep:", err)
 		}
 		if *interval <= 0 {
@@ -125,6 +127,7 @@ func dryRunOnce(sys hostprep.Sys, cidr string) error {
 		f.HugepagesErr = err.Error()
 	}
 	f.Hugepages = hp
+	f.THP = sys.THP()
 	devs, err := sys.NVMeDevices()
 	if err != nil {
 		return fmt.Errorf("scan nvme: %w", err)
@@ -144,50 +147,88 @@ func dryRunOnce(sys hostprep.Sys, cidr string) error {
 	return nil
 }
 
-func runOnce(ctx context.Context, cs kubernetes.Interface, sys hostprep.Sys, node string, bind bool, cidr string, hugepages int, daosServer string) error {
+type options struct {
+	bind       bool
+	cidr       string
+	hugepages  int
+	disableTHP bool
+	daosServer string
+}
+
+func runOnce(ctx context.Context, cs kubernetes.Interface, sys hostprep.Sys, node string, o options) error {
 	f := hostprep.Facts{}
-	hp, err := sys.Hugepages(hugepages)
+	hp, err := sys.Hugepages(o.hugepages)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "hugepages:", err)
 		f.HugepagesErr = err.Error()
 	}
 	f.Hugepages = hp
+	f.THP = sys.THP()
+	if o.disableTHP && f.THP != "" && f.THP != "never" {
+		if err := sys.DisableTHP(); err != nil {
+			fmt.Fprintln(os.Stderr, "disable THP:", err)
+		}
+		f.THP = sys.THP()
+	}
+	if w := hostprep.THPWarning(f.THP); w != "" {
+		f.Warnings = append(f.Warnings, w)
+	}
 	devs, err := sys.NVMeDevices()
 	if err != nil {
 		return fmt.Errorf("nvme scan: %w", err)
 	}
 	f.Bound, f.Candidates, f.Skipped = hostprep.Classify(devs)
-	if bind && len(f.Candidates) > 0 {
+	if o.bind && len(f.Candidates) > 0 {
 		var pcis []string
 		for _, d := range f.Candidates {
 			pcis = append(pcis, d.PCI)
 		}
 		// Only the explicit allow-list is touched; in-use devices are never on it.
 		args := []string{"nvme", "prepare", "--target-user", "root"}
-		if hugepages > 0 {
-			args = append(args, "-p", fmt.Sprint(hugepages))
+		if o.hugepages > 0 {
+			args = append(args, "-p", fmt.Sprint(o.hugepages))
 		}
 		args = append(args, strings.Join(pcis, ","))
 		fmt.Fprintln(os.Stderr, "binding for SPDK:", strings.Join(pcis, ","))
-		if out, err := exec.CommandContext(ctx, daosServer, args...).CombinedOutput(); err != nil {
+		if out, err := exec.CommandContext(ctx, o.daosServer, args...).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "nvme prepare failed: %v\n%s\n", err, out)
+			f.Warnings = append(f.Warnings, fmt.Sprintf("nvme prepare failed: %v", err))
 		} else if devs, err = sys.NVMeDevices(); err == nil {
 			f.Bound, f.Candidates, f.Skipped = hostprep.Classify(devs)
+			f.Warnings = append(f.Warnings, hostprep.BindWarnings(pcis, devs)...)
+		}
+	}
+	if o.bind {
+		for _, d := range f.Skipped {
+			// partitions, mounts and holders are the OS and data disks hostprep must skip;
+			// a bare signature is usually a disk meant for DAOS that was used before
+			if strings.Contains(d.InUseWhy, "signature") {
+				f.Warnings = append(f.Warnings, d.PCI+": "+d.InUseWhy)
+			}
 		}
 	}
 	ifs, err := sys.RDMAIfaces(hostprep.SystemIPv4)
 	if err != nil {
 		f.FabricErr = err.Error()
-	} else if f.Fabric, err = hostprep.PickFabric(ifs, cidr); err != nil {
+	} else if f.Fabric, err = hostprep.PickFabric(ifs, o.cidr); err != nil {
 		f.FabricErr = err.Error()
+	}
+	if n, err := cs.CoreV1().Nodes().Get(ctx, node, metav1.GetOptions{}); err == nil {
+		q := n.Status.Capacity[corev1.ResourceName("hugepages-2Mi")]
+		if w := hostprep.KubeletHugepagesWarning(f.Hugepages, q.Value()); w != "" {
+			f.Warnings = append(f.Warnings, w)
+		}
+	}
+	for _, w := range f.Warnings {
+		fmt.Fprintln(os.Stderr, "warning:", w)
 	}
 	ann := hostprep.Annotations(f, time.Now())
 	patch, _ := json.Marshal(map[string]any{"metadata": map[string]any{"annotations": ann}})
 	if _, err := cs.CoreV1().Nodes().Patch(ctx, node, types.MergePatchType, patch, metav1PatchOptions()); err != nil {
 		return fmt.Errorf("annotate node %s: %w", node, err)
 	}
-	fmt.Fprintf(os.Stderr, "annotated %s: fabric=%q bound=%d candidates=%d inUse=%d hugepages=%d\n",
-		node, f.Fabric.Name, len(f.Bound), len(f.Candidates), len(f.Skipped), f.Hugepages)
+	fmt.Fprintf(os.Stderr, "annotated %s: fabric=%q bound=%d candidates=%d inUse=%d hugepages=%d thp=%s warnings=%d\n",
+		node, f.Fabric.Name, len(f.Bound), len(f.Candidates), len(f.Skipped), f.Hugepages, f.THP, len(f.Warnings))
 	return nil
 }
 
