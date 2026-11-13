@@ -32,6 +32,15 @@ import (
 )
 
 var _ = Describe("DaosContainer Controller", func() {
+	It("rejects type UNKNOWN: the daos CLI cannot create that layout", func() {
+		c := &daosv1alpha1.DaosContainer{
+			ObjectMeta: metav1.ObjectMeta{Name: "type-unknown", Namespace: "default"},
+			Spec:       daosv1alpha1.DaosContainerSpec{PoolRef: "p", Type: "UNKNOWN"},
+		}
+		err := k8sClient.Create(context.Background(), c)
+		Expect(errors.IsInvalid(err)).To(BeTrue(), "got %v", err)
+	})
+
 	Context("When reconciling a resource", func() {
 		const (
 			resourceName      = "test-resource"
