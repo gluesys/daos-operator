@@ -245,6 +245,34 @@ vllm:
   #    extraEnv: []
   #    # command: ["python3", "-m", "vllm.entrypoints.openai.api_server"]   # default python3.12 -m ...
   #
+  #  # Hybrid-attention models (Qwen3.5/3.8: linear GDN + full attention) need LMCache's
+  #  # multi-process mode: the in-process connector does not support vLLM's hybrid KV manager.
+  #  # lmcacheMode: mp runs the LMCache MP server (DAOS as L2 through libdfs) and vLLM with
+  #  # LMCacheMPConnector in the one container (CUDA IPC). The values below are what ran
+  #  # Qwen3.8-27B INT4 on an A100 over IB (moon, 2026-11-13; doc/deploy-gpu-k8s.md §5.6).
+  #  - name: qwen38-daos
+  #    image: <your-registry>/vllm-lmcache-daos:0.30.0-0.5.5
+  #    lmcacheMode: mp               # inprocess (default) | mp; nvidia/custom only, no rankGuard
+  #    poolRef: kvc
+  #    containerRef: kvdfs           # POSIX, SX, 4 MiB chunks: the adapter reads it through DFS
+  #    systemName: daos_moon
+  #    lmcacheChunkSize: 784         # a multiple of vLLM's block for the model (784 for Qwen3.8)
+  #    mp:
+  #      l1SizeGB: 14                # LMCache L1 (host memory); must hold one whole request
+  #      l2StorePolicy: skip_l1      # store straight to DAOS (optional)
+  #      workers: 16                 # adapter I/O threads
+  #      maxCapacityGB: 600          # bound on what this server keeps in the container (optional)
+  #      # port: 5555, root: /mp, evictionPolicy: LRU, extraArgs: []   # defaults / more server flags
+  #    # kvConnector: LMCacheMPConnector         # default for mp; DaosMPConnector + kvConnectorModulePath:
+  #    #                                         # lmcache_daos.mp.vllm_connector for vLLM 0.18
+  #    shmSizeLimit: 16Gi            # /dev/shm (default 8Gi)
+  #    readinessFailureThreshold: 90 # x 10 s; a 27B model with a 256K context takes a while
+  #    rdma: true
+  #    maxModelLen: 262144
+  #    model: {path: /models/Qwen3.8-27B-INT4, servedName: qwen3.8-27b}
+  #    extraArgs: [--enable-prefix-caching, --mamba-cache-mode=align,   # prefix caching must be on
+  #                --attention-backend=TRITON_ATTN, --kv-cache-dtype=bfloat16]   # no nvcc; SM80 has no FP8 KV in Triton
+  #
   #  # Rebellions NPU (vllm-rbln). The image must carry vllm-rbln 0.12+ with the kv_connectors
   #  # extra (lmcache-rbln, from pypi.rbln.ai) and lmcache-daos; we do not build one. Rendered,
   #  # not yet run on RBLN hardware. NPUs come in through CDI, so no runtimeClassName.

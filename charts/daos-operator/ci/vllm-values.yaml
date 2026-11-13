@@ -42,3 +42,16 @@ vllm:
       model: {path: /data/hf_cache/model, servedName: test-rbln, cacheHostPath: /mnt/hf_cache}
       port: 8101
       rdma: true
+    - name: vllm-daos-mp
+      image: registry.gitlab.gluesys.com/exastor/daos-images/vllm-lmcache-daos:0.30.0-0.5.5-20261028
+      lmcacheMode: mp
+      poolRef: kvc
+      containerRef: kvdfs
+      systemName: daos_moon
+      lmcacheChunkSize: 784
+      mp: {l1SizeGB: 14, l2StorePolicy: skip_l1, workers: 16, maxCapacityGB: 600}
+      shmSizeLimit: 16Gi
+      model: {path: /data/hf_cache/model, servedName: test-mp, cacheHostPath: /mnt/hf_cache}
+      port: 8102
+      rdma: true
+      extraArgs: [--enable-prefix-caching, --mamba-cache-mode=align, --attention-backend=TRITON_ATTN, --kv-cache-dtype=bfloat16]

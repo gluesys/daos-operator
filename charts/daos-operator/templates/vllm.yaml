@@ -46,6 +46,16 @@ lmcacheChunkSize to the --block-size, as Rebellions recommends. Older RBLN devic
 rebellions.ai/ATOM instead of rebellions.ai/npu -- set acceleratorResource to
 what `kubectl describe node` shows. The RBLN device plugin injects the NPUs
 through CDI, so no runtimeClassName is needed there.
+
+lmcacheMode: mp runs LMCache in multi-process mode: an LMCache MP cache server
+(lmcache_daos.mp.server, DAOS as its L2 through libdfs) and vLLM with
+LMCacheMPConnector, in the one container -- vLLM hands the server its KV
+buffers over CUDA IPC, and a second container would need a GPU of its own.
+Hybrid-attention models (Qwen3.5/3.8: linear GDN + full attention) start only
+this way; the in-process connector does not support vLLM's hybrid KV manager
+(moon, 2026-11-13). Settings come from .mp, not from an LMCache config file.
+The MP adapter reads the container through DFS, so it wants a POSIX container
+and does not use the rank guard.
 */}}
 {{- range .Values.vllm.services }}
 {{- $ns := $.Values.system.spec.namespace | default "daos-system" }}
@@ -59,6 +69,19 @@ through CDI, so no runtimeClassName is needed there.
 {{- fail (printf "vllm.services[%s].accelerator must be nvidia, rbln or custom, not %q" .name $acc) }}
 {{- end }}
 {{- $preset := get $presets $acc }}
+{{- $mode := .lmcacheMode | default "inprocess" }}
+{{- if not (has $mode (list "inprocess" "mp")) }}
+{{- fail (printf "vllm.services[%s].lmcacheMode must be inprocess or mp, not %q" .name $mode) }}
+{{- end }}
+{{- $isMP := eq $mode "mp" }}
+{{- $mp := .mp | default dict }}
+{{- if and $isMP (eq $acc "rbln") }}
+{{- fail (printf "vllm.services[%s]: lmcacheMode mp is not available with accelerator rbln (its connector is in-process)" .name) }}
+{{- end }}
+{{- if and $isMP .rankGuard }}{{ if .rankGuard.enabled }}
+{{- fail (printf "vllm.services[%s]: rankGuard is in-process only; the MP adapter reads a POSIX container through DFS" .name) }}
+{{- end }}{{ end }}
+{{- if $isMP }}{{ $_ := set $preset "kvConnector" "LMCacheMPConnector" }}{{ end }}
 {{- $accResource := .acceleratorResource | default (get $preset "resource") }}
 {{- $kvConnector := .kvConnector | default (get $preset "kvConnector") }}
 {{- if not $accResource }}
@@ -75,6 +98,9 @@ chart creates the DaosSystem; otherwise the host daos_agent's own directory */}}
 {{- $agentDir := .agentSocketHostPath | default (ternary (printf "/var/run/daos-operator/agent/%s" $.Values.system.name) "/var/run/daos_agent" (eq ($.Values.system.create | toString) "true")) }}
 {{- $url := printf "plugin://daos/%s/%s%s" (required "vllm.services[].poolRef is required" .poolRef) (required "vllm.services[].containerRef is required" .containerRef) (ternary (printf "?sys=%s" .systemName) "" (not (empty .systemName))) }}
 {{- $failPolicy := .kvLoadFailurePolicy | default (ternary "recompute" "" (eq ($guard.enabled | toString) "true")) }}
+{{- $mpPort := $mp.port | default 5555 }}
+{{- $chunk := .lmcacheChunkSize | default 256 }}
+{{- if not $isMP }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -106,6 +132,7 @@ data:
       remote_storage_plugin.daos.module_path: lmcache_daos.connector
       remote_storage_plugin.daos.class_name: DaosConnector
 ---
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -149,7 +176,37 @@ spec:
           command:
             {{- toYaml . | nindent 12 }}
           {{- else }}
+          {{- if $isMP }}
+          {{- /* the MP server first; vLLM once its port is open. The args below reach
+          vLLM as "$@". The adapter JSON comes in through the environment, so pool
+          and container names need no shell quoting. */}}
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              python3.12 -m lmcache_daos.mp.server --host 127.0.0.1 --port {{ $mpPort }} \
+                --chunk-size {{ $chunk }} --l1-size-gb {{ $mp.l1SizeGB | default 20 }} \
+                --eviction-policy {{ $mp.evictionPolicy | default "LRU" }} --disable-observability \
+                {{- with $mp.l2StorePolicy }}
+                --l2-store-policy {{ . }} \
+                {{- end }}
+                {{- range $mp.extraArgs }}
+                {{ . }} \
+                {{- end }}
+                --l2-adapter "$DAOS_MP_L2_ADAPTER" &
+              srv=$!
+              for i in $(seq 1 300); do
+                (echo > /dev/tcp/127.0.0.1/{{ $mpPort }}) 2>/dev/null && break
+                kill -0 $srv 2>/dev/null || { echo "lmcache MP server exited before listening" >&2; exit 1; }
+                sleep 1
+              done
+              echo "lmcache MP server listening after ${i} s"
+              exec python3.12 -m vllm.entrypoints.openai.api_server "$@"
+            - vllm
+          {{- else }}
           command: ["python3.12", "-m", "vllm.entrypoints.openai.api_server"]
+          {{- end }}
           {{- end }}
           args:
             - --model={{ required "vllm.services[].model.path is required" .model.path }}
@@ -166,12 +223,23 @@ spec:
             {{- if or (eq $acc "nvidia") .gpuMemoryUtilization }}
             - --gpu-memory-utilization={{ .gpuMemoryUtilization | default "0.90" }}
             {{- end }}
+            {{- if $isMP }}
+            - --kv-transfer-config={"kv_connector":"{{ $kvConnector }}",{{ with .kvConnectorModulePath }}"kv_connector_module_path":"{{ . }}",{{ end }}"kv_role":"kv_both"{{ with $failPolicy }},"kv_load_failure_policy":"{{ . }}"{{ end }},"kv_connector_extra_config":{"lmcache.mp.host":"tcp://127.0.0.1","lmcache.mp.port":{{ $mpPort }}}}
+            {{- else }}
             - --kv-transfer-config={"kv_connector":"{{ $kvConnector }}","kv_role":"kv_both"{{ with $failPolicy }},"kv_load_failure_policy":"{{ . }}"{{ end }}}
+            {{- end }}
             {{- range .extraArgs }}
             - {{ . }}
             {{- end }}
           env:
+            {{- if $isMP }}
+            {{- $adapter := dict "type" "daos" "pool" .poolRef "container" .containerRef "root" ($mp.root | default "/mp") "workers" ($mp.workers | default 16) }}
+            {{- with .systemName }}{{ $_ := set $adapter "sys" . }}{{ end }}
+            {{- with $mp.maxCapacityGB }}{{ $_ := set $adapter "max_capacity_gb" . }}{{ end }}
+            - {name: DAOS_MP_L2_ADAPTER, value: {{ $adapter | toJson | quote }}}
+            {{- else }}
             - {name: LMCACHE_CONFIG_FILE, value: /etc/lmcache/lmcache_daos.yaml}
+            {{- end }}
             - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
             # lmcache-daos keys are hashed per process; they must match across restarts
             - {name: PYTHONHASHSEED, value: "0"}
@@ -241,7 +309,9 @@ spec:
             {{- end }}
           volumeMounts:
             - {name: agent-sock, mountPath: /var/run/daos_agent}
+            {{- if not $isMP }}
             - {name: lmcache-config, mountPath: /etc/lmcache, readOnly: true}
+            {{- end }}
             {{- if .model.cacheHostPath }}
             - {name: hf-cache, mountPath: /data/hf_cache}
             {{- end }}
@@ -253,20 +323,22 @@ spec:
             httpGet: {path: /health, port: {{ $port }}}
             initialDelaySeconds: 60
             periodSeconds: 10
-            failureThreshold: 60
+            failureThreshold: {{ .readinessFailureThreshold | default 60 }}
       volumes:
         - name: agent-sock
           hostPath:
             path: {{ $agentDir }}
             type: Directory
+        {{- if not $isMP }}
         - name: lmcache-config
           configMap: {name: {{ .name }}-lmcache}
+        {{- end }}
         {{- if .model.cacheHostPath }}
         - name: hf-cache
           hostPath: {path: {{ .model.cacheHostPath }}, type: Directory}
         {{- end }}
         - name: shm
-          emptyDir: {medium: Memory, sizeLimit: 8Gi}
+          emptyDir: {medium: Memory, sizeLimit: {{ .shmSizeLimit | default "8Gi" }}}
         {{- if and .rdma (not .rdmaResource) }}
         - name: ib-dev
           hostPath: {path: /dev/infiniband, type: Directory}

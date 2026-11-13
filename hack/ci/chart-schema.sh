@@ -83,4 +83,21 @@ if [ -f "$chart/templates/pools.yaml" ] && grep -q 'csiSys' "$chart/templates/po
         echo "FAIL  pools[] other-system render failed for another reason:"; sed 's/^/    /' "$out/pools-other-system.txt" | head -5; fail=1
     fi
 fi
+# lmcacheMode: mp cannot carry the rank guard (in-process only) nor run on rbln; both must be refused
+# with their own message, not render a pod that never attaches its connector.
+if grep -q 'lmcacheMode' "$chart/templates/vllm.yaml"; then
+    for case in "rankGuard: {enabled: true}|rankGuard is in-process only" "accelerator: rbln|not available with accelerator rbln"; do
+        extra="${case%%|*}"; want="${case#*|}"
+        bad="$out/vllm-mp-bad.yaml"
+        printf '%s\n' 'vllm:' '  services:' '    - name: bad' '      image: x' '      lmcacheMode: mp' \
+            '      poolRef: p' '      containerRef: c' '      model: {path: /m}' "      $extra" > "$bad"
+        if helm template daos-operator "$chart" -n daos-system -f "$bad" > "$out/vllm-mp-bad.txt" 2>&1; then
+            echo "FAIL  lmcacheMode mp with '$extra' was accepted"; fail=1
+        elif grep -q "$want" "$out/vllm-mp-bad.txt"; then
+            echo "ok    lmcacheMode mp with '$extra' refused"
+        else
+            echo "FAIL  lmcacheMode mp with '$extra' failed for another reason:"; sed 's/^/    /' "$out/vllm-mp-bad.txt" | head -5; fail=1
+        fi
+    done
+fi
 exit $fail
