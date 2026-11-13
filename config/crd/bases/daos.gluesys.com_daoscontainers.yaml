@@ -155,12 +155,17 @@ spec:
                   rule: quantity(string(self)).isGreaterThan(quantity('0'))
               type:
                 default: POSIX
-                description: ContainerType is the DAOS container layout.
+                description: |-
+                  ContainerType is the DAOS container layout. Any value other than POSIX
+                  gives a non-POSIX container, which is what object-API users such as the
+                  lmcache-daos rank guard need (PYTHON is the one the docs use).
+                  UNKNOWN is not offered: `daos cont create --type UNKNOWN` always fails with
+                  "unknown container layout" (lib/daos ContainerLayout.FromString), and leaving
+                  the type out gives POSIX, so no CR could ever create one.
                 enum:
                 - POSIX
                 - PYTHON
                 - HDF5
-                - UNKNOWN
                 type: string
             required:
             - poolRef

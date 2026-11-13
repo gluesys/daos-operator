@@ -23,8 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// ContainerType is the DAOS container layout.
-// +kubebuilder:validation:Enum=POSIX;PYTHON;HDF5;UNKNOWN
+// ContainerType is the DAOS container layout. Any value other than POSIX
+// gives a non-POSIX container, which is what object-API users such as the
+// lmcache-daos rank guard need (PYTHON is the one the docs use).
+// UNKNOWN is not offered: `daos cont create --type UNKNOWN` always fails with
+// "unknown container layout" (lib/daos ContainerLayout.FromString), and leaving
+// the type out gives POSIX, so no CR could ever create one.
+// +kubebuilder:validation:Enum=POSIX;PYTHON;HDF5
 type ContainerType string
 
 // DaosContainerSpec maps to `daos cont create`. Defaults come from the

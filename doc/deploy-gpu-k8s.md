@@ -216,7 +216,7 @@ spec:
 apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosContainer
 metadata: {name: kv, namespace: daos-system}
-spec: {poolRef: kvc, type: UNKNOWN}   # the rank guard uses the object API, not DFS
+spec: {poolRef: kvc, type: PYTHON}   # any non-POSIX layout: the rank guard uses the object API, not DFS
 YAML
 ```
 
