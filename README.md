@@ -22,6 +22,9 @@ helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
 Images are public at `ghcr.io/gluesys/daos-{operator,csi,server,agent,admin,client}`.
 The chart installs the operator alone by default; the CSI driver, S3 gateways and
 the vLLM workload are opt-in (`csi.enabled`, `s3.services[]`, `vllm.services[]`).
+The vLLM workload is a reference for PoCs and tests; to use the DAOS KV cache from your
+own serving stack, see [doc/serving-integration.md](doc/serving-integration.md). What has
+been verified, and where, is in [doc/compatibility.md](doc/compatibility.md).
 
 ## Upgrade
 

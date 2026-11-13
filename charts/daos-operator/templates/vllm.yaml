@@ -2,8 +2,9 @@
 SPDX-License-Identifier: Apache-2.0
 Copyright 2026 Gluesys Co., Ltd.
 
-Reference serving workload: vLLM + LMCache with a DAOS container as the KV
-cache (doc/deploy-gpu-k8s.md). One Deployment + Service + LMCache ConfigMap per
+Reference serving workload for PoCs, demos and tests: vLLM + LMCache with a DAOS
+container as the KV cache (doc/deploy-gpu-k8s.md). Not production serving -- that
+belongs to the user's own stack, which follows doc/serving-integration.md. One Deployment + Service + LMCache ConfigMap per
 entry in .Values.vllm.services.
 
 hostNetwork is not optional: daos_agent hands the client an interface name and
