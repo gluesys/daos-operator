@@ -32,6 +32,19 @@ vLLM reference workload together.
 | Image store | the serving image is **~10 GB on disk**; the node's container store needs that much free | `df -h` (§5.2) |
 | Model | keep the HF cache on the node and mount it by hostPath (offline), or use a PVC | |
 
+### 1a. Storage nodes, when the operator runs the DAOS servers
+
+These stopped a fresh install on a GPU cluster (moon, 2026-11-13) without an error that
+said why. The node annotation `daos.gluesys.com/hostprep-status` lists the ones hostprep
+sees under `warnings`.
+
+| Item | Requirement | Symptom when missed |
+|---|---|---|
+| NVMe for DAOS | no filesystem or partition-table signature left on it: `wipefs -a /dev/nvmeXn1` (destroys what was there) | `bindNvme: true` binds nothing (`bound=0`): SPDK skips a disk it thinks is in use |
+| Hugepages | after `vm.nr_hugepages` is raised (hostprep raises it to `nrHugepages`), **restart the kubelet** once | server pods Pending with `Insufficient hugepages-2Mi`: the kubelet counts hugepages only at start |
+| THP | `transparent_hugepage=never` (kernel command line, or `hostPrep.disableTHP: true`) | daos_server exits with `code = 623` |
+| MD-on-SSD pool size | `memRatioPercent` (e.g. 10) on a pool bigger than the RAM tier can hold at mem-ratio 100 | `dmg pool create` fails with `DER_NOSPACE` |
+
 > **Why hostNetwork.** daos_agent hands the client the interface names it sees, and
 > the DAOS servers must be able to **reach back at the address the client
 > announced**. A client on the pod network sits behind the CNI's masquerade
@@ -256,7 +269,15 @@ eviction -- each one a hit a lower tier (HDD pool, S3) would have served. Turn i
 a real service before deciding on tiering; lmcache-daos `doc/REUSE-STATS.md` says how to read it.
 It needs vllm-lmcache-daos 0.30.0-0.5.5-20261028 or later; older images ignore it.
 
-Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5.
+**The guard's object path is slower than the POSIX container of §3.1 for large KV.** Each key
+sits on one target (S1) and is copied through a private buffer once more. With
+Qwen3.8-27B (about 250 KB of KV per token, 7.8 GB for a 32K prompt) on two IB 100G ranks it
+read at 0.9-1.1 GB/s against 7.3 GB/s for a POSIX SX container with 4 MiB chunks, so the
+storage hit was 7x slower (moon, 2026-11-13). The guard buys hits that survive a storage node
+reboot; when per-request KV is gigabytes and the cluster can afford recompute during an outage,
+use the §3.1 container instead.
+
+Measurements and reasoning: FlexA Hub `1f09478a` §2.7-2.9, §2.13, §5; moon: `3ee2473f` §3.3, §4.3.
 
 ### 3.2 Installing the client agent on the GPU nodes
 
@@ -384,6 +405,31 @@ The socket lives on a hostPath, so **a socket file left behind by a previous age
 can block the new one** (`Configured dRPC socket file is already in use`). The
 operator adds an initContainer that cleans up before start — build your own
 DaemonSet and you have to do the same.
+
+### 5.6 Hybrid-attention models need LMCache MP mode
+
+Qwen3.5 / Qwen3.8 mix linear (GDN) and full attention. With the in-process
+`LMCacheConnectorV1` the chart renders, vLLM fails at start with `Failed to promote local
+KV cache specs to one unified type`: the connector does not support the hybrid KV
+manager. They run only with LMCache's multi-process mode (`LMCacheMPConnector`, which
+supports it), which **the chart does not render yet** -- deploy it by hand. What it took
+on A100 (moon, 2026-11-13, Hub `3ee2473f` §3.3):
+
+- an LMCache MP server in the same pod (`--host 127.0.0.1`, not a `tcp://` URL),
+- `--chunk-size` a multiple of vLLM's block for the model (784 tokens for Qwen3.8),
+- prefix caching **on** (the mamba state snapshots LMCache needs exist only then),
+- an L1 big enough for one request: 196 MiB per 784-token block, 14 GB for 32K,
+- `--attention-backend=TRITON_ATTN` (§5.3: no nvcc for FlashInfer) and, on SM80,
+  `--kv-cache-dtype=bfloat16` (Triton has no FP8 KV there).
+
+### 5.7 A privileged pod sees every GPU
+
+Without `rdmaResource` the vLLM pod runs privileged so it can open `/dev/infiniband`, and
+a privileged container sees all GPUs of the node. With a device plugin that passes the
+allocation through CDI (`NVIDIA_VISIBLE_DEVICES=void` in the container), the process
+cannot tell which GPU it was given and may start on another pod's (moon, 2026-11-13). Use
+an RDMA shared device plugin and set `rdmaResource` (see the RDMA section below): the pod is
+no longer privileged and sees only its allocated GPU.
 
 ---
 
