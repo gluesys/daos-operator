@@ -165,8 +165,11 @@ pools: []
 #      parameters: {oclass: RP_2GX, dirOclass: RP_2G1}   # "pool" is always this entry
 
 # vLLM serving with LMCache writing its KV cache to a DAOS container.
-# This is a reference workload, not part of the storage layer: it is here so a
-# GPU cluster can be brought up with one release. See doc/deploy-gpu-k8s.md.
+# This is a reference workload for PoCs, demos and tests -- not part of the storage
+# layer and not a way to run inference in production. It is here so a GPU cluster
+# can be brought up with one release. Production serving (KServe, llm-d, Dynamo, ...)
+# follows the integration contract in doc/serving-integration.md; verified
+# combinations are in doc/compatibility.md. See also doc/deploy-gpu-k8s.md.
 #
 # The pod runs with hostNetwork because a DAOS client must be reachable at the
 # address it advertises; a pod-network client behind the CNI's masquerade is

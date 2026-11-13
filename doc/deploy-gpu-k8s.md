@@ -10,6 +10,12 @@ restarted** (§6 verifies exactly that).
 One `helm install` brings up the operator, the CSI driver, the S3 gateway and the
 vLLM reference workload together.
 
+> **The vLLM part is a reference workload for PoCs, demos and tests**, not a way to
+> run inference in production. Serving belongs to the stack that owns it (KServe,
+> llm-d, Dynamo, ...). What that stack must do to use the DAOS KV cache is the
+> [integration contract](serving-integration.md). What has been verified, and where,
+> is in [compatibility.md](compatibility.md).
+
 ```
                     ┌─────────────── GPU node ───────────────┐
      prompt ──▶ vLLM(hostNetwork) ──▶ LMCache ──▶ lmcache-daos ──libdfs──┐
@@ -290,7 +296,7 @@ pods only need to mount that socket.
 clientAgent:
   enabled: true
   nodeSelector: {"nvidia.com/gpu.present": "true"}   # GPU nodes
-  # hostSocketDir: /var/run/daos_agent/<system>      # default; several systems can coexist
+  # hostSocketDir: /var/run/daos-operator/agent/<DaosSystem name>   # default; several systems can coexist
   # hostNetwork: true                                # default. Leave it alone
 client:
   includeFabricIfaces: ["ens18"]   # the fabric interface names the servers use
@@ -485,28 +491,12 @@ If step 3 passes, the KV cache lives in DAOS, outside the GPU node.
 
 ---
 
-## 8. The combination that was verified
+## 8. What was verified
 
-| Item | Value |
-|---|---|
-| Kubernetes / runtime | 1.31.14 / CRI-O 1.31.5 (cgroup v2) |
-| GPU | NVIDIA RTX A6000 (sm_86), driver 610.43.02, nvidia-container-toolkit 1.20.1 |
-| DAOS | 2.8.0 (pod servers, ofi+tcp) |
-| Image | `vllm-lmcache-daos:0.30.0-0.5.5-20260927` (vLLM 0.30.0 + LMCache 0.5.5 + lmcache-daos) |
-| Model | Llama-3.1-8B-Instruct, bf16, max-model-len 16384 |
-
-The GPU Operator path was verified separately on 2026-10-01: GPU Operator v26.7.1
-with `driver.enabled=false` (host driver 610.57.04) and `toolkit.enabled=true`, on
-Kubernetes 1.31.14 / CRI-O 1.31.5 / Rocky 10.2 with one H100 NVL and a RoCE 400G
-link. A single pod took `nvidia.com/gpu: 1` together with `hostNetwork`,
-`privileged`, a `/dev/infiniband` hostPath and the agent socket, and saw the GPU,
-the CUDA devices, the DAOS pools and the IB devices at once. The operator adds its
-own `99-nvidia.conf` drop-in and leaves a custom CRI-O storage root (§5.2) alone.
-
-Not verified: letting the GPU Operator manage the **network** driver (MOFED/DOCA).
-That path touches the NIC driver the DAOS client depends on, so it needs its own
-test. containerd and managed Kubernetes also remain unverified — only how to
-configure them is written down.
+Moved to [compatibility.md](compatibility.md). Each combination there carries a date and the
+evidence. That includes the A6000 / CRI-O setup this guide was written on and the GPU
+Operator + 400G RoCE run of 2026-10-01. The unverified paths are listed there too: containerd,
+managed Kubernetes, and the GPU Operator managing the NIC driver.
 
 ## When the fabric is RDMA (ofi+verbs, ucx)
 
