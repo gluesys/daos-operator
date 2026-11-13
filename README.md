@@ -81,7 +81,11 @@ What this does and does not remove:
   `vm.nr_hugepages`, and with `hostPrep.bindNvme: true` it hands unused NVMe to
   SPDK. Neither is undone by uninstalling. The default is `bindNvme: false`, so a
   default install leaves only the raised hugepages. The node annotation
-  `daos.gluesys.com/hostprep-status` records what the last run did.
+  `daos.gluesys.com/hostprep-status` records what the last run did, and its
+  `warnings` list what stops DAOS on that node that hostprep did not fix (a
+  filesystem signature to wipe, THP, a kubelet that has not seen the hugepages).
+  `hostPrep.disableTHP: true` also sets transparent_hugepage to never, which
+  uninstalling does not undo either.
 
 If you already ran `helm uninstall` and are left with a `DaosSystem` and no
 operator, bring the operator back alone and then delete it:

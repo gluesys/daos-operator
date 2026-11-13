@@ -82,6 +82,7 @@ system:
     hostPrep:
       enabled: true
       bindNvme: false
+      disableTHP: false   # true: hostprep sets transparent_hugepage=never (daos_server refuses THP, code 623)
 
 # exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a
 # daos_agent sidecar). One driver per DaosSystem: csi.system names the system

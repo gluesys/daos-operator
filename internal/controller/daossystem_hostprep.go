@@ -123,6 +123,7 @@ func (r *DaosSystemReconciler) ensureHostPrep(ctx context.Context, sys *daosv1al
 				{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}},
 				{Name: "DAOS_HOSTPREP_BIND_NVME", Value: strconv.FormatBool(sys.Spec.HostPrep.BindNvme)},
 				{Name: "DAOS_HOSTPREP_FABRIC_CIDR", Value: sys.Spec.HostPrep.FabricCIDR},
+				{Name: "DAOS_HOSTPREP_DISABLE_THP", Value: strconv.FormatBool(sys.Spec.HostPrep.DisableTHP)},
 				{Name: "DAOS_HOSTPREP_HUGEPAGES", Value: strconv.Itoa(int(hugepagesOf(sys)))},
 				{Name: "DAOS_HOSTPREP_INTERVAL", Value: fmt.Sprintf("%ds", interval)},
 				// /sys and /dev are the host's (hostPath at the same paths); /proc/sys/vm is reached

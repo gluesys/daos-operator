@@ -367,12 +367,22 @@ spec:
                   HostPrepSpec controls the per-node preparation DaemonSet (#8). It discovers
                   NVMe/DSN/RDMA facts into Node annotations, raises hugepages, and only when
                   BindNvme is true hands unused NVMe to SPDK. It never touches devices that
-                  have partitions, mounts or holders, and never formats anything.
+                  have partitions, mounts, holders or a filesystem/partition-table signature,
+                  and never formats anything. What it could not fix (a signature to wipe, THP,
+                  a kubelet that has not seen the hugepages) is listed under "warnings" in the
+                  node's daos.gluesys.com/hostprep-status annotation.
                 properties:
                   bindNvme:
                     description: |-
                       BindNvme lets hostprep unbind unused NVMe from the kernel (daos_server nvme prepare).
                       Default false: discover and annotate only.
+                    type: boolean
+                  disableTHP:
+                    description: |-
+                      DisableTHP lets hostprep set transparent_hugepage to never on every run.
+                      daos_server refuses to start while it is always or madvise (code 623). It is a
+                      host-wide setting that other workloads see, hence opt-in; the node's
+                      hostprep-status reports the current value either way. Default false.
                     type: boolean
                   enabled:
                     description: Enabled deploys the DaemonSet. Default true.

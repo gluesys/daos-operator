@@ -304,6 +304,13 @@ func (r *DaosSystemReconciler) serverReady(ctx context.Context, sys *daosv1alpha
 	return false, podNotReadyMessage(pods.Items[0])
 }
 
+const (
+	thpHint = "set spec.hostPrep.disableTHP: true or transparent_hugepage=never on the storage nodes"
+	// the kubelet reads the hugepage count only when it starts (moon, 2026-11-13)
+	hugepagesHint = "if vm.nr_hugepages was raised after the kubelet started, restart the kubelet on the storage nodes: " +
+		"it counts hugepages only at start (the node's daos.gluesys.com/hostprep-status warns when they differ)"
+)
+
 // podNotReadyMessage says why a server pod is not ready and, when daos_server exited, why it
 // did: the first error line it left in the termination message (the container uses
 // FallbackToLogsOnError). Without it a THP, RAM or bdev-space failure showed only as
@@ -342,13 +349,20 @@ func podNotReadyMessage(p corev1.Pod) string {
 		}
 		if cause != "" {
 			msg += ": " + cause
+			if strings.Contains(cause, "code = 623") {
+				msg += "; " + thpHint
+			}
 		}
 		return msg
 	}
 	// not placed: the scheduler's reason (e.g. Insufficient hugepages-2Mi) is all there is
 	for _, c := range p.Status.Conditions {
 		if c.Type == corev1.PodScheduled && c.Status == corev1.ConditionFalse && c.Message != "" {
-			return fmt.Sprintf("server pod %s: %s: %s", p.Name, c.Reason, clip(c.Message))
+			msg := fmt.Sprintf("server pod %s: %s: %s", p.Name, c.Reason, clip(c.Message))
+			if strings.Contains(c.Message, "Insufficient hugepages-2Mi") {
+				msg += "; " + hugepagesHint
+			}
+			return msg
 		}
 	}
 	return fmt.Sprintf("server pod %s: %s, not ready", p.Name, p.Status.Phase)

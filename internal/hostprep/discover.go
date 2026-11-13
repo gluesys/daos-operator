@@ -42,7 +42,8 @@ type NVMe struct {
 	DSN       string   // PCI Device Serial Number, 16 hex chars, "" if the device has none
 	Numa      int      // -1 when unknown
 	BlockDevs []string // nvme0n1 ... while bound to the kernel driver
-	InUse     bool     // has partitions, mounts or holders -> never a DAOS candidate
+	InUse     bool     // has partitions, mounts, holders or an on-disk signature -> never a DAOS candidate
+	InUseWhy  string   // why InUse, for the node's hostprep-status
 }
 
 // BoundForSPDK reports whether the device is already detached from the kernel
@@ -52,7 +53,8 @@ func (n NVMe) BoundForSPDK() bool { return n.Driver == "vfio-pci" || n.Driver ==
 // Sys wraps the filesystem roots.
 type Sys struct {
 	Root   string // "" -> "/"
-	Mounts string // "" -> /proc/mounts
+	Mounts string // "" -> /proc/1/mounts (the host's, hostPID), else /proc/mounts
+	Swaps  string // "" -> /proc/swaps (not namespaced: the host's list)
 }
 
 func (s Sys) path(p string) string {
@@ -96,14 +98,99 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 			n.BlockDevs = append(n.BlockDevs, name)
 			parts, _ := filepath.Glob(filepath.Join(b, name+"p*"))
 			holders, _ := os.ReadDir(filepath.Join(b, "holders"))
-			if len(parts) > 0 || len(holders) > 0 || mounted["/dev/"+name] {
-				n.InUse = true
+			switch {
+			case n.InUse: // another namespace already decided it; keep that reason
+			case len(parts) > 0:
+				n.InUse, n.InUseWhy = true, name+" has partitions"
+			case len(holders) > 0:
+				n.InUse, n.InUseWhy = true, name+" has holders (LVM, md, dm)"
+			case mounted["/dev/"+name]:
+				n.InUse, n.InUseWhy = true, name+" is mounted or an active swap"
+			default:
+				// SPDK setup.sh (daos_server nvme prepare) skips a device that still carries
+				// a filesystem or partition-table signature and reports success: hostprep then
+				// published bound=0 with no error (moon, ext4 left on an unmounted disk, 2026-11-13).
+				if sig := blockSignature(s.path("/dev/" + name)); sig != "" {
+					n.InUse, n.InUseWhy = true, fmt.Sprintf("%s signature on %s: SPDK will not take it; wipefs -a /dev/%s to give it to DAOS", sig, name, name)
+				}
 			}
 		}
 		out = append(out, n)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PCI < out[j].PCI })
 	return out, nil
+}
+
+// blockSignature names the filesystem, volume or partition-table signature at the start of a
+// block device, or "" when there is none (or the device cannot be read). It covers what
+// SPDK setup.sh's in-use check sees on a disk that was used before.
+func blockSignature(dev string) string {
+	f, err := os.Open(dev)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	b := make([]byte, 0x10048) // up to the btrfs magic; covers GPT on 4 KiB-block disks too
+	n, _ := f.ReadAt(b, 0)
+	b = b[:n]
+	has := func(off int, magic string) bool {
+		return len(b) >= off+len(magic) && string(b[off:off+len(magic)]) == magic
+	}
+	switch {
+	case has(0x438, "\x53\xef"):
+		return "ext2/3/4"
+	case has(0, "XFSB"):
+		return "xfs"
+	case has(0x10040, "_BHRfS_M"):
+		return "btrfs"
+	case has(4086, "SWAPSPACE2"), has(4086, "SWAP-SPACE"):
+		return "swap"
+	case has(512, "LABELONE"), has(0, "LABELONE"):
+		return "LVM2"
+	case has(512, "EFI PART"), has(4096, "EFI PART"): // 512 B or 4 KiB logical blocks
+		return "GPT"
+	case has(510, "\x55\xaa"):
+		return "MBR"
+	}
+	return ""
+}
+
+// Hugepages2M reads the number of 2 MiB pages, which is what the kubelet advertises as
+// hugepages-2Mi and DAOS uses. It differs from vm.nr_hugepages when the default hugepage
+// size is not 2 MiB (default_hugepagesz=1G, arm64 with 64 KiB pages). -1 when unknown.
+func (s Sys) Hugepages2M() int {
+	b, err := os.ReadFile(s.path("/sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages"))
+	if err != nil {
+		return -1
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(string(b)))
+	if err != nil {
+		return -1
+	}
+	return v
+}
+
+// THP returns the selected value of /sys/kernel/mm/transparent_hugepage/enabled
+// ("always", "madvise" or "never"); daos_server refuses to start unless it is never
+// (code 623). "" when the file cannot be read.
+func (s Sys) THP() string {
+	b, err := os.ReadFile(s.path("/sys/kernel/mm/transparent_hugepage/enabled"))
+	if err != nil {
+		return ""
+	}
+	v := string(b)
+	if i := strings.Index(v, "["); i >= 0 {
+		if j := strings.Index(v[i:], "]"); j > 0 {
+			return v[i+1 : i+j]
+		}
+	}
+	return strings.TrimSpace(v)
+}
+
+// DisableTHP writes never to /sys/kernel/mm/transparent_hugepage/enabled. It is
+// host-wide and lasts until reboot; hostprep re-applies it on every run.
+func (s Sys) DisableTHP() error {
+	return os.WriteFile(s.path("/sys/kernel/mm/transparent_hugepage/enabled"), []byte("never"), 0o644)
 }
 
 // parseDSN walks the PCIe extended capability list (from 0x100) for the Device
@@ -127,23 +214,44 @@ func parseDSN(cfg []byte) string {
 }
 
 func (s Sys) mountedSources() map[string]bool {
-	p := s.Mounts
-	if p == "" {
-		p = "/proc/mounts"
-	}
 	out := map[string]bool{}
-	f, err := os.Open(p)
-	if err != nil {
-		return out
+	add := func(src string) {
+		out[src] = true
+		// /dev/nvme0n1p1 mounted -> nvme0n1 in use
+		if i := strings.LastIndex(src, "p"); i > 0 {
+			out[src[:i]] = true
+		}
 	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		if fields := strings.Fields(sc.Text()); len(fields) > 0 {
-			out[fields[0]] = true
-			// /dev/nvme0n1p1 mounted -> nvme0n1 in use
-			if i := strings.LastIndex(fields[0], "p"); i > 0 {
-				out[fields[0][:i]] = true
+	// /proc/mounts is hostprep's own mount namespace, which does not show a disk the host
+	// mounted whole (a /data ext4 on nvme1n1); that disk then looked unused and, with the
+	// signature check, drew a "wipefs" hint. PID 1's table is the host's (hostPID).
+	mounts := []string{s.Mounts}
+	if s.Mounts == "" {
+		mounts = []string{"/proc/1/mounts", "/proc/mounts"}
+	}
+	for _, p := range mounts {
+		f, err := os.Open(p)
+		if err != nil {
+			continue
+		}
+		sc := bufio.NewScanner(f)
+		for sc.Scan() {
+			if fields := strings.Fields(sc.Text()); len(fields) > 0 {
+				add(fields[0])
+			}
+		}
+		f.Close()
+		break
+	}
+	// an active swap device is in neither table
+	swaps := s.Swaps
+	if swaps == "" {
+		swaps = "/proc/swaps"
+	}
+	if b, err := os.ReadFile(swaps); err == nil {
+		for i, l := range strings.Split(string(b), "\n") {
+			if fields := strings.Fields(l); i > 0 && len(fields) > 0 {
+				add(fields[0])
 			}
 		}
 	}
@@ -263,6 +371,8 @@ type Facts struct {
 	Skipped      []NVMe // kernel-bound but in use (OS disk etc.)
 	Hugepages    int
 	HugepagesErr string
+	THP          string   // transparent_hugepage/enabled after this run, "" unknown
+	Warnings     []string // what stops DAOS on this node that hostprep did not (or may not) fix
 }
 
 // Classify splits NVMe devices into bound / candidates / skipped.
@@ -278,4 +388,45 @@ func Classify(devs []NVMe) (bound, candidates, skipped []NVMe) {
 		}
 	}
 	return
+}
+
+// BindWarnings names the devices nvme prepare was asked to take but left on another
+// driver. SPDK setup.sh skips what it considers in use and still exits 0, so without
+// this the only trace was bound=0 in the status.
+func BindWarnings(requested []string, after []NVMe) []string {
+	drv := map[string]string{}
+	for _, d := range after {
+		if !d.BoundForSPDK() {
+			drv[d.PCI] = d.Driver
+		}
+	}
+	var w []string
+	for _, pci := range requested {
+		if d, left := drv[pci]; left {
+			w = append(w, fmt.Sprintf("nvme prepare left %s on driver %q: SPDK skips a device it sees as in use (a signature hostprep does not know, or a process holding it); check it with wipefs/lsblk", pci, d))
+		}
+	}
+	return w
+}
+
+// KubeletHugepagesWarning compares the host's 2 MiB pages with what the kubelet
+// advertises. The kubelet counts hugepages only when it starts, so pages raised
+// later (by hostprep or by hand) stay invisible to the scheduler and the server
+// pods wait with "Insufficient hugepages-2Mi" (moon, 2026-11-13).
+// hostPages is the 2 MiB page count (Hugepages2M); <= 0 skips the check.
+func KubeletHugepagesWarning(hostPages int, kubeletBytes int64) string {
+	want := int64(hostPages) * 2 << 20
+	if hostPages <= 0 || kubeletBytes >= want {
+		return ""
+	}
+	return fmt.Sprintf("the kubelet advertises %d MiB of hugepages-2Mi but the host has %d pages (%d MiB): restart the kubelet on this node, it counts hugepages only when it starts",
+		kubeletBytes>>20, hostPages, want>>20)
+}
+
+// THPWarning says what to do when THP is not never; "" when it is (or unknown).
+func THPWarning(thp string) string {
+	if thp == "" || thp == "never" {
+		return ""
+	}
+	return "transparent_hugepage is " + thp + ": daos_server refuses to start (code 623); set spec.hostPrep.disableTHP: true, or add transparent_hugepage=never to the kernel command line"
 }
