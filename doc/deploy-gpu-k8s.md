@@ -413,11 +413,14 @@ Qwen3.5 / Qwen3.8 mix linear (GDN) and full attention. With the in-process
 `LMCacheConnectorV1` the chart renders, vLLM fails at start with `Failed to promote local
 KV cache specs to one unified type`: the connector does not support the hybrid KV
 manager. They run only with LMCache's multi-process mode (`LMCacheMPConnector`, which
-supports it). Overriding `kvConnector` is not enough: **the chart does not render the MP
-server or its flags yet** -- deploy it by hand. What it took
-on A100 (moon, 2026-11-13, Hub `3ee2473f` §3.3):
+supports it). Set `lmcacheMode: mp` on the service: the chart then runs the LMCache MP
+server (`lmcache_daos.mp.server`, DAOS as its L2 through libdfs) and vLLM with
+`LMCacheMPConnector` in one container, and takes the server settings from `mp:`
+(`values.yaml` has the full example). The MP adapter reads a POSIX container through DFS,
+so it does not combine with the rank guard. What it took on A100 (moon, 2026-11-13, Hub
+`3ee2473f` §3.3):
 
-- an LMCache MP server in the same pod (`--host 127.0.0.1`, not a `tcp://` URL),
+- the MP server in the same container (the chart does this, on `127.0.0.1`),
 - `--chunk-size` a multiple of vLLM's block for the model (784 tokens for Qwen3.8),
 - prefix caching **on** (the mamba state snapshots LMCache needs exist only then),
 - an L1 that holds a whole request with room to spare: a 784-token block is 196 MiB, so a
