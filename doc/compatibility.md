@@ -37,6 +37,7 @@ what *should* work. A row without a date is not a claim.
 | H100 NVL · GPU Operator v26.7.1 (`driver.enabled=false`) | `/dev/infiniband` + privileged, RoCE 400G | agent + DAOS pools seen from the GPU pod | verified | 2026-10-01 | [note B](#b-h100--gpu-operator-2026-10-01) |
 | H100 NVL · GPU Operator | RDMA shared device plugin (Network Operator 26.4.2) + `IPC_LOCK` | 64 MiB round trip, 2777 / 12162 MB/s | verified | 2026-10-01 | deploy-gpu-k8s "When the fabric is RDMA" |
 | A100 80GB · device plugin (CDI), containerd 2.2.1 | `/dev/infiniband` + privileged, IB 100G | **MP** · Qwen3.8-27B INT4, hand-written Deployment | verified | 2026-11-13 | moon, Hub `3ee2473f` §4 |
+| RTX A6000 · podman on one host (no Kubernetes), local DAOS 4 ranks | — | **MP** + MTP 3 · Qwen3.8-27B, FP8 KV, chunk 1600, moon's arguments | verified (restored = cold, 96/96) | 2026-11-15 | cxl2; [note C](#c-mtp--lmcache-mp-2026-11-15) |
 | any | any | MP via the chart (`lmcacheMode: mp`) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh` |
 | Rebellions NPU · `accelerator: rbln` | any | in-process (lmcache-rbln) | rendered | 2026-10-13 | chart 0.1.6 |
 | GPU Operator managing the NIC driver (MOFED/DOCA) | any | any | unverified | — | touches the NIC driver the DAOS client uses; needs its own test |
@@ -46,7 +47,7 @@ what *should* work. A row without a date is not a claim.
 | Image | Tag used |
 |---|---|
 | DAOS servers / agent / admin / client | `2.8.0-20261110-gc1645462` (lane B, moon) |
-| vllm-lmcache-daos | `0.30.0-0.5.5-20260927` (A6000), `0.30.0-0.5.5-20261028` (moon) |
+| vllm-lmcache-daos | `0.30.0-0.5.5-20260927` (A6000), `0.30.0-0.5.5-20261028` (moon, 2026-11-13), `0.32.0-0.5.6-20261114` (moon from 2026-11-14, note C) |
 
 ## 4. Notes on the verified rows
 
@@ -65,6 +66,22 @@ RoCE 400G link. One pod held `nvidia.com/gpu: 1` together with `hostNetwork`, `p
 `/dev/infiniband` hostPath and the agent socket. From that pod it saw the GPU, the CUDA devices,
 the DAOS pools and the IB devices. The GPU Operator adds its own `99-nvidia.conf` drop-in and
 leaves a custom CRI-O storage root (deploy-gpu-k8s §5.2) alone.
+
+### C. MTP + LMCache MP, 2026-11-15
+
+The question was whether a reply restored from the cache matches the cold reply when MTP is on.
+The image and arguments were moon's (`vllm-lmcache-daos:0.32.0-0.5.6-20261114`, FLASHINFER, FP8
+KV, MTP 3, chunk 1600, `--separate-object-groups`), with `--max-model-len 40000` to fit 48 GB, on
+an RTX A6000 (sm_86; moon is sm_80). Greedy replies to prompts of 4321, 16321 and 32321 random
+words, a Korean document question, a needle and a code question were compared byte for byte: one
+cold reply against two GPU hits and six alternating storage and GPU hits. The storage hits read
+from DAOS L2. MTP on, chunk 1600: 48/48 equal. MTP off, chunk 1568: 48/48 equal. MTP off with
+chunk 1600 does not start (serving-integration §3.2).
+
+Earlier, vLLM 0.30 + LMCache 0.5.5 and 0.5.7 with bf16 KV (MTP block 800) gave 27/27 different
+replies, the symptom of LMCache#5675. vLLM, LMCache and the KV dtype all changed between the two
+runs, so which one made the difference is not known. Treat MTP + LMCache as per image: run the
+check again whenever one of the three changes.
 
 ## 5. Adding a row
 

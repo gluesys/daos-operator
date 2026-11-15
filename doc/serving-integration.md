@@ -100,6 +100,16 @@ python3.12 -m lmcache_daos.mp.server --host 127.0.0.1 --port <mp-port> --chunk-s
 - Model requirements (Qwen3.8 on A100): `--chunk-size` must be a multiple of vLLM's block (784), with
   `--enable-prefix-caching` and `--mamba-cache-mode=align`. The L1 must hold one whole
   request, and the attention backend and KV dtype must suit the image and GPU. See deploy-gpu-k8s §5.6.
+- The block depends on the KV dtype and on MTP (speculative decoding). On vLLM 0.32 with FP8 KV,
+  Qwen3.8 gets 1568 without MTP and 1600 with MTP 3. Turning MTP off while keeping
+  `--chunk-size 1600` stops vLLM at start-up (`chunk size 1600 must be a multiple of 1568`).
+  Change the two together.
+- MTP with LMCache: check that a response restored from the cache is the same text as the cold
+  one. vLLM 0.30 + LMCache 0.5.5/0.5.7 with bf16 KV failed (27 of 27 differed, LMCache#5675).
+  vLLM 0.32 + LMCache 0.5.6 with FP8 KV passed (96 of 96, 2026-11-15, [compatibility note C](compatibility.md#c-mtp--lmcache-mp-2026-11-15)).
+  Run the check again whenever the image changes vLLM, LMCache or the KV dtype: greedy, prompt
+  lengths that are not a multiple of the chunk, a needle prompt, and compare cold, GPU-hit and
+  storage-hit replies. MTP also slows cache hits (time to first token about 2× at 32K).
 - vLLM 0.18 picks a stale bundled `LMCacheMPConnector`. There, use `DaosMPConnector` with
   `kv_connector_module_path: lmcache_daos.mp.vllm_connector` (lmcache-daos README).
 
