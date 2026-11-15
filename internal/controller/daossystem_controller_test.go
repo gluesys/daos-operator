@@ -980,6 +980,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-metrics"}, svc)).To(Succeed())
 		Expect(svc.Spec.ClusterIP).To(Equal(corev1.ClusterIPNone))
 		Expect(svc.Spec.Selector).To(Equal(map[string]string{daosv1alpha1.LabelSystem: "t1", daosv1alpha1.LabelRole: "server"}))
+		By("the Service carries its own selector labels, which the ServiceMonitor matches on")
+		for k, v := range svc.Spec.Selector {
+			Expect(svc.Labels).To(HaveKeyWithValue(k, v))
+		}
 		Expect(svc.Spec.Ports[0].Port).To(Equal(int32(9191)))
 		Expect(svc.OwnerReferences).To(HaveLen(1))
 		cm := &corev1.ConfigMap{}
