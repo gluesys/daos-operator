@@ -30,6 +30,9 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 	fresh := func(overlay string, prepare ...func()) {
 		By("resetting the cluster")
 		run(filepath.Join(repoRoot, "hack", "ci", "rollback.sh"))
+		// the rollback removes the VolumeSnapshot CRDs, and the base profile's VolumeSnapshotClass
+		// needs them: without this every case failed at helm install (nightly, 2026-11-11 on)
+		installSnapshotController()
 		for _, p := range prepare {
 			p()
 		}
