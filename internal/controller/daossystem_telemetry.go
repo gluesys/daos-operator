@@ -105,6 +105,12 @@ func (r *DaosSystemReconciler) ensureTelemetry(ctx context.Context, sys *daosv1a
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
 		labelManaged(&svc.ObjectMeta, sys, "")
 		svc.Labels["app.kubernetes.io/name"] = "daos-server"
+		// The ServiceMonitor below picks this Service by the same labels it uses
+		// as its pod selector, so the Service has to carry them too. Without the
+		// role label no Prometheus ever scraped the engines (moon, 2026-11-15).
+		for k, v := range selector {
+			svc.Labels[k] = v
+		}
 		svc.Spec.ClusterIP = corev1.ClusterIPNone // headless: one endpoint per engine host (hostNetwork)
 		svc.Spec.Selector = selector
 		svc.Spec.Ports = []corev1.ServicePort{{Name: "metrics", Port: port, TargetPort: intstr.FromInt32(port), Protocol: corev1.ProtocolTCP}}
@@ -138,7 +144,7 @@ func (r *DaosSystemReconciler) ensureTelemetry(ctx context.Context, sys *daosv1a
 		}
 		sm.SetLabels(labels)
 		spec := map[string]any{
-			"selector":          map[string]any{"matchLabels": map[string]any{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelRole: "server"}},
+			"selector":          map[string]any{"matchLabels": stringMapToAny(selector)},
 			"namespaceSelector": map[string]any{"matchNames": []any{ns}},
 			"endpoints": []any{map[string]any{
 				"port":     "metrics",
@@ -162,4 +168,12 @@ func (r *DaosSystemReconciler) ensureTelemetry(ctx context.Context, sys *daosv1a
 // telemetryCond is a helper for tests.
 func telemetryCond(st *daosv1alpha1.DaosSystemStatus) *metav1.Condition {
 	return meta.FindStatusCondition(st.Conditions, daosv1alpha1.ConditionTelemetry)
+}
+
+func stringMapToAny(m map[string]string) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
 }
