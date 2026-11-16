@@ -30,6 +30,9 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 	fresh := func(overlay string, prepare ...func()) {
 		By("resetting the cluster")
 		run(filepath.Join(repoRoot, "hack", "ci", "rollback.sh"))
+		// the rollback removes the VolumeSnapshot CRDs, and the base profile's VolumeSnapshotClass
+		// needs them: without this every case failed at helm install (nightly, 2026-11-11 on)
+		installSnapshotController()
 		for _, p := range prepare {
 			p()
 		}
@@ -49,6 +52,10 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 		ip := run("kubectl", "get", "node", serverNode, "-o", `jsonpath={.status.addresses[?(@.type=="InternalIP")].address}`)
 		return run("ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "root@"+strings.TrimSpace(ip), cmd)
 	}
+	// After a reset the nodes have none of the profile's images, and the kubelet pulls them one at a
+	// time: the server pod alone took 13.5 min to start on lane A (2026-11-15). The first wait of each
+	// case covers that.
+	const coldStart = 18 * time.Minute
 	condMsg := func(t string) func() string {
 		return func() string {
 			return jsonpath("daossystem", sysName, `.status.conditions[?(@.type=="`+t+`")].message`)
@@ -59,20 +66,20 @@ var _ = Describe("Regressions", Label("regression"), Ordered, func() {
 	// manage THP either (design 13절), so the cause must reach ServersReady.
 	It("names THP when the server refuses to start (case 9)", func() {
 		fresh("neg-thp", func() { onNode("echo always > /sys/kernel/mm/transparent_hugepage/enabled") })
-		Eventually(condMsg("ServersReady")).WithTimeout(8*time.Minute).Should(ContainSubstring("code = 623"),
+		Eventually(condMsg("ServersReady")).WithTimeout(coldStart).Should(ContainSubstring("code = 623"),
 			"ServersReady must say the server stopped because THP is enabled")
 	})
 
 	// Case 10. DAOS's default system_ram_reserved (64 GiB) on a 32 GiB node.
 	It("names the RAM shortage when the server refuses to start (case 10)", func() {
 		fresh("neg-ram")
-		Eventually(condMsg("ServersReady")).WithTimeout(8 * time.Minute).Should(ContainSubstring("insufficient ram"))
+		Eventually(condMsg("ServersReady")).WithTimeout(coldStart).Should(ContainSubstring("insufficient ram"))
 	})
 
 	// Case 11. A file bdev bigger than the root filesystem: the server starts, the format fails.
 	It("names the space shortage when the format fails (case 11)", func() {
 		fresh("neg-file-root")
-		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(8 * time.Minute).Should(Equal("True"))
+		Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(coldStart).Should(Equal("True"))
 		kubectl("annotate", "daossystem", sysName, "daos.gluesys.com/format-approved=true", "--overwrite")
 		Eventually(condMsg("Formatted")).WithTimeout(8 * time.Minute).Should(ContainSubstring("no space left on device"))
 	})

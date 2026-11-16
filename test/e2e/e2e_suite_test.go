@@ -111,7 +111,8 @@ func installSnapshotController() {
 // to 0/0 ranks for ~30 s and come back (2026-10-03), so a single Ready sample is not enough.
 func approveFormatAndWaitReady() {
 	By("waiting for the server pods")
-	Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(10 * time.Minute).Should(Equal("True"))
+	// 18 min: a fresh reset pulls every image again, one at a time (see regressions_test.go)
+	Eventually(func() string { return condStatus("ServersReady") }).WithTimeout(18 * time.Minute).Should(Equal("True"))
 	By("approving the format")
 	Eventually(func() error {
 		_, err := kubectlE("annotate", "daossystem", sysName, "daos.gluesys.com/format-approved=true", "--overwrite")
