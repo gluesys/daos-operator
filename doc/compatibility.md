@@ -38,7 +38,8 @@ what *should* work. A row without a date is not a claim.
 | H100 NVL · GPU Operator | RDMA shared device plugin (Network Operator 26.4.2) + `IPC_LOCK` | 64 MiB round trip, 2777 / 12162 MB/s | verified | 2026-10-01 | deploy-gpu-k8s "When the fabric is RDMA" |
 | A100 80GB · device plugin (CDI), containerd 2.2.1 | `/dev/infiniband` + privileged, IB 100G | **MP** · Qwen3.8-27B INT4, hand-written Deployment | verified | 2026-11-13 | moon, Hub `3ee2473f` §4 |
 | RTX A6000 · podman on one host (no Kubernetes), local DAOS 4 ranks | — | **MP** + MTP 3 · Qwen3.8-27B, FP8 KV, chunk 1600, moon's arguments | verified (restored = cold, 96/96) | 2026-11-15 | cxl2; [note C](#c-mtp--lmcache-mp-2026-11-15) |
-| any | any | MP via the chart (`lmcacheMode: mp`) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh` |
+| NVIDIA A2 · device plugin + nvidia-container-toolkit, CRI-O | `/dev/infiniband` + privileged, ofi+verbs | **MP via the chart** (`lmcacheMode: mp`) · Qwen2.5-1.5B (not hybrid) | verified | 2026-11-15 | lane A; [note D](#d-chart-mp-mode-on-a-gpu-2026-11-15) |
+| any | any | MP via the chart, hybrid model (Qwen3.5/3.8) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh`; moon runs MP with a hand-written Deployment |
 | Rebellions NPU · `accelerator: rbln` | any | in-process (lmcache-rbln) | rendered | 2026-10-13 | chart 0.1.6 |
 | GPU Operator managing the NIC driver (MOFED/DOCA) | any | any | unverified | — | touches the NIC driver the DAOS client uses; needs its own test |
 
@@ -82,6 +83,24 @@ Earlier, vLLM 0.30 + LMCache 0.5.5 and 0.5.7 with bf16 KV (MTP block 800) gave 2
 replies, the symptom of LMCache#5675. vLLM, LMCache and the KV dtype all changed between the two
 runs, so which one made the difference is not known. Treat MTP + LMCache as per image: run the
 check again whenever one of the three changes.
+
+### D. Chart MP mode on a GPU, 2026-11-15
+
+Lane A, Kubernetes 1.31.14 / CRI-O 1.31.5. DAOS 3 ranks (kdev-3rank). The pool and the container came
+from a `DaosPool` (30Gi) and a `DaosContainer` (POSIX, 4 MiB). vLLM came from `vllm.services[]` with
+`lmcacheMode: mp` and nothing edited by hand. The image was `vllm-lmcache-daos:0.30.0-0.5.5-20261028`
+and the GPU an NVIDIA A2 (16 GB), so the model was Qwen2.5-1.5B-Instruct, not a hybrid one.
+
+All three checks of serving-integration §4 passed:
+
+1. The launcher reported the MP server listening after 10 s, then started vLLM, which created its
+   `LMCacheMPConnector`.
+2. Two cold prompts of about 9.6k tokens were stored.
+3. After `kubectl rollout restart` (a new pod with an empty L1) the same prompts were served from DAOS:
+   `37/37 keys (0 L1, 37 L2)`, 259 MiB in 228 ms. The time to answer dropped from 3.2 s to 0.9 s, and
+   the text was the same as the cold replies.
+
+The `nvidia` RuntimeClass used by the device plugin is not created by the chart.
 
 ## 5. Adding a row
 
