@@ -38,7 +38,8 @@ func TestJobRunnerLifecycle(t *testing.T) {
 	ctx := context.Background()
 	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
 	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner).Build()
-	r := &JobRunner{Client: c, Scheme: scheme.Scheme} // Kube nil: logs are skipped
+	now := time.Date(2026, 11, 17, 0, 0, 0, 0, time.UTC)
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme, Now: func() time.Time { return now }} // Kube nil: logs are skipped
 	spec := RunSpec{Owner: owner, Namespace: "ns", Name: "sys-dmg-query", Image: "admin", ControlConfigMap: "sys-control",
 		Args: []string{"system", "query", "-v"}, NodeSelector: map[string]string{"role": "storage"}}
 
@@ -81,10 +82,62 @@ func TestJobRunnerLifecycle(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "sys-dmg-query"}, job); !apierrors.IsNotFound(err) {
 		t.Fatalf("job must be deleted after its result is read, got %v", err)
 	}
-	// and the cycle restarts
+	// right after a result was returned, a Run (a reconcile from a stale cache) must not
+	// start the command again (lane A, 2026-11-17: dmg pool create ran twice)
+	now = now.Add(consumedGrace - time.Second)
+	res, err = r.Run(ctx, spec)
+	if err != nil || res.Done {
+		t.Fatalf("within the grace: %+v %v", res, err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "sys-dmg-query"}, job); !apierrors.IsNotFound(err) {
+		t.Fatalf("no job may be created within the grace, got %v", err)
+	}
+	// after it the cycle restarts
+	now = now.Add(2 * time.Second)
 	res, err = r.Run(ctx, spec)
 	if err != nil || res.Done {
 		t.Fatalf("recreate: %+v %v", res, err)
+	}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "sys-dmg-query"}, job); err != nil {
+		t.Fatalf("job must be created after the grace: %v", err)
+	}
+}
+
+// A Job cache that still holds the consumed Job (its deletion not seen yet) must not hand
+// the same result out twice.
+func TestJobRunnerDoesNotReturnAConsumedJobTwice(t *testing.T) {
+	ctx := context.Background()
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+	spec := RunSpec{Owner: owner, Namespace: "ns", Name: "p-dmg-create", Image: "admin", ControlConfigMap: "sys-control",
+		Args: []string{"pool", "create"}}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, types.NamespacedName{Namespace: "ns", Name: "p-dmg-create"}, job); err != nil {
+		t.Fatal(err)
+	}
+	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.Run(ctx, spec); err != nil || !res.Done {
+		t.Fatalf("finished job: %+v %v", res, err)
+	}
+	// the stale cache: the same Job object is back
+	stale := job.DeepCopy()
+	stale.ResourceVersion = ""
+	if err := c.Create(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	stale.UID = job.UID // the fake client assigns no UIDs; keep the consumed one
+	if err := c.Update(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.Run(ctx, spec); err != nil || res.Done {
+		t.Fatalf("a consumed job must not be reported done again: %+v %v", res, err)
 	}
 }
 

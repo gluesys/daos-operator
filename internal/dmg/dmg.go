@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -131,22 +132,85 @@ type JobRunner struct {
 	Client client.Client
 	Kube   kubernetes.Interface
 	Scheme *runtime.Scheme
+
+	// Now is the clock (tests); nil means time.Now.
+	Now func() time.Time
+
+	mu       sync.Mutex
+	consumed map[types.NamespacedName]consumedJob
+}
+
+// consumedJob is a Job whose result Run already returned and deleted.
+type consumedJob struct {
+	uid types.UID
+	at  time.Time
+}
+
+// consumedGrace is how long after Run returned a Job's result it will not create a Job
+// of the same name again. A controller that just consumed a result writes it to the owner's
+// status, but its next reconcile can still read the owner from a cache that predates that
+// write (an operation still in flight) together with a Job cache that already lost the
+// Job. Run would then start the same command again: lane A, 2026-11-17, `dmg pool create`
+// and `daos cont create` ran a second time a second after the first finished and left
+// Failed Jobs ("already exists"). The cache catches up within this window; a caller that
+// still wants the Job after it gets it created then.
+const consumedGrace = 15 * time.Second
+
+func (j *JobRunner) now() time.Time {
+	if j.Now != nil {
+		return j.Now()
+	}
+	return time.Now()
+}
+
+// recentlyConsumed reports whether a Job of this name had its result returned within
+// consumedGrace (uid empty), or is that very Job (uid set: still in the cache, being deleted).
+func (j *JobRunner) recentlyConsumed(key types.NamespacedName, uid types.UID) bool {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	c, ok := j.consumed[key]
+	if !ok {
+		return false
+	}
+	if uid != "" {
+		return c.uid == uid
+	}
+	if j.now().Sub(c.at) < consumedGrace {
+		return true
+	}
+	delete(j.consumed, key)
+	return false
+}
+
+func (j *JobRunner) markConsumed(key types.NamespacedName, uid types.UID) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.consumed == nil {
+		j.consumed = map[types.NamespacedName]consumedJob{}
+	}
+	j.consumed[key] = consumedJob{uid: uid, at: j.now()}
 }
 
 const container = "dmg"
 
 // Run creates the Job when absent, reports Done=false while it runs, and once it
-// finished returns its output and deletes it so the next Run starts fresh.
+// finished returns its output and deletes it so the next Run starts fresh -- but not
+// within consumedGrace of returning a result: until then it reports Done=false and
+// creates nothing.
 func (j *JobRunner) Run(ctx context.Context, s RunSpec) (*Result, error) {
+	key := types.NamespacedName{Namespace: s.Namespace, Name: s.Name}
 	job := &batchv1.Job{}
-	err := j.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: s.Name}, job)
+	err := j.Client.Get(ctx, key, job)
 	if apierrors.IsNotFound(err) {
+		if j.recentlyConsumed(key, "") {
+			return &Result{}, nil // a reconcile from a stale cache: do not run the command again
+		}
 		return &Result{}, j.create(ctx, s)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !job.DeletionTimestamp.IsZero() {
+	if !job.DeletionTimestamp.IsZero() || j.recentlyConsumed(key, job.UID) {
 		return &Result{}, nil // previous run still being removed
 	}
 	finished, failure := jobFinished(job)
@@ -186,6 +250,7 @@ func (j *JobRunner) Run(ctx context.Context, s RunSpec) (*Result, error) {
 	if err := j.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
 		return nil, err
 	}
+	j.markConsumed(key, job.UID)
 	return res, nil
 }
 
