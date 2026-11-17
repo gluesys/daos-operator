@@ -572,8 +572,10 @@ func (r *DaosContainerReconciler) finalize(ctx context.Context, c *daosv1alpha1.
 		status.Operation = ""
 		msg := "daos cont destroy: " + perr.Error() + "; the DaosContainer stays until destroy succeeds or the annotation is removed (then the container is kept)"
 		if strings.Contains(perr.Error(), "DER_BUSY") {
-			msg = "daos cont destroy: the container is still open (DER_BUSY) -- a node still has it mounted; retrying. " +
-				"If a pod was force-deleted, its dfuse mount can outlive it: check `mount | grep dfuse` on the nodes."
+			msg = "daos cont destroy: the container is still open (DER_BUSY) -- a client still holds it; retrying. " +
+				"That is a dfuse mount (a force-deleted pod's can outlive it: check `mount | grep dfuse` on the nodes) " +
+				"or a libdaos client such as a serving pod (LMCache): stop it. Handles left by a client that died stay " +
+				"open until `dmg pool evict " + poolLabel(pool) + "`, which closes every handle of the pool (moon, 2026-11)."
 		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: metav1.ConditionFalse, Reason: "DestroyFailed", Message: msg, ObservedGeneration: c.Generation})
 		r.event(c, corev1.EventTypeWarning, "DestroyFailed", msg)
