@@ -85,6 +85,16 @@ kubectl get runtimeclass                     # nvidia must be there
 kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}={.status.capacity.nvidia\.com/gpu}{"\n"}{end}'
 ```
 
+**The toolkit DaemonSet restarts CRI-O.** It does that every time it starts. That is harmless where
+a CRI-O restart leaves running containers alone. Where it kills them, it kills the toolkit pod
+too, and the pod loops in CrashLoopBackOff, taking every other pod on the node (DAOS engines
+included) down with it each time. That happens when the conmon processes live in
+`crio.service`'s own cgroup: `cgroup_manager = "cgroupfs"` on cgroup v1, as on EL8 (lane A,
+2026-11-17). Check with `systemd-cgls -u crio.service`: if conmon is listed there, install
+nvidia-container-toolkit on the host as in §2.2 and give the operator `--set toolkit.enabled=false`.
+Driver, device plugin, RuntimeClass and validators still come from the GPU Operator
+(compatibility.md note F).
+
 What to put in values:
 ```yaml
 runtimeClassName: nvidia

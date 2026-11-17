@@ -42,6 +42,7 @@ what *should* work. A row without a date is not a claim.
 | NVIDIA A2 · device plugin + nvidia-container-toolkit, CRI-O | `/dev/infiniband` + privileged, ofi+verbs | **MP via the chart** (`lmcacheMode: mp`) · Qwen2.5-1.5B (not hybrid) | verified | 2026-11-15 | lane A; [note D](#d-chart-mp-mode-on-a-gpu-2026-11-15) |
 | any | any | MP via the chart, hybrid model (Qwen3.5/3.8) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh`; moon runs MP with a hand-written Deployment |
 | Rebellions NPU · `accelerator: rbln` | any | in-process (lmcache-rbln) | rendered | 2026-10-13 | chart 0.1.6 |
+| NVIDIA A2 · GPU Operator v26.7.1 (`driver.enabled=false`, `toolkit.enabled=false`: toolkit on the host), CRI-O, **DAOS server on the same node** (NVMe via SPDK, hugepages) | — (tcp) | **MP via the chart** · Qwen2.5-1.5B, restored from DAOS after a restart | verified | 2026-11-17 | lane A; [note F](#f-gpu-operator-next-to-a-daos-server-2026-11-17) |
 | GPU Operator managing the NIC driver (MOFED/DOCA) | any | any | unverified | — | touches the NIC driver the DAOS client uses; needs its own test |
 
 ## 3. Images in the rows above
@@ -116,6 +117,25 @@ handshake on both nodes, since the fabric interface carries the packets but the 
 subnet goes through `flannel.1`. With a `RETURN` rule for the fabric subnet ahead of flannel's
 masquerade on the client node and `rp_filter=2` on both nodes, `daos pool query` worked, and a
 1 GiB random file copied in with `daos fs copy` and back out had the same sha256.
+
+### F. GPU Operator next to a DAOS server, 2026-11-17
+
+Lane A, node exaci5-4a: Kubernetes 1.31.14 / CRI-O 1.31.5 on EL8 (cgroup v1, `cgroupfs`), NVIDIA A2,
+host driver 610.57.04 and nvidia-container-toolkit 1.20.2. GPU Operator v26.7.1 with
+`driver.enabled=false`. On the same node: one DAOS engine (`nvme-1rank`: two NVMe bound to
+`uio_pci_generic` for SPDK, 2 MiB hugepages, hostNetwork, privileged), the client agent and the
+reference workload from the chart (`lmcacheMode: mp`, `runtimeClassName: nvidia`, `nvidia.com/gpu: 1`).
+
+- With `toolkit.enabled=true` the toolkit pod looped in CrashLoopBackOff. Each start restarted CRI-O,
+  and on this node that killed every container: conmon ran inside `crio.service`'s cgroup, and
+  systemd stops the whole cgroup. The node feature discovery worker and DCGM exporter went down with
+  it each time (deploy-gpu-k8s §2.1). The toolkit on the host with `toolkit.enabled=false` fixed it.
+- After that, the operator's pods (feature discovery, device plugin, DCGM exporter, validators)
+  stayed up while hostprep bound the NVMe and set the hugepages and the engine formatted and joined.
+  DAOS and the GPU Operator did not touch each other's resources.
+- The checks of serving-integration §4 passed as in note D: two cold prompts of ~9.6k tokens stored,
+  then after `kubectl rollout restart` `37/37 keys (0 L1, 37 L2)` read from the local engine in about
+  0.1 s, the time to answer down from 3.2 s to 0.75 s, text equal (2/2).
 
 ## 5. Adding a row
 
