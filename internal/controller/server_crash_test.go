@@ -136,3 +136,33 @@ func TestPoolCreateHint(t *testing.T) {
 		t.Errorf("memRatioPercent already set: %q", h)
 	}
 }
+
+func TestContainerCreateHint(t *testing.T) {
+	pool := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "p"}}
+	pool.Status.EnabledRanks = []int32{0}
+	c := &daosv1alpha1.DaosContainer{}
+	c.Spec.FileOclass, c.Spec.DirOclass = "RP_2GX", "RP_2G1"
+	const inval = "failed to create container: DER_INVAL(-1003): Invalid parameters"
+	if h := containerCreateHint(c, pool, inval); !strings.Contains(h, "fileOclass RP_2GX needs 2") || !strings.Contains(h, "SX") {
+		t.Errorf("one rank, RP_2GX: %q", h)
+	}
+	if h := containerCreateHint(c, pool, "DER_EXIST"); h != "" {
+		t.Errorf("other error: %q", h)
+	}
+	pool.Status.EnabledRanks = []int32{0, 1, 2}
+	if h := containerCreateHint(c, pool, inval); h != "" {
+		t.Errorf("three ranks fit RP_2: %q", h)
+	}
+	c.Spec.FileOclass, c.Spec.DirOclass = "EC_4P2GX", "RP_3G1"
+	if h := containerCreateHint(c, pool, inval); !strings.Contains(h, "fileOclass EC_4P2GX needs 6") {
+		t.Errorf("EC_4P2 on three ranks: %q", h)
+	}
+	c.Spec.FileOclass, c.Spec.DirOclass = "SX", "S1"
+	pool.Status.EnabledRanks = []int32{0}
+	if h := containerCreateHint(c, pool, inval); h != "" {
+		t.Errorf("SX/S1 fit one rank: %q", h)
+	}
+	if oclassDomains("ec_2p1g1") != 3 || oclassDomains("RP_3GX") != 3 || oclassDomains("S1") != 0 {
+		t.Error("oclassDomains")
+	}
+}

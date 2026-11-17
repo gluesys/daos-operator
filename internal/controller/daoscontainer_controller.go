@@ -20,7 +20,9 @@ package controller
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -504,6 +506,9 @@ func (r *DaosContainerReconciler) pollOp(ctx context.Context, c *daosv1alpha1.Da
 		return failed("daos cont " + op + ": " + perr.Error())
 	}
 	if env.Error != nil {
+		if op == opCreate {
+			return failed("daos cont " + op + ": " + *env.Error + containerCreateHint(c, pool, *env.Error))
+		}
 		return failed("daos cont " + op + ": " + *env.Error)
 	}
 	switch op {
@@ -616,4 +621,43 @@ func (r *DaosContainerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&batchv1.Job{}, jobToContainer).
 		Named("daoscontainer").
 		Complete(r)
+}
+
+var oclassWidth = regexp.MustCompile(`^(?:RP_(\d+)|EC_(\d+)P(\d+))`)
+
+// oclassDomains is how many fault domains an object class needs at least: RP_<n>* n,
+// EC_<k>P<p>* k+p; 0 for the rest (S1, SX, ...), which fit one.
+func oclassDomains(oclass string) int {
+	m := oclassWidth.FindStringSubmatch(strings.ToUpper(oclass))
+	if m == nil {
+		return 0
+	}
+	if m[1] != "" {
+		n, _ := strconv.Atoi(m[1])
+		return n
+	}
+	k, _ := strconv.Atoi(m[2])
+	p, _ := strconv.Atoi(m[3])
+	return k + p
+}
+
+// containerCreateHint explains the bare DER_INVAL that `daos cont create` returns when an
+// object class needs more fault domains than the pool has: the engine log says "grp size (2)
+// is larger than domain nr (1)" but the client only "Invalid parameters". The defaults
+// (RP_2GX / RP_2G1) hit it on every one-rank pool (lane A, 2026-11-17).
+func containerCreateHint(c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosPool, errMsg string) string {
+	if !strings.Contains(errMsg, "DER_INVAL") {
+		return ""
+	}
+	ranks := len(pool.Status.EnabledRanks)
+	if ranks == 0 {
+		return ""
+	}
+	for _, oc := range []struct{ field, class string }{{"fileOclass", c.Spec.FileOclass}, {"dirOclass", c.Spec.DirOclass}} {
+		if need := oclassDomains(oc.class); need > ranks {
+			return fmt.Sprintf("; spec.%s %s needs %d fault domains and pool %s spans %d rank(s): "+
+				"on a one-rank pool use fileOclass SX, dirOclass S1 and redundancyFactor 0", oc.field, oc.class, need, poolLabel(pool), ranks)
+		}
+	}
+	return ""
 }
