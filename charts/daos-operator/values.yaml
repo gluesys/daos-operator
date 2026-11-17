@@ -69,6 +69,9 @@ system:
       admin: ghcr.io/gluesys/daos-admin:2.8.0-20260914
       client: ghcr.io/gluesys/daos-client:2.8.0-20260914
     placement: dedicated
+    # Helm merges a nodeSelector from your values file into this one: a selector by
+    # hostname still requires the role label too. Label the nodes, or drop the key with
+    # `daos.gluesys.com/role: null` (lane A, 2026-11-17: "0 node(s) match nodeSelector").
     nodeSelector:
       daos.gluesys.com/role: storage
     msReplicas: 1
