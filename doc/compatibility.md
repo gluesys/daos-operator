@@ -27,7 +27,8 @@ what *should* work. A row without a date is not a claim.
 | 1.29 · 1.31 · 1.34 | — | — | **CI** (rendered) | every main pipeline | `hack/ci/chart-schema.sh` (kubeconform) |
 | containerd other than 2.2.1 · CRI-O other than 1.31 | any | any | unverified | — | — |
 | managed (EKS · GKE · AKS) | any | external DAOS only | unverified | — | configuration in deploy-gpu-k8s §2.3 |
-| any | any | `clientAgent.hostNetwork: false` (pod-network agent) | unverified | — | serving-integration.md §2 |
+| 1.31.14 / CRI-O 1.31.5, flannel (vxlan) | ofi+tcp | `clientAgent.hostNetwork: false` (pod-network agent), ordinary pod: no SNAT to the fabric subnet + `rp_filter=2` | verified (fails with `DER_TIMEDOUT` as installed) | 2026-11-17 | lane A; serving-integration.md §2; [note E](#e-pod-network-agent-2026-11-17) |
+| any | ofi+verbs, ucx | `clientAgent.hostNetwork: false` | unverified | — | — |
 
 ## 2. GPU node and serving (reference workload, serving-integration.md)
 
@@ -101,6 +102,20 @@ All three checks of serving-integration §4 passed:
    the text was the same as the cold replies.
 
 The `nvidia` RuntimeClass used by the device plugin is not created by the chart.
+
+### E. Pod-network agent, 2026-11-17
+
+Lane A, Kubernetes 1.31.14 / CRI-O 1.31.5, flannel vxlan with `ipMasq`. DAOS 1 rank over ofi+tcp
+(kdev-1rank), the agent on another node with `hostNetwork: false` and
+`includeFabricIfaces: [ens19, eth0]`. The client was an ordinary pod (no hostNetwork, not
+privileged) that mounted the agent socket. The agent handed it `eth0`, `ofi+tcp`.
+
+As installed, every call ended in `DER_TIMEDOUT`. Two causes, each enough on its own: the pod's
+traffic to the fabric subnet was masqueraded, and strict reverse path filtering dropped the
+handshake on both nodes, since the fabric interface carries the packets but the route to the pod
+subnet goes through `flannel.1`. With a `RETURN` rule for the fabric subnet ahead of flannel's
+masquerade on the client node and `rp_filter=2` on both nodes, `daos pool query` worked, and a
+1 GiB random file copied in with `daos fs copy` and back out had the same sha256.
 
 ## 5. Adding a row
 

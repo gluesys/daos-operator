@@ -44,7 +44,18 @@ Every item comes from a failure that was measured. The **Why** column says what 
 
 A pod that cannot use hostNetwork (some serving charts cannot ask for it) can use
 `spec.clientAgent.hostNetwork: false`. That puts the agent on the pod network, and
-`spec.client.includeFabricIfaces` must list the pod interface. **This path is not verified.**
+`spec.client.includeFabricIfaces` must list the pod interface (e.g. `[<fabric iface>, eth0]`).
+It works over **ofi+tcp only**, and only after two changes on the nodes, which the operator does
+not make (lane A, 2026-11-17, compatibility.md note E). With either one missing every call ends
+in `DER_TIMEDOUT`:
+
+- **No SNAT from pods to the fabric subnet** on the client nodes. The client announces its pod
+  IP and the engines connect back to it; masqueraded traffic never gets an answer. Flannel with
+  `ipMasq`: a `RETURN` rule for the fabric subnet ahead of its masquerade rule (tested); otherwise
+  your CNI's own exception (ip-masq-agent `nonMasqueradeCIDRs`, a Calico IP pool).
+- **Loose reverse path filtering**, `net.ipv4.conf.all.rp_filter=2`, on the server **and** client
+  nodes. Pod traffic arrives on the fabric interface but the route back to the pod subnet is the
+  CNI's (`flannel.1`), so strict mode (`1`, the Rocky/RHEL default) drops the handshake.
 
 ## 3. How LMCache reaches DAOS
 
