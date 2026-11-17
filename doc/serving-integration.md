@@ -108,9 +108,13 @@ python3.12 -m lmcache_daos.mp.server --host 127.0.0.1 --port <mp-port> --chunk-s
 - No `LMCACHE_CONFIG_FILE`: the server's arguments are the configuration.
 - The adapter reads a POSIX container through DFS. The rank guard does not apply.
 - Key names differ from in-process mode. Keep the two apart with `root` (default `/mp`).
-- Model requirements (Qwen3.8 on A100): `--chunk-size` must be a multiple of vLLM's block (784), with
+- Model requirements (Qwen3.8 on A100): `--chunk-size` must be a multiple of vLLM's block (784; 528 for
+  Qwen3.5-4B in bf16, compatibility note G), with
   `--enable-prefix-caching` and `--mamba-cache-mode=align`. The L1 must hold one whole
   request, and the attention backend and KV dtype must suit the image and GPU. See deploy-gpu-k8s §5.6.
+- On a small GPU, lower `--max-num-seqs` below the Mamba cache blocks vLLM reports: each running
+  sequence needs one, and with more sequences than blocks CUDA graph capture stops at start-up
+  (A2 16 GB: 80 blocks, so 32; note G).
 - The block depends on the KV dtype and on MTP (speculative decoding). On vLLM 0.32 with FP8 KV,
   Qwen3.8 gets 1568 without MTP and 1600 with MTP 3. Turning MTP off while keeping
   `--chunk-size 1600` stops vLLM at start-up (`chunk size 1600 must be a multiple of 1568`).

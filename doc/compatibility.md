@@ -40,7 +40,8 @@ what *should* work. A row without a date is not a claim.
 | A100 80GB · device plugin (CDI), containerd 2.2.1 | `/dev/infiniband` + privileged, IB 100G | **MP** · Qwen3.8-27B INT4, hand-written Deployment | verified | 2026-11-13 | moon, Hub `3ee2473f` §4 |
 | RTX A6000 · podman on one host (no Kubernetes), local DAOS 4 ranks | — | **MP** + MTP 3 · Qwen3.8-27B, FP8 KV, chunk 1600, moon's arguments | verified (restored = cold, 96/96) | 2026-11-15 | cxl2; [note C](#c-mtp--lmcache-mp-2026-11-15) |
 | NVIDIA A2 · device plugin + nvidia-container-toolkit, CRI-O | `/dev/infiniband` + privileged, ofi+verbs | **MP via the chart** (`lmcacheMode: mp`) · Qwen2.5-1.5B (not hybrid) | verified | 2026-11-15 | lane A; [note D](#d-chart-mp-mode-on-a-gpu-2026-11-15) |
-| any | any | MP via the chart, hybrid model (Qwen3.5/3.8) | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh`; moon runs MP with a hand-written Deployment |
+| NVIDIA A2 · GPU Operator v26.7.1 (host driver and toolkit), CRI-O | — (tcp) | **MP via the chart, hybrid model** · Qwen3.5-4B (GDN + full attention), bf16, chunk 528 | verified | 2026-11-17 | lane A; [note G](#g-chart-mp-mode-with-a-hybrid-model-2026-11-17) |
+| any | any | MP via the chart, Qwen3.8-27B | rendered (+ launcher test) | 2026-11-14 | `hack/ci/chart-schema.sh`; moon runs it with a hand-written Deployment |
 | Rebellions NPU · `accelerator: rbln` | any | in-process (lmcache-rbln) | rendered | 2026-10-13 | chart 0.1.6 |
 | NVIDIA A2 · GPU Operator v26.7.1 (`driver.enabled=false`, `toolkit.enabled=false`: toolkit on the host), CRI-O, **DAOS server on the same node** (NVMe via SPDK, hugepages) | — (tcp) | **MP via the chart** · Qwen2.5-1.5B, restored from DAOS after a restart | verified | 2026-11-17 | lane A; [note F](#f-gpu-operator-next-to-a-daos-server-2026-11-17) |
 | GPU Operator managing the NIC driver (MOFED/DOCA) | any | any | unverified | — | touches the NIC driver the DAOS client uses; needs its own test |
@@ -136,6 +137,23 @@ reference workload from the chart (`lmcacheMode: mp`, `runtimeClassName: nvidia`
 - The checks of serving-integration §4 passed as in note D: two cold prompts of ~9.6k tokens stored,
   then after `kubectl rollout restart` `37/37 keys (0 L1, 37 L2)` read from the local engine in about
   0.1 s, the time to answer down from 3.2 s to 0.75 s, text equal (2/2).
+
+### G. Chart MP mode with a hybrid model, 2026-11-17
+
+The node of note F (A2 16 GB, GPU Operator, a DAOS engine on the same node). Qwen3.5-4B in bf16, the
+smallest Qwen hybrid model (linear GDN layers with a full attention layer every fourth). Image
+`vllm-lmcache-daos:0.30.0-0.5.5-20261028`. Everything came from `vllm.services[]` with
+`lmcacheMode: mp`. Two settings had to follow the model and the GPU, and vLLM named both at start-up:
+
+- `lmcacheChunkSize: 528`. vLLM's block for this model is 528, and 256 stops it ("must be a
+  multiple of 528").
+- `--max-num-seqs=32` in `extraArgs`. On 16 GB only 80 Mamba cache blocks fit, and the default of
+  256 sequences stops CUDA graph capture.
+
+The checks of serving-integration §4 passed. Two cold prompts of ~9.3k tokens took 7.7 s each and
+were stored. After `kubectl rollout restart` the same prompts were served from DAOS:
+`17/17 keys (0 L1, 17 L2)` in about 0.64 s, 8976 tokens retrieved. The time to answer dropped to 2.3 s,
+and the text was the same as the cold replies (2/2).
 
 ## 5. Adding a row
 
