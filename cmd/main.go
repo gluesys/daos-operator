@@ -37,7 +37,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
-	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
@@ -103,6 +102,9 @@ func main() {
 		"IBV_DRIVERS for injected containers (bundled rdma-core providers, without the -rdmav<N>.so suffix).")
 	flag.StringVar(&icept.rdmaResources, "interception-rdma-resources", "",
 		"Comma-separated extended resource names (a trailing / matches a prefix) that give a container an RDMA device.")
+	flag.StringVar(&icept.defaultPodSecurity, "interception-default-pod-security", "",
+		"The cluster's default Pod Security enforce level, for namespaces without the label "+
+			"(\"\" = unknown: then a hostPath is only added to pods that already pass as privileged).")
 	flag.StringVar(&icept.service, "webhook-service", "daos-operator-webhook", "Service in front of the webhook server.")
 	flag.StringVar(&icept.secret, "webhook-secret", "daos-operator-webhook-cert", "Secret holding the webhook serving certificate.")
 	flag.StringVar(&icept.config, "webhook-config", "daos-operator-interception", "MutatingWebhookConfiguration to keep caBundle in.")
@@ -314,15 +316,17 @@ func main() {
 			}
 		}
 		mgr.GetWebhookServer().Register(interception.Path, &webhook.Admission{Handler: &interception.Handler{
-			Client:     mgr.GetClient(),
-			Reader:     mgr.GetAPIReader(),
-			Decoder:    admission.NewDecoder(mgr.GetScheme()),
-			Config:     interception.Config{IBVDrivers: icept.ibvDrivers, RDMAResources: res},
+			Client:  mgr.GetClient(),
+			Reader:  mgr.GetAPIReader(),
+			Decoder: admission.NewDecoder(mgr.GetScheme()),
+			Config: interception.Config{IBVDrivers: icept.ibvDrivers, RDMAResources: res,
+				DefaultPodSecurity: icept.defaultPodSecurity},
 			DriverName: icept.driver,
 			SystemName: icept.system,
 		}})
 		// renew and re-assert caBundle (a chart upgrade may recreate the configuration)
-		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+		// every replica serves the webhook, so every replica re-checks (not only the leader)
+		if err := mgr.Add(everyReplica(func(ctx context.Context) error {
 			t := time.NewTicker(10 * time.Minute)
 			defer t.Stop()
 			for {
@@ -365,4 +369,11 @@ type interceptionFlags struct {
 	enabled                                   bool
 	system, driver, ibvDrivers, rdmaResources string
 	service, secret, config                   string
+	defaultPodSecurity                        string
 }
+
+// everyReplica is a manager runnable that does not wait for leader election.
+type everyReplica func(context.Context) error
+
+func (f everyReplica) Start(ctx context.Context) error { return f(ctx) }
+func (everyReplica) NeedLeaderElection() bool          { return false }

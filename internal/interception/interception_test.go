@@ -55,6 +55,7 @@ func TestDecide(t *testing.T) {
 		pod         func(*corev1.Pod)
 		daos        map[string]bool
 		podSecurity string
+		cfg         func(*Config)
 		reason      string
 	}{
 		{name: "host network, privileged", reason: ""},
@@ -105,6 +106,11 @@ func TestDecide(t *testing.T) {
 			p.Spec.HostNetwork = false
 			p.Spec.Containers[0].SecurityContext = nil
 		}, sys: func(s *System) { s.Provider = "ofi+tcp"; s.AgentHostNetwork = false }, reason: "pod-security"},
+		{name: "unlabelled namespace, cluster default privileged", cfg: func(c *Config) { c.DefaultPodSecurity = "privileged" }, pod: func(p *corev1.Pod) {
+			p.Spec.HostNetwork = false
+			p.Spec.Containers[0].SecurityContext = nil
+		}, sys: func(s *System) { s.Provider = "ofi+tcp"; s.AgentHostNetwork = false }, reason: ""},
+		{name: "label wins over the cluster default", podSecurity: "baseline", cfg: func(c *Config) { c.DefaultPodSecurity = "privileged" }, reason: "pod-security"},
 		{name: "privileged namespace, pod-network tcp pod", podSecurity: "privileged", pod: func(p *corev1.Pod) {
 			p.Spec.HostNetwork = false
 			p.Spec.Containers[0].SecurityContext = nil
@@ -139,7 +145,11 @@ func TestDecide(t *testing.T) {
 			if tc.daos != nil {
 				r.DaosVolumes = tc.daos
 			}
-			if got := Decide(cfg, sys, r); got != tc.reason {
+			c := cfg
+			if tc.cfg != nil {
+				tc.cfg(&c)
+			}
+			if got := Decide(c, sys, r); got != tc.reason {
 				t.Fatalf("Decide = %q, want %q", got, tc.reason)
 			}
 		})

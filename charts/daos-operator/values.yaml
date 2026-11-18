@@ -165,6 +165,11 @@ interception:
   rdmaResources: []
   #  - rdma/
   #  - nvidia.com/hostdev
+  # The cluster's default Pod Security enforce level (privileged | baseline | restricted), used for
+  # namespaces without a pod-security.kubernetes.io/enforce label. Empty = unknown: then the agent
+  # socket hostPath is only added to pods that already pass as privileged (hostNetwork, hostPath,
+  # privileged), and other pods in unlabelled namespaces are skipped.
+  defaultPodSecurity: ""
   # Namespaces the webhook never sees (the release namespace and kube-system are always excluded)
   excludeNamespaces: []
   timeoutSeconds: 5

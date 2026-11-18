@@ -61,6 +61,9 @@ type Config struct {
 	// in "/") that give a container an RDMA device, e.g. "rdma/" or
 	// "nvidia.com/hostdev".
 	RDMAResources []string
+	// DefaultPodSecurity is the cluster's default enforce level for namespaces
+	// without the label, when the administrator knows it ("" = unknown).
+	DefaultPodSecurity string
 }
 
 // DefaultIBVDrivers covers Mellanox/NVIDIA NICs, the only ones tested.
@@ -166,7 +169,11 @@ func Decide(cfg Config, sys System, r Request) string {
 		// the socket directory only exists where the agent DaemonSet runs
 		return "no-client-agent"
 	}
-	if needAgent && hostPathMayBeRefused(r.PodSecurity, pod) {
+	level := r.PodSecurity
+	if level == "" {
+		level = cfg.DefaultPodSecurity
+	}
+	if needAgent && hostPathMayBeRefused(level, pod) {
 		// the agent socket is a hostPath, which baseline and restricted forbid
 		return "pod-security"
 	}

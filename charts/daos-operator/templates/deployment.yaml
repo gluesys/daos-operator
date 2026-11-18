@@ -52,6 +52,7 @@ spec:
             - --interception-csi-driver={{ .Values.csi.driverName }}
             - --interception-ibv-drivers={{ .Values.interception.ibvDrivers }}
             - --interception-rdma-resources={{ join "," .Values.interception.rdmaResources }}
+            - --interception-default-pod-security={{ .Values.interception.defaultPodSecurity }}
             - --webhook-service={{ include "daos-operator.fullname" . }}-webhook
             - --webhook-secret={{ include "daos-operator.fullname" . }}-webhook-cert
             - --webhook-config={{ include "daos-operator.fullname" . }}-interception

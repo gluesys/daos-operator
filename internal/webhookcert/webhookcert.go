@@ -103,7 +103,13 @@ func Ensure(ctx context.Context, c client.Client, o Options, now time.Time) erro
 			}
 			sec.Data = data
 			if uerr := c.Update(ctx, &sec); uerr != nil {
-				return fmt.Errorf("renew %s (%v): %w", key, verr, uerr)
+				if !apierrors.IsConflict(uerr) {
+					return fmt.Errorf("renew %s (%v): %w", key, verr, uerr)
+				}
+				// another replica renewed first: serve its certificate
+				if gerr := c.Get(ctx, key, &sec); gerr != nil {
+					return gerr
+				}
 			}
 		}
 	}

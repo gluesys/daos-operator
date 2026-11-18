@@ -367,9 +367,13 @@
           "type": "array",
           "description": "extended resources that give a container an RDMA device (a trailing / matches a prefix)"
         },
+        "defaultPodSecurity": {
+          "type": "string",
+          "description": "- rdma/ - nvidia.com/hostdev The cluster's default Pod Security enforce level (privileged | baseline | restricted), used for namespaces without a pod-security.kubernetes.io/enforce label. Empty = unknown: then the agent socket hostPath is only added to pods that already pass as privileged (hostNetwork, hostPath, privileged), and other pods in unlabelled namespaces are skipped."
+        },
         "excludeNamespaces": {
           "type": "array",
-          "description": "- rdma/ - nvidia.com/hostdev Namespaces the webhook never sees (the release namespace and kube-system are always excluded)"
+          "description": "Namespaces the webhook never sees (the release namespace and kube-system are always excluded)"
         },
         "timeoutSeconds": {
           "type": "integer"
