@@ -68,7 +68,7 @@ func TestDecide(t *testing.T) {
 			sys: func(s *System) { s.AgentHostNetwork = false }, reason: "pod-network-rdma"},
 		{name: "pod network, host-network agent", pod: func(p *corev1.Pod) { p.Spec.HostNetwork = false },
 			reason: "agent-network-mismatch"},
-		{name: "pod network over tcp", pod: func(p *corev1.Pod) {
+		{name: "pod network over tcp", podSecurity: "privileged", pod: func(p *corev1.Pod) {
 			p.Spec.HostNetwork = false
 			p.Spec.Containers[0].SecurityContext = nil
 		}, sys: func(s *System) { s.Provider = "ofi+tcp"; s.AgentHostNetwork = false }, reason: ""},
@@ -101,6 +101,17 @@ func TestDecide(t *testing.T) {
 		}, reason: "ld-preload-from-source"},
 		{name: "baseline namespace, hostPath socket needed", podSecurity: "baseline", reason: "pod-security"},
 		{name: "privileged namespace", podSecurity: "privileged", reason: ""},
+		{name: "unlabelled namespace, pod-network tcp pod", pod: func(p *corev1.Pod) {
+			p.Spec.HostNetwork = false
+			p.Spec.Containers[0].SecurityContext = nil
+		}, sys: func(s *System) { s.Provider = "ofi+tcp"; s.AgentHostNetwork = false }, reason: "pod-security"},
+		{name: "privileged namespace, pod-network tcp pod", podSecurity: "privileged", pod: func(p *corev1.Pod) {
+			p.Spec.HostNetwork = false
+			p.Spec.Containers[0].SecurityContext = nil
+		}, sys: func(s *System) { s.Provider = "ofi+tcp"; s.AgentHostNetwork = false }, reason: ""},
+		{name: "D_IL_REPORT from a ConfigMap, report not asked", pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "D_IL_REPORT", ValueFrom: &corev1.EnvVarSource{}}}
+		}, reason: ""},
 		{name: "no client image", sys: func(s *System) { s.ClientImage = "" }, reason: "no-client-image"},
 		{name: "IBV_DRIVERS from a Secret", pod: func(p *corev1.Pod) {
 			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "IBV_DRIVERS", ValueFrom: &corev1.EnvVarSource{}}}

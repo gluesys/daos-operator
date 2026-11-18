@@ -151,9 +151,13 @@ func Decide(cfg Config, sys System, r Request) string {
 			switch e.Name {
 			case "LD_PRELOAD":
 				return "ld-preload-from-source"
-			case "NA_PLUGIN_PATH", "IBV_DRIVERS", "D_IL_REPORT":
+			case "NA_PLUGIN_PATH", "IBV_DRIVERS":
 				// the patch would set value next to valueFrom: an invalid pod
 				return "env-from-source"
+			case "D_IL_REPORT":
+				if r.Report {
+					return "env-from-source"
+				}
 			}
 		}
 		needAgent = needAgent || !hasAgentSocket(c)
@@ -162,8 +166,8 @@ func Decide(cfg Config, sys System, r Request) string {
 		// the socket directory only exists where the agent DaemonSet runs
 		return "no-client-agent"
 	}
-	if needAgent && (r.PodSecurity == "baseline" || r.PodSecurity == "restricted") {
-		// the agent socket is a hostPath, which both levels forbid
+	if needAgent && hostPathMayBeRefused(r.PodSecurity, pod) {
+		// the agent socket is a hostPath, which baseline and restricted forbid
 		return "pod-security"
 	}
 	if pod.Spec.HostNetwork != sys.AgentHostNetwork {
@@ -182,6 +186,34 @@ func Decide(cfg Config, sys System, r Request) string {
 		}
 	}
 	return "no-rdma-device"
+}
+
+// hostPathMayBeRefused reports whether adding a hostPath volume could turn an
+// admitted pod into one Pod Security rejects. With no enforce label the level
+// is the cluster's default, which the webhook cannot see; a pod that already
+// uses the host network, a hostPath or privileged mode has passed that default
+// as privileged, so one more hostPath changes nothing for it.
+func hostPathMayBeRefused(level string, pod *corev1.Pod) bool {
+	switch level {
+	case "privileged":
+		return false
+	case "baseline", "restricted":
+		return true
+	}
+	if pod.Spec.HostNetwork {
+		return false
+	}
+	for _, v := range pod.Spec.Volumes {
+		if v.HostPath != nil {
+			return false
+		}
+	}
+	for _, c := range pod.Spec.Containers {
+		if c.SecurityContext != nil && ptr.Deref(c.SecurityContext.Privileged, false) {
+			return false
+		}
+	}
+	return true
 }
 
 func hasRDMADevice(cfg Config, pod *corev1.Pod, c *corev1.Container) bool {

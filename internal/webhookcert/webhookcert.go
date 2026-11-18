@@ -35,9 +35,10 @@ import (
 )
 
 const (
-	keyCA   = "ca.crt"
-	keyCert = "tls.crt"
-	keyKey  = "tls.key"
+	keyCA     = "ca.crt"
+	keyPrevCA = "ca-previous.crt"
+	keyCert   = "tls.crt"
+	keyKey    = "tls.key"
 
 	// Validity of a freshly generated CA and serving certificate.
 	Validity = 5 * 365 * 24 * time.Hour
@@ -95,6 +96,11 @@ func Ensure(ctx context.Context, c client.Client, o Options, now time.Time) erro
 			if gerr != nil {
 				return gerr
 			}
+			// Keep trusting the old CA for a while: other replicas serve the old
+			// certificate until their own re-check reloads the Secret.
+			if old, perr := parse(sec.Data[keyCA]); perr == nil && now.Before(old.NotAfter) {
+				data[keyPrevCA] = sec.Data[keyCA]
+			}
 			sec.Data = data
 			if uerr := c.Update(ctx, &sec); uerr != nil {
 				return fmt.Errorf("renew %s (%v): %w", key, verr, uerr)
@@ -104,7 +110,16 @@ func Ensure(ctx context.Context, c client.Client, o Options, now time.Time) erro
 	if err := writeFiles(o.CertDir, sec.Data); err != nil {
 		return err
 	}
-	return PatchCABundle(ctx, c, o.WebhookConfig, sec.Data[keyCA])
+	return PatchCABundle(ctx, c, o.WebhookConfig, caBundle(sec.Data, now))
+}
+
+// caBundle is the current CA plus the previous one while it is still valid.
+func caBundle(data map[string][]byte, now time.Time) []byte {
+	out := append([]byte{}, data[keyCA]...)
+	if prev, err := parse(data[keyPrevCA]); err == nil && now.Before(prev.NotAfter) {
+		out = append(out, data[keyPrevCA]...)
+	}
+	return out
 }
 
 // PatchCABundle sets caBundle on every webhook of the configuration. A

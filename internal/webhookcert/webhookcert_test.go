@@ -88,7 +88,7 @@ func TestEnsureCreatesWritesAndPatches(t *testing.T) {
 	}
 
 	// a second run (restart, another replica) keeps the same certificate
-	first := sec.Data[keyCert]
+	first, firstCA := sec.Data[keyCert], sec.Data[keyCA]
 	if err := Ensure(ctx, c, o, t0.Add(24*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
@@ -112,8 +112,12 @@ func TestEnsureCreatesWritesAndPatches(t *testing.T) {
 	if err := c.Get(ctx, types.NamespacedName{Name: o.WebhookConfig}, &mwc); err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(mwc.Webhooks[0].ClientConfig.CABundle, sec.Data[keyCA]) {
+	if !bytes.HasPrefix(mwc.Webhooks[0].ClientConfig.CABundle, sec.Data[keyCA]) {
 		t.Fatalf("renewed CA not patched in")
+	}
+	// the old CA stays trusted so replicas still serving the old certificate keep working
+	if !bytes.Contains(mwc.Webhooks[0].ClientConfig.CABundle, firstCA) {
+		t.Fatalf("previous CA dropped from caBundle on renewal")
 	}
 }
 
