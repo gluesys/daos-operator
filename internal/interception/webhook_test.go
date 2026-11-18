@@ -6,6 +6,7 @@ package interception
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	jsonpatch "github.com/evanphx/json-patch/v5"
@@ -16,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
@@ -24,7 +27,7 @@ import (
 
 const driver = "daos.csi.gluesys.com"
 
-func handler(t *testing.T, objs ...runtime.Object) *Handler {
+func scheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	s := runtime.NewScheme()
 	if err := clientgoscheme.AddToScheme(s); err != nil {
@@ -33,6 +36,12 @@ func handler(t *testing.T, objs ...runtime.Object) *Handler {
 	if err := daosv1alpha1.AddToScheme(s); err != nil {
 		t.Fatal(err)
 	}
+	return s
+}
+
+func handler(t *testing.T, objs ...runtime.Object) *Handler {
+	t.Helper()
+	s := scheme(t)
 	c := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objs...).Build()
 	return &Handler{Client: c, Reader: c, Decoder: admission.NewDecoder(s), DriverName: driver, SystemName: "daos"}
 }
@@ -162,5 +171,39 @@ func TestSystemFromDefaults(t *testing.T) {
 	ds.Spec.ClientAgent.HostSocketDir = "/run/x/"
 	if s := SystemFrom(ds); s.AgentHostNetwork || s.AgentSocketDir != "/run/x" {
 		t.Fatalf("%+v", s)
+	}
+}
+
+func TestHandlePodSecurityReadLive(t *testing.T) {
+	// the cache has not seen the baseline label yet; the live read has
+	h := handler(t, objects()...)
+	cached := fake.NewClientBuilder().WithScheme(scheme(t)).
+		WithObjects(&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "locked"}}).Build()
+	h.Client = cached
+	h.Config.DefaultPodSecurity = "privileged"
+	got := admit(t, h, podWith("locked", "bound", map[string]string{AnnotationMode: ModeIoil}))
+	if r := got.Annotations[AnnotationResult]; r != "skipped/pod-security" {
+		t.Fatalf("result %q", r)
+	}
+}
+
+func TestHandleNamespaceUnavailable(t *testing.T) {
+	h := handler(t, objects()...)
+	h.Config.DefaultPodSecurity = "privileged"
+	h.Reader = fake.NewClientBuilder().WithScheme(scheme(t)).WithRuntimeObjects(objects()...).
+		WithInterceptorFuncs(interceptor.Funcs{Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Namespace); ok {
+				return errors.New("apiserver unavailable")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		}}).Build()
+	got := admit(t, h, podWith("app", "bound", map[string]string{AnnotationMode: ModeIoil}))
+	if r := got.Annotations[AnnotationResult]; r != "skipped/namespace-unavailable" {
+		t.Fatalf("result %q", r)
+	}
+	for _, v := range got.Spec.Volumes {
+		if v.HostPath != nil {
+			t.Fatalf("hostPath %s added without knowing the namespace's Pod Security level", v.Name)
+		}
 	}
 }

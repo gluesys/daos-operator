@@ -31,10 +31,11 @@ const Path = "/mutate-daos-interception"
 // failurePolicy Ignore), because a pod without interception still works
 // through dfuse.
 type Handler struct {
-	// Client may be cached; it is only used for Namespaces.
+	// Client may be cached; it is only used for the namespace's default mode.
 	Client client.Client
-	// Reader reads PVCs, PVs, StorageClasses, Secrets and the DaosSystem
-	// directly, so the operator keeps no cluster-wide cache of them.
+	// Reader reads PVCs, PVs, StorageClasses, Secrets, the DaosSystem and the
+	// namespace's Pod Security label directly, so the operator keeps no
+	// cluster-wide cache of them and never decides on a stale label.
 	Reader     client.Reader
 	Decoder    admission.Decoder
 	Config     Config
@@ -64,8 +65,6 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	}
 
 	daosVols := h.daosVolumes(ctx, ns, pod)
-	r := Request{Pod: pod, Mode: mode, Report: pod.Annotations[AnnotationReport] == "true", DaosVolumes: daosVols,
-		PodSecurity: nso.Labels["pod-security.kubernetes.io/enforce"]}
 	if len(daosVols) == 0 {
 		// a namespace default should not stamp every pod in the namespace
 		if !fromPod {
@@ -74,6 +73,18 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 		Skip(pod, "no-daos-volume")
 		return patch(req, pod)
 	}
+	// The Pod Security level decides whether the agent hostPath may be added,
+	// so read it live: a stale or missing cache entry would fall back to the
+	// configured default and could add a hostPath the namespace refuses, and
+	// failurePolicy Ignore does not help once the webhook itself succeeded.
+	var live corev1.Namespace
+	if err := h.Reader.Get(ctx, types.NamespacedName{Name: ns}, &live); err != nil {
+		log.Info("interception: namespace unavailable", "err", err.Error())
+		Skip(pod, "namespace-unavailable")
+		return patch(req, pod)
+	}
+	r := Request{Pod: pod, Mode: mode, Report: pod.Annotations[AnnotationReport] == "true", DaosVolumes: daosVols,
+		PodSecurity: live.Labels["pod-security.kubernetes.io/enforce"]}
 
 	var ds daosv1alpha1.DaosSystem
 	if err := h.Reader.Get(ctx, types.NamespacedName{Name: h.SystemName}, &ds); err != nil {

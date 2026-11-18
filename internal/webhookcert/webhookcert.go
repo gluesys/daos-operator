@@ -31,6 +31,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -116,7 +117,30 @@ func Ensure(ctx context.Context, c client.Client, o Options, now time.Time) erro
 	if err := writeFiles(o.CertDir, sec.Data); err != nil {
 		return err
 	}
-	return PatchCABundle(ctx, c, o.WebhookConfig, caBundle(sec.Data, now))
+	return syncCABundle(ctx, c, o, now)
+}
+
+// syncCABundle puts the Secret's CA bundle into the webhook configuration.
+// Every replica runs it, so a replica that read the Secret before another one
+// renewed it must not write the older bundle back: the configuration is read
+// first and the Secret after it, and the update carries the configuration's
+// resourceVersion, so a concurrent write makes it conflict and start over
+// with both objects re-read.
+func syncCABundle(ctx context.Context, c client.Client, o Options, now time.Time) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var mwc admissionregistrationv1.MutatingWebhookConfiguration
+		if err := c.Get(ctx, types.NamespacedName{Name: o.WebhookConfig}, &mwc); err != nil {
+			if apierrors.IsNotFound(err) {
+				return nil // the chart may not render it
+			}
+			return fmt.Errorf("get MutatingWebhookConfiguration %s: %w", o.WebhookConfig, err)
+		}
+		var sec corev1.Secret
+		if err := c.Get(ctx, types.NamespacedName{Namespace: o.Namespace, Name: o.SecretName}, &sec); err != nil {
+			return fmt.Errorf("get %s/%s: %w", o.Namespace, o.SecretName, err)
+		}
+		return patchCABundle(ctx, c, &mwc, caBundle(sec.Data, now))
+	})
 }
 
 // caBundle is the current CA plus the previous one while it is still valid.
@@ -128,16 +152,9 @@ func caBundle(data map[string][]byte, now time.Time) []byte {
 	return out
 }
 
-// PatchCABundle sets caBundle on every webhook of the configuration. A
-// missing configuration is not an error (the chart may not render it).
-func PatchCABundle(ctx context.Context, c client.Client, name string, ca []byte) error {
-	var mwc admissionregistrationv1.MutatingWebhookConfiguration
-	if err := c.Get(ctx, types.NamespacedName{Name: name}, &mwc); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil
-		}
-		return fmt.Errorf("get MutatingWebhookConfiguration %s: %w", name, err)
-	}
+// patchCABundle sets caBundle on every webhook of mwc, as read (the update
+// fails with a conflict if it changed since).
+func patchCABundle(ctx context.Context, c client.Client, mwc *admissionregistrationv1.MutatingWebhookConfiguration, ca []byte) error {
 	changed := false
 	for i := range mwc.Webhooks {
 		if !bytes.Equal(mwc.Webhooks[i].ClientConfig.CABundle, ca) {
@@ -148,7 +165,7 @@ func PatchCABundle(ctx context.Context, c client.Client, name string, ca []byte)
 	if !changed {
 		return nil
 	}
-	return c.Update(ctx, &mwc)
+	return c.Update(ctx, mwc)
 }
 
 // Generate creates a CA and a serving certificate for dnsNames.
