@@ -45,8 +45,10 @@ Every item comes from a failure that was measured. The **Why** column says what 
 A pod that cannot use hostNetwork (some serving charts cannot ask for it) can use
 `spec.clientAgent.hostNetwork: false`. That puts the agent on the pod network, and
 `spec.client.includeFabricIfaces` must list the pod interface (e.g. `[<fabric iface>, eth0]`).
-It works over **ofi+tcp only**, and only after two changes on the nodes, which the operator does
-not make (lane A, 2026-11-17, compatibility.md note E). With either one missing every call ends
+It works over **ofi+tcp only**: on an RDMA fabric (`ofi+verbs`, `ucx`) the pod network has no
+IB/RoCE interface, so the agent finds none to hand out and the operator reports the `ClientAgent`
+condition `PodNetworkNeedsTCP` (lane A, 2026-11-18, compatibility.md note H). Over tcp it needs two
+changes on the nodes, which the operator does not make (lane A, 2026-11-17, compatibility.md note E). With either one missing every call ends
 in `DER_TIMEDOUT`:
 
 - **No SNAT from pods to the fabric subnet** on the client nodes. The client announces its pod

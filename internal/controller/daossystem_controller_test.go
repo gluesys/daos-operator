@@ -538,6 +538,15 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
 		Expect(ds.Spec.Template.Spec.HostNetwork).To(BeFalse())
 		Expect(ds.Spec.Template.Spec.DNSPolicy).To(Equal(corev1.DNSClusterFirst))
+		// ...which an RDMA provider cannot serve: the pod network has no IB interface
+		c = cond(getSys(), daosv1alpha1.ConditionClientAgent)
+		Expect(c.Reason).To(Equal("PodNetworkNeedsTCP"), "the test system runs the default verbs provider")
+		Expect(c.Message).To(ContainSubstring(`"ofi+verbs;ofi_rxm"`))
+		sys = getSys()
+		sys.Spec.Provider = "ofi+tcp"
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(cond(getSys(), daosv1alpha1.ConditionClientAgent).Reason).To(Equal("NoNodes"), "tcp is fine in the pod network")
 
 		// switching it off removes the DaemonSet
 		sys = getSys()

@@ -267,7 +267,9 @@ type UpgradeStatus struct {
 // with HostNetwork false the agent lives in the pod network and serves
 // ordinary pods (e.g. a vLLM Deployment from the production-stack chart,
 // which cannot ask for hostNetwork). In that case spec.client.includeFabricIfaces
-// has to list the pod interface as well (eth0 under flannel).
+// has to list the pod interface as well (eth0 under flannel). That only works
+// with a TCP provider: the pod network has no RDMA interface, and the
+// ClientAgent condition reports PodNetworkNeedsTCP for an RDMA provider.
 type ClientAgentSpec struct {
 	// Enabled deploys the DaemonSet. Default false: it needs a NodeSelector
 	// that names the client nodes, or it would land on every node.
