@@ -62,7 +62,7 @@ sees under `warnings`.
 
 ---
 
-## 2. GPU runtime — the three common setups
+## 2. GPU runtime — the common setups
 
 For a vLLM pod to get a GPU you need (a) a device plugin advertising
 `nvidia.com/gpu` and (b) a runtime that injects the driver into the container.
@@ -126,25 +126,14 @@ Run the device plugin DaemonSet with `runtimeClassName: nvidia` — that is what
 it see NVML. Keep the default `DEVICE_LIST_STRATEGY=envvar` strategy; on CRI-O,
 avoid `cdi-cri` / `cdi-annotations` because of §5.1.
 
-### 2.3 Managed Kubernetes (EKS · GKE · AKS)
+### 2.3 Managed Kubernetes (EKS · GKE · AKS) — not targeted
 
-Create a GPU node pool and the device plugin is usually already there. Only the
-labels differ.
-
-| Environment | nodeSelector example | Note |
-|---|---|---|
-| EKS (GPU AMI) | `{"nvidia.com/gpu.present": "true"}` or the instance-type label | device plugin included by default |
-| GKE | `{"cloud.google.com/gke-accelerator": "nvidia-tesla-a100"}` | apply the driver DaemonSet separately |
-| AKS | `{"accelerator": "nvidia"}` | installed when the GPU node pool is created |
-
-```bash
-kubectl get nodes -o json | jq -r '.items[] | .metadata.name + " " + (.status.capacity["nvidia.com/gpu"] // "none")'
-```
-
-> Managed environments sometimes **block hostNetwork and hostPath by policy**
-> (PSA/OPA). A DAOS client needs both, so the namespace needs an exemption
-> (`pod-security.kubernetes.io/enforce: privileged`). The cloud VPC also has to
-> reach the DAOS servers at L3.
+This project targets on-premises GPU clusters next to their DAOS servers. A managed
+cluster could only reach an external DAOS as a client, usually over plain TCP and a WAN
+or VPN link, where a KV cache loses most of its point; nobody runs or checks it
+(compatibility.md). If you try anyway, the client pods need `hostNetwork` and
+`hostPath`, so a cluster that enforces Pod Security needs the namespace labelled
+`pod-security.kubernetes.io/enforce: privileged`.
 
 ### 2.4 Other accelerators — `accelerator`
 
@@ -506,8 +495,8 @@ If step 3 passes, the KV cache lives in DAOS, outside the GPU node.
 Moved to [compatibility.md](compatibility.md). Each combination there carries a date and the
 evidence. That includes the A6000 / CRI-O setup this guide was written on and the GPU
 Operator + 400G RoCE run of 2026-10-01, and moon on containerd 2.2.1 (2026-11-13). The
-unverified paths are listed there too: managed Kubernetes, the pod-network agent over RDMA, and the GPU
-Operator managing the NIC driver.
+paths that are unverified, unsupported or not targeted are listed there too: the GPU Operator managing
+the NIC driver, the pod-network agent over RDMA, GPU schedulers, and managed Kubernetes.
 
 ## When the fabric is RDMA (ofi+verbs, ucx)
 

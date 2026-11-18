@@ -393,7 +393,7 @@ target is back and rebuild has finished. Watch for the `ContainerUnclean` and
   interface name and the servers must reach the client at the address it
   advertises. A pod-network client sits behind the CNI's masquerade, so its
   advertised address does not match its source address and every RPC ends in
-  `DER_TIMEDOUT`. Managed Kubernetes needs a PodSecurity exception for these pods.
+  `DER_TIMEDOUT`. A cluster that enforces Pod Security needs a `privileged` exception for these pods.
 - **On an RDMA fabric** (`ofi+verbs`, `ucx`), clients also need the verbs devices:
   without `/dev/infiniband` the libfabric verbs provider fails to initialise.
 - **Hugepages on every server node.** The `kdev` and `file` storage classes do

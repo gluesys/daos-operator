@@ -29,8 +29,8 @@ operator drops the annotation after one attempt, whatever the outcome.
 - **hostNetwork for every DAOS client.** `daos_agent` hands the client an
   interface name and the servers must reach the client at the address it
   advertises; a pod-network client sits behind the CNI's masquerade and every RPC
-  ends in `DER_TIMEDOUT`. Managed Kubernetes therefore needs a PodSecurity
-  exception for these pods.
+  ends in `DER_TIMEDOUT`. A cluster that enforces Pod Security therefore
+  needs a `privileged` exception for these pods.
 - **On an RDMA fabric** (`ofi+verbs`, `ucx`) clients also need the verbs devices:
   without `/dev/infiniband` the libfabric verbs provider fails to initialise.
   Set `rdma: true` on the workloads that need it.
