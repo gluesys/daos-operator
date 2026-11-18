@@ -48,7 +48,7 @@
    - agent 소켓 hostPath(없을 때만)
 2. **묶음 복사 (첫 init container, daos-client 이미지):** `/opt/daos-il` 묶음을 emptyDir 로 복사만 한다. 연결 확인은 하지 않는다 — 실행 시점에 붙지 못하면 라이브러리가 스스로 dfuse 로 돌아가고(S0, S0c), init container 에 앱과 같은 RDMA 장치·리소스를 붙이기도 어렵다.
 2b. **앱 이미지 검사 (두 번째 init container):** 앱 컨테이너와 **같은 이미지·같은 securityContext** 로 정적 바이너리 `il-check`(emptyDir 에서 실행, 셸 불필요)를 돌린다. 이 도구는 묶음에 든 작은 동적 프로그램을 `LD_PRELOAD` 를 걸고 실행해 보고, 되면 `active/<lib>.so` 심볼릭 링크를 만든다. 앱의 `LD_PRELOAD` 는 이 링크를 가리키므로, 실패하면(glibc 낮음, musl, 로더 없음) 파일이 없어 경고 한 줄 뒤 dfuse 로 돈다. `active/` 는 sticky 없는 0777(남의 심볼릭 링크를 커널이 막지 않게). 앱 이미지의 로더·glibc 로 시험하므로 S0b 의 실패를 앱 시작 전에 걸러낸다. 결과는 `interception-result: skipped/image-incompatible`.
-3. **라이브러리 묶음 (daos-images):** `/opt/daos-il/lib` 에 libioil·libpil4dfs 와 의존 라이브러리(libdaos·libdfs·libgurt·cart·mercury·libfabric·libibverbs·librdmacm), `lib/mercury/libna_plugin_ofi.so`, `lib/libibverbs/lib<nic>-rdmav*.so` 를 RUNPATH `$ORIGIN` 으로 넣는다. 앱 전체에 `LD_LIBRARY_PATH` 를 걸지 않기 위해서다(NCCL·UCX 가 쓰는 libfabric 과 충돌 방지).
+3. **라이브러리 묶음 (daos-images):** `/opt/daos-il/lib` 에 libioil·libpil4dfs 와 의존 라이브러리(libdaos·libdfs·libgurt·cart·mercury·libfabric·libibverbs·librdmacm), `lib/mercury/libna_plugin_ofi.so`, `lib/libibverbs/lib<nic>-rdmav*.so` 를 RUNPATH 를 절대 경로 `/opt/daos-il/lib` 로 넣는다(`$ORIGIN` 이 아니므로 `active/` 의 심볼릭 링크로 preload 해도 의존 라이브러리는 `lib/` 에서 찾는다; 묶음은 항상 같은 경로에 마운트). 앱 전체에 `LD_LIBRARY_PATH` 를 걸지 않기 위해서다(NCCL·UCX 가 쓰는 libfabric 과 충돌 방지).
 4. **인증서:** webhook 은 TLS 가 필요하다. D1 참고.
 
 ## 4. 위험
@@ -57,7 +57,7 @@
 - **pil4dfs 호환:** mmap·fork 후 동작·io_uring 등 맞지 않는 앱이 있다. 기본은 ioil, pil4dfs 는 명시할 때만.
 - **연결 수:** 파드마다 pool/container 를 연다.
 - **Pod Security:** webhook 은 hostNetwork 를 켜지 않는다. agent 소켓 hostPath 를 더해야 하는데 네임스페이스 enforce 가 baseline·restricted 면 건너뛴다(`skipped/pod-security`). agent DaemonSet 이 꺼져 있으면 소켓 디렉터리가 없어 건너뛴다(`skipped/no-client-agent`).
-- **동적 로더 차이:** il-test 는 이미지의 기본 로더(`/lib64/ld-linux-x86-64.so.2`)로 시험한다. 앱 바이너리가 다른 `PT_INTERP`(conda·nix 류 자체 로더)를 쓰면 검사 결과와 다를 수 있다 — 그런 앱은 주석 `off`.
+- **동적 로더 차이(남는 위험):** il-test 는 이미지의 기본 로더(`/lib64/ld-linux-x86-64.so.2`)로 시험한다. webhook·init container 는 앱이 실제로 실행할 바이너리를 알 수 없어(엔트리포인트·셸 스크립트·자식 프로세스) 로더를 미리 맞출 수 없다. 앱 바이너리가 다른 `PT_INTERP`(conda·nix 류 자체 로더)를 쓰면 검사 통과 후에도 시작이 실패할 수 있다. 그래서 주입은 기본 opt-in(D2)이고, 그런 앱은 주석 `off`. e2e 와 문서에 증상(앱 시작 시 `version GLIBC_* not found` 등)을 적는다.
 
 ## 5. 단계
 
@@ -66,7 +66,7 @@
 - [ ] S0c: 빠른 백엔드에서 대역폭 재측정(장비 결정 필요)
 - [x] S2-1 daos-images: `/opt/daos-il` 묶음 + il-check (daos-images !11, 레인 A 수동 흐름: ubuntu22 injected·가로채기, ubuntu20·alpine skipped·rc 0)
 - [ ] S2-2 operator: webhook(주입·판단 표), envtest 단위 시험
-- [ ] S2-4 차트: webhook 설정·인증서·RBAC(PVC/PV get), 기본 꺼짐
+- [ ] S2-4 차트: webhook 설정·인증서·RBAC(PVC/PV/StorageClass get, MutatingWebhookConfiguration get/update), 기본 꺼짐
 - [ ] S2-5 e2e: hostNetwork 파드 ioil 주입 + D_IL_REPORT 가로채기 확인, pod network 파드 skipped, Alpine 파드 image-incompatible 로 정상 실행 확인
 
 ## 6. 결정 필요
