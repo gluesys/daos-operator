@@ -12,6 +12,7 @@ what *should* work. A row without a date is not a claim.
 | **CI** | exercised on every main pipeline: the e2e lane or the render checks |
 | **rendered** | manifests render and pass kubeconform. Never run |
 | **unverified** | not run. Only the configuration is written down, or nothing is |
+| **not targeted** | outside what this project sets out to support. Not planned; it may work, nobody checks |
 
 **Rule.** At each chart release, a **verified** row older than 90 days moves to
 *re-check needed* unless it was run again. New rows need a date and evidence.
@@ -26,7 +27,7 @@ what *should* work. A row without a date is not a claim.
 | 1.32.6 (kubeadm) / containerd 2.2.1, Ubuntu 24.04 | ofi+verbs, IB 100G | operator pods, 2 ranks, MD-on-SSD, NVMe via SPDK | verified | 2026-11-13 | moon (gpu-node1~3), FlexA Hub `3ee2473f` |
 | 1.29 · 1.31 · 1.34 | — | — | **CI** (rendered) | every main pipeline | `hack/ci/chart-schema.sh` (kubeconform) |
 | containerd other than 2.2.1 · CRI-O other than 1.31 | any | any | unverified | — | — |
-| managed (EKS · GKE · AKS) | any | external DAOS only | unverified | — | configuration in deploy-gpu-k8s §2.3 |
+| managed (EKS · GKE · AKS) | any | external DAOS only | not targeted | — | on-premises GPU clusters are the target; a KV cache across a WAN loses its point. deploy-gpu-k8s §2.3 |
 | 1.31.14 / CRI-O 1.31.5, flannel (vxlan) | ofi+tcp | `clientAgent.hostNetwork: false` (pod-network agent), ordinary pod: no SNAT to the fabric subnet + `rp_filter=2` | verified (fails with `DER_TIMEDOUT` as installed) | 2026-11-17 | lane A; serving-integration.md §2; [note E](#e-pod-network-agent-2026-11-17) |
 | 1.31.14 / CRI-O 1.31.5, flannel (vxlan) | ofi+verbs, IB | `clientAgent.hostNetwork: false`, client pod with or without `/dev/infiniband` + privileged | **does not work** (operator reports `PodNetworkNeedsTCP`) | 2026-11-18 | lane A; [note H](#h-pod-network-agent-over-rdma-2026-11-18) |
 
@@ -53,7 +54,19 @@ what *should* work. A row without a date is not a claim.
 | DAOS servers / agent / admin / client | `2.8.0-20261110-gc1645462` (lane B, moon) |
 | vllm-lmcache-daos | `0.30.0-0.5.5-20260927` (A6000), `0.30.0-0.5.5-20261028` (moon, 2026-11-13), `0.32.0-0.5.6-20261114` (moon from 2026-11-14, note C) |
 
-## 4. Notes on the verified rows
+
+## 4. GPU schedulers (AI data centre, multi-tenant GPU clusters)
+
+A GPU scheduler decides which user or job gets which GPUs; it sits on top of the cluster and is a
+different thing from where the cluster runs (section 1, managed Kubernetes). How DAOS is attached
+depends on whether the scheduler launches Kubernetes pods.
+
+| Scheduler | How DAOS is attached | Status | Date | Where · evidence |
+|---|---|---|---|---|
+| Kubernetes-native: Kueue, KAI Scheduler (Run:ai), Volcano | jobs are ordinary pods, so the same path as section 2 (GPU node and serving): the per-node agent, CSI PVs, `vllm.services[]` | unverified | — | moon runs Kubeflow with Kueue, and the DAOS KV-cache runs of 2026-11-13 shared that cluster; whether they were admitted through a Kueue queue was not recorded |
+| Backend.AI (Lablup) | its own manager and agents start the containers, and storage-proxy mounts vfolders: daos-operator is not on that path. Needs a storage-proxy DAOS backend | not supported | — | issue #6 |
+
+## 5. Notes on the verified rows
 
 ### A. RTX A6000, 2026-09-27
 
@@ -155,7 +168,7 @@ were stored. After `kubectl rollout restart` the same prompts were served from D
 `17/17 keys (0 L1, 17 L2)` in about 0.64 s, 8976 tokens retrieved. The time to answer dropped to 2.3 s,
 and the text was the same as the cold replies (2/2).
 
-## 5. Adding a row
+## 6. Adding a row
 
 Add a row when something is brought up in a new combination, or when an existing row is
 run again (then update its date). Link the evidence: a pipeline, a testbed note in `doc/`,
