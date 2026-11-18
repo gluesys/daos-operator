@@ -5,7 +5,7 @@
 # 레인의 VM 을 설계 2절 모양으로 만든다(정지 상태로 끝난다). LANE=a: 슬롯 3·4 6대, LANE=b: 슬롯 5-2 3대.
 #   1) 정지 → `init` 롤백 → 다시 정지(init 이 실행 중 스냅샷인 VM 이 있다)
 #   2) remote-NVMe 디스크 전부 분리   3) 워커에 zvol 4개
-#   4) 코어·메모리   5) 4A 에 A2 GPU
+#   4) 코어·메모리   5) GPU_VMID 가 있으면 A2 GPU(레인 A 는 2026-11-18 부터 없음, env.sh)
 # 되돌릴 수 없다. 한 번 실행한다. 이후의 리셋은 rollback.sh(k8s-ready) 가 맡는다.
 set -euo pipefail
 source "$(dirname "$0")/env.sh"
