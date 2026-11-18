@@ -82,6 +82,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  verbs:
+  - get
+  - update
+- apiGroups:
   - apps
   resources:
   - daemonsets
@@ -175,3 +182,9 @@ rules:
   - list
   - update
   - watch
+- apiGroups:
+  - storage.k8s.io
+  resources:
+  - storageclasses
+  verbs:
+  - get

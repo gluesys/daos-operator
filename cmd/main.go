@@ -18,9 +18,12 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -31,15 +34,20 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 	"github.com/gluesys/daos-operator/internal/controller"
 	"github.com/gluesys/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/interception"
+	"github.com/gluesys/daos-operator/internal/webhookcert"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -66,6 +74,7 @@ func main() {
 	var secureMetrics bool
 	var enableHTTP2 bool
 	var tlsOpts []func(*tls.Config)
+	var icept interceptionFlags
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
@@ -85,6 +94,18 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	flag.BoolVar(&icept.enabled, "interception", false,
+		"Serve the pod mutating webhook that preloads the DAOS interception library "+
+			"(doc/plans/2026-11-19-client-interception.md). Needs --interception-system and the chart's webhook objects.")
+	flag.StringVar(&icept.system, "interception-system", "", "DaosSystem whose CSI driver the webhook serves.")
+	flag.StringVar(&icept.driver, "interception-csi-driver", "daos.csi.gluesys.com", "CSI driver name of DAOS volumes.")
+	flag.StringVar(&icept.ibvDrivers, "interception-ibv-drivers", interception.DefaultIBVDrivers,
+		"IBV_DRIVERS for injected containers (bundled rdma-core providers, without the -rdmav<N>.so suffix).")
+	flag.StringVar(&icept.rdmaResources, "interception-rdma-resources", "",
+		"Comma-separated extended resource names (a trailing / matches a prefix) that give a container an RDMA device.")
+	flag.StringVar(&icept.service, "webhook-service", "daos-operator-webhook", "Service in front of the webhook server.")
+	flag.StringVar(&icept.secret, "webhook-secret", "daos-operator-webhook-cert", "Secret holding the webhook serving certificate.")
+	flag.StringVar(&icept.config, "webhook-config", "daos-operator-interception", "MutatingWebhookConfiguration to keep caBundle in.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -124,6 +145,38 @@ func main() {
 		webhookServerOptions.KeyName = webhookCertKey
 	}
 
+	var certOpts webhookcert.Options
+	if icept.enabled {
+		if icept.system == "" {
+			setupLog.Error(nil, "--interception needs --interception-system")
+			os.Exit(1)
+		}
+		ns := os.Getenv("POD_NAMESPACE")
+		if ns == "" {
+			setupLog.Error(nil, "--interception needs POD_NAMESPACE (downward API)")
+			os.Exit(1)
+		}
+		if webhookServerOptions.CertDir == "" {
+			webhookServerOptions.CertDir = "/tmp/k8s-webhook-server/serving-certs"
+		}
+		certOpts = webhookcert.Options{
+			Namespace: ns, SecretName: icept.secret, ServiceName: icept.service,
+			WebhookConfig: icept.config, CertDir: webhookServerOptions.CertDir,
+		}
+		// before the manager: the webhook server reads the files when it starts
+		direct, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+		if err != nil {
+			setupLog.Error(err, "Failed to create client for the webhook certificate")
+			os.Exit(1)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		err = webhookcert.Ensure(ctx, direct, certOpts, time.Now())
+		cancel()
+		if err != nil {
+			setupLog.Error(err, "Failed to set up the webhook certificate")
+			os.Exit(1)
+		}
+	}
 	webhookServer := webhook.NewServer(webhookServerOptions)
 
 	// Metrics endpoint is enabled in 'config/default/kustomization.yaml'. The Metrics options configure the server.
@@ -249,11 +302,50 @@ func main() {
 	}
 	// +kubebuilder:scaffold:builder
 
+	if icept.enabled {
+		var res []string
+		for _, r := range strings.Split(icept.rdmaResources, ",") {
+			if r = strings.TrimSpace(r); r != "" {
+				res = append(res, r)
+			}
+		}
+		mgr.GetWebhookServer().Register(interception.Path, &webhook.Admission{Handler: &interception.Handler{
+			Client:     mgr.GetClient(),
+			Reader:     mgr.GetAPIReader(),
+			Decoder:    admission.NewDecoder(mgr.GetScheme()),
+			Config:     interception.Config{IBVDrivers: icept.ibvDrivers, RDMAResources: res},
+			DriverName: icept.driver,
+			SystemName: icept.system,
+		}})
+		// renew and re-assert caBundle (a chart upgrade may recreate the configuration)
+		if err := mgr.Add(manager.RunnableFunc(func(ctx context.Context) error {
+			t := time.NewTicker(10 * time.Minute)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return nil
+				case <-t.C:
+					if err := webhookcert.Ensure(ctx, mgr.GetClient(), certOpts, time.Now()); err != nil {
+						setupLog.Error(err, "webhook certificate re-check failed")
+					}
+				}
+			}
+		})); err != nil {
+			setupLog.Error(err, "Failed to add webhook certificate re-check")
+			os.Exit(1)
+		}
+	}
+
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up health check")
 		os.Exit(1)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	readyz := healthz.Ping
+	if icept.enabled {
+		readyz = mgr.GetWebhookServer().StartedChecker()
+	}
+	if err := mgr.AddReadyzCheck("readyz", readyz); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
 		os.Exit(1)
 	}
@@ -263,4 +355,10 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+type interceptionFlags struct {
+	enabled                                   bool
+	system, driver, ibvDrivers, rdmaResources string
+	service, secret, config                   string
 }
