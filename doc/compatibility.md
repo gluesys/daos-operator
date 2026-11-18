@@ -28,7 +28,7 @@ what *should* work. A row without a date is not a claim.
 | containerd other than 2.2.1 · CRI-O other than 1.31 | any | any | unverified | — | — |
 | managed (EKS · GKE · AKS) | any | external DAOS only | unverified | — | configuration in deploy-gpu-k8s §2.3 |
 | 1.31.14 / CRI-O 1.31.5, flannel (vxlan) | ofi+tcp | `clientAgent.hostNetwork: false` (pod-network agent), ordinary pod: no SNAT to the fabric subnet + `rp_filter=2` | verified (fails with `DER_TIMEDOUT` as installed) | 2026-11-17 | lane A; serving-integration.md §2; [note E](#e-pod-network-agent-2026-11-17) |
-| any | ofi+verbs, ucx | `clientAgent.hostNetwork: false` | unverified | — | — |
+| 1.31.14 / CRI-O 1.31.5, flannel (vxlan) | ofi+verbs, IB | `clientAgent.hostNetwork: false`, client pod with or without `/dev/infiniband` + privileged | **does not work** (operator reports `PodNetworkNeedsTCP`) | 2026-11-18 | lane A; [note H](#h-pod-network-agent-over-rdma-2026-11-18) |
 
 ## 2. GPU node and serving (reference workload, serving-integration.md)
 
@@ -161,3 +161,25 @@ Add a row when something is brought up in a new combination, or when an existing
 run again (then update its date). Link the evidence: a pipeline, a testbed note in `doc/`,
 or a Hub document. Keep the columns. A new dimension needs a reason that a real
 environment differs on it.
+
+### H. Pod-network agent over RDMA, 2026-11-18
+
+Lane A, as in note E but DAOS 1 rank on `ofi+verbs;ofi_rxm` over `ib0` (IPoIB, 10.10.36.0/24),
+operator 83095295. The agent ran on exaci5-4b with `hostNetwork: false` and
+`includeFabricIfaces: [ib0, eth0]`. Two client pods on the same node: an ordinary one, and one
+with `/dev/infiniband` mounted and `privileged: true`.
+
+- Agent on the pod network: both clients failed at `GetAttachInfo` (`DER_MISC`). The agent log
+  says `no fabric interfaces found with provider ofi+verbs;ofi_rxm`: its namespace has `eth0` and
+  `lo` only. Mounting `/dev/infiniband` does not help, since verbs is addressed through the IPoIB
+  (or RoCE) netdev, which stays in the host namespace.
+- Agent back on the host network, the privileged client still on the pod network: the agent hands
+  out `ib0`, which the pod does not have, and libfabric stops at `na_ofi_verify_info() No provider
+  found for "verbs;ofi_rxm"` (`DER_HG`).
+
+So over RDMA the agent and its clients both need the fabric netdev in their own namespace: the
+host network, as the chart's vLLM pods use. A secondary network that moves an IPoIB or SR-IOV
+interface into the pods (Multus) might lift this; the agent DaemonSet has no way to ask for one
+today, and it is untested. Since this release the operator reports the combination as the
+`ClientAgent` condition `False`, reason `PodNetworkNeedsTCP`, instead of a Ready agent that no
+client can use.

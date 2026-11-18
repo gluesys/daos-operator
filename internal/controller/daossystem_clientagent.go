@@ -22,6 +22,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"path/filepath"
+	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -215,6 +216,15 @@ func (r *DaosSystemReconciler) setClientAgentCondition(ctx context.Context, sys 
 	switch {
 	case !sys.Spec.ClientAgent.Enabled:
 		setCond(status, daosv1alpha1.ConditionClientAgent, metav1.ConditionFalse, "Disabled", "spec.clientAgent.enabled is false")
+	case !clientAgentHostNetwork(sys) && !providerIsTCP(sys.Spec.Provider):
+		// lane A 2026-11-18: in the pod network the agent sees eth0 and lo only,
+		// finds no interface for the RDMA provider and fails every GetAttachInfo;
+		// a host-network agent instead hands the pod "ib0", which the pod does not
+		// have (na_ofi: no provider found). Say so here rather than leave the
+		// DaemonSet Ready and every client failing.
+		setCond(status, daosv1alpha1.ConditionClientAgent, metav1.ConditionFalse, "PodNetworkNeedsTCP",
+			fmt.Sprintf("spec.clientAgent.hostNetwork is false but the provider is %q: the pod network has no RDMA interface, so the agent finds none to hand out; "+
+				"use hostNetwork true with hostNetwork clients, or a TCP provider", providerOrDefault(sys.Spec.Provider)))
 	case desired == 0:
 		setCond(status, daosv1alpha1.ConditionClientAgent, metav1.ConditionFalse, "NoNodes", "no node matches spec.clientAgent.nodeSelector")
 	case ready < desired:
@@ -225,4 +235,18 @@ func (r *DaosSystemReconciler) setClientAgentCondition(ctx context.Context, sys 
 				map[bool]string{true: "host network", false: "pod network"}[clientAgentHostNetwork(sys)], clientAgentSocketDir(sys), agentSocketDir))
 	}
 	return nil
+}
+
+// providerOrDefault is spec.provider with the CRD default filled in.
+func providerOrDefault(p string) string {
+	if p == "" {
+		return "ofi+verbs;ofi_rxm"
+	}
+	return p
+}
+
+// providerIsTCP reports whether the fabric provider runs over plain TCP/IP
+// (ofi+tcp, ofi+tcp;ofi_rxm, ucx+tcp), the only kind a pod-network agent can serve.
+func providerIsTCP(p string) bool {
+	return strings.Contains(providerOrDefault(p), "tcp")
 }
