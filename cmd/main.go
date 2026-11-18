@@ -146,6 +146,9 @@ func main() {
 	}
 
 	var certOpts webhookcert.Options
+	// uncached: the cert re-check reads one Secret and one webhook configuration,
+	// and RBAC grants get/update, not the list/watch an informer would need
+	var certClient client.Client
 	if icept.enabled {
 		if icept.system == "" {
 			setupLog.Error(nil, "--interception needs --interception-system")
@@ -164,13 +167,14 @@ func main() {
 			WebhookConfig: icept.config, CertDir: webhookServerOptions.CertDir,
 		}
 		// before the manager: the webhook server reads the files when it starts
-		direct, err := client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
+		var err error
+		certClient, err = client.New(ctrl.GetConfigOrDie(), client.Options{Scheme: scheme})
 		if err != nil {
 			setupLog.Error(err, "Failed to create client for the webhook certificate")
 			os.Exit(1)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		err = webhookcert.Ensure(ctx, direct, certOpts, time.Now())
+		err = webhookcert.Ensure(ctx, certClient, certOpts, time.Now())
 		cancel()
 		if err != nil {
 			setupLog.Error(err, "Failed to set up the webhook certificate")
@@ -326,7 +330,7 @@ func main() {
 				case <-ctx.Done():
 					return nil
 				case <-t.C:
-					if err := webhookcert.Ensure(ctx, mgr.GetClient(), certOpts, time.Now()); err != nil {
+					if err := webhookcert.Ensure(ctx, certClient, certOpts, time.Now()); err != nil {
 						setupLog.Error(err, "webhook certificate re-check failed")
 					}
 				}

@@ -69,6 +69,7 @@ const DefaultIBVDrivers = MountPath + "/lib/libibverbs/libmlx5"
 // System is what the decision needs from the DaosSystem that serves the CSI driver.
 type System struct {
 	Provider         string
+	AgentEnabled     bool
 	AgentHostNetwork bool
 	AgentSocketDir   string
 	ClientImage      string
@@ -82,6 +83,8 @@ type Request struct {
 	Mode        string
 	Report      bool
 	DaosVolumes map[string]bool
+	// PodSecurity is the namespace's pod-security.kubernetes.io/enforce level ("" = none).
+	PodSecurity string
 }
 
 // Library returns the shared object for a mode, or "" for an unknown one.
@@ -138,12 +141,30 @@ func Decide(cfg Config, sys System, r Request) string {
 			return "mixed-images"
 		}
 	}
+	needAgent := false
 	for _, i := range tg {
-		for _, e := range pod.Spec.Containers[i].Env {
-			if e.Name == "LD_PRELOAD" && e.ValueFrom != nil {
+		c := &pod.Spec.Containers[i]
+		for _, e := range c.Env {
+			if e.ValueFrom == nil {
+				continue
+			}
+			switch e.Name {
+			case "LD_PRELOAD":
 				return "ld-preload-from-source"
+			case "NA_PLUGIN_PATH", "IBV_DRIVERS", "D_IL_REPORT":
+				// the patch would set value next to valueFrom: an invalid pod
+				return "env-from-source"
 			}
 		}
+		needAgent = needAgent || !hasAgentSocket(c)
+	}
+	if needAgent && !sys.AgentEnabled {
+		// the socket directory only exists where the agent DaemonSet runs
+		return "no-client-agent"
+	}
+	if needAgent && (r.PodSecurity == "baseline" || r.PodSecurity == "restricted") {
+		// the agent socket is a hostPath, which both levels forbid
+		return "pod-security"
 	}
 	if pod.Spec.HostNetwork != sys.AgentHostNetwork {
 		// the agent hands out an interface name from its own namespace
@@ -226,6 +247,7 @@ func Mutate(cfg Config, sys System, r Request, existingSecrets map[string]bool) 
 				RunAsNonRoot:             ptr.To(true),
 				AllowPrivilegeEscalation: ptr.To(false),
 				Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+				SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 			},
 		},
 		corev1.Container{
@@ -235,6 +257,10 @@ func Mutate(cfg Config, sys System, r Request, existingSecrets map[string]bool) 
 			Image:           first.Image,
 			ImagePullPolicy: first.ImagePullPolicy,
 			Command:         []string{MountPath + "/bin/il-check", MountPath, lib},
+			// the application's environment, so LD_LIBRARY_PATH and the like pick
+			// the same libraries in the check as in the application
+			Env:             checkEnv(first.Env),
+			EnvFrom:         first.EnvFrom,
 			VolumeMounts:    []corev1.VolumeMount{{Name: BundleVolume, MountPath: MountPath}},
 			Resources:       small,
 			SecurityContext: first.SecurityContext.DeepCopy(),
@@ -281,6 +307,16 @@ func Mutate(cfg Config, sys System, r Request, existingSecrets map[string]bool) 
 		})
 	}
 	setResult(pod, "injected/"+lib)
+}
+
+func checkEnv(env []corev1.EnvVar) []corev1.EnvVar {
+	var out []corev1.EnvVar
+	for _, e := range env {
+		if e.Name != "LD_PRELOAD" {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // Skip records why a pod that asked for injection did not get it.

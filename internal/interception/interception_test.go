@@ -15,6 +15,7 @@ import (
 func verbsSystem() System {
 	return System{
 		Provider:         "ofi+verbs;ofi_rxm",
+		AgentEnabled:     true,
 		AgentHostNetwork: true,
 		AgentSocketDir:   "/var/run/daos-operator/agent/daos",
 		ClientImage:      "registry/daos-client:2.8.0",
@@ -48,12 +49,13 @@ func req(pod *corev1.Pod, mode string) Request {
 func TestDecide(t *testing.T) {
 	cfg := Config{RDMAResources: []string{"rdma/", "nvidia.com/hostdev"}}
 	cases := []struct {
-		name   string
-		mode   string
-		sys    func(*System)
-		pod    func(*corev1.Pod)
-		daos   map[string]bool
-		reason string
+		name        string
+		mode        string
+		sys         func(*System)
+		pod         func(*corev1.Pod)
+		daos        map[string]bool
+		podSecurity string
+		reason      string
 	}{
 		{name: "host network, privileged", reason: ""},
 		{name: "pil4dfs", mode: ModePil4dfs, reason: ""},
@@ -97,7 +99,16 @@ func TestDecide(t *testing.T) {
 		{name: "LD_PRELOAD from a ConfigMap", pod: func(p *corev1.Pod) {
 			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "LD_PRELOAD", ValueFrom: &corev1.EnvVarSource{}}}
 		}, reason: "ld-preload-from-source"},
+		{name: "baseline namespace, hostPath socket needed", podSecurity: "baseline", reason: "pod-security"},
+		{name: "privileged namespace", podSecurity: "privileged", reason: ""},
 		{name: "no client image", sys: func(s *System) { s.ClientImage = "" }, reason: "no-client-image"},
+		{name: "IBV_DRIVERS from a Secret", pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "IBV_DRIVERS", ValueFrom: &corev1.EnvVarSource{}}}
+		}, reason: "env-from-source"},
+		{name: "client agent off, no socket of its own", sys: func(s *System) { s.AgentEnabled = false }, reason: "no-client-agent"},
+		{name: "client agent off, pod brings its socket", sys: func(s *System) { s.AgentEnabled = false }, pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "DAOS_AGENT_DRPC_DIR", Value: "/run/agent"}}
+		}, reason: ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,6 +124,7 @@ func TestDecide(t *testing.T) {
 				mode = ModeIoil
 			}
 			r := req(pod, mode)
+			r.PodSecurity = tc.podSecurity
 			if tc.daos != nil {
 				r.DaosVolumes = tc.daos
 			}
@@ -134,7 +146,7 @@ func env(c corev1.Container, name string) (string, bool) {
 
 func TestMutate(t *testing.T) {
 	pod, sys := hostPod(), verbsSystem()
-	pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "LD_PRELOAD", Value: "/usr/lib/libjemalloc.so"}}
+	pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "LD_PRELOAD", Value: "/usr/lib/libjemalloc.so"}, {Name: "LD_LIBRARY_PATH", Value: "/app/lib"}}
 	r := req(pod, ModePil4dfs)
 	r.Report = true
 	Mutate(Config{}, sys, r, map[string]bool{"regcred": true})
@@ -157,6 +169,14 @@ func TestMutate(t *testing.T) {
 	}
 	if c.SecurityContext == nil || !ptr.Deref(c.SecurityContext.Privileged, false) {
 		t.Fatalf("check must run with the application's securityContext")
+	}
+	if v, _ := env(c, "LD_LIBRARY_PATH"); v != "/app/lib" {
+		t.Fatalf("check container must see the application's LD_LIBRARY_PATH, got %q", v)
+	}
+	for _, e := range c.Env {
+		if e.Name == "LD_PRELOAD" {
+			t.Fatalf("check container inherits LD_PRELOAD; il-check sets its own")
+		}
 	}
 	app := pod.Spec.Containers[0]
 	if v, _ := env(app, "LD_PRELOAD"); v != "/opt/daos-il/active/libpil4dfs.so /usr/lib/libjemalloc.so" {

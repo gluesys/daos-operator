@@ -53,19 +53,19 @@ func (h *Handler) Handle(ctx context.Context, req admission.Request) admission.R
 	if ns == "" {
 		ns = req.Namespace
 	}
+	var nso corev1.Namespace
+	nsErr := h.Client.Get(ctx, types.NamespacedName{Name: ns}, &nso)
 	mode, fromPod := pod.Annotations[AnnotationMode]
-	if !fromPod {
-		var nso corev1.Namespace
-		if err := h.Client.Get(ctx, types.NamespacedName{Name: ns}, &nso); err == nil {
-			mode = nso.Labels[AnnotationMode]
-		}
+	if !fromPod && nsErr == nil {
+		mode = nso.Labels[AnnotationMode]
 	}
 	if mode == "" || mode == ModeOff {
 		return admission.Allowed("interception not requested")
 	}
 
 	daosVols := h.daosVolumes(ctx, ns, pod)
-	r := Request{Pod: pod, Mode: mode, Report: pod.Annotations[AnnotationReport] == "true", DaosVolumes: daosVols}
+	r := Request{Pod: pod, Mode: mode, Report: pod.Annotations[AnnotationReport] == "true", DaosVolumes: daosVols,
+		PodSecurity: nso.Labels["pod-security.kubernetes.io/enforce"]}
 	if len(daosVols) == 0 {
 		// a namespace default should not stamp every pod in the namespace
 		if !fromPod {
@@ -111,6 +111,7 @@ func SystemFrom(ds *daosv1alpha1.DaosSystem) System {
 	}
 	return System{
 		Provider:         provider,
+		AgentEnabled:     ds.Spec.ClientAgent.Enabled,
 		AgentHostNetwork: ds.Spec.ClientAgent.HostNetwork == nil || *ds.Spec.ClientAgent.HostNetwork,
 		AgentSocketDir:   filepath.Clean(socket),
 		ClientImage:      ds.Spec.Images.Client,

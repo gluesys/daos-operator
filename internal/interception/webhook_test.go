@@ -41,6 +41,7 @@ func system() *daosv1alpha1.DaosSystem {
 	ds := &daosv1alpha1.DaosSystem{ObjectMeta: metav1.ObjectMeta{Name: "daos"}}
 	ds.Spec.Provider = "ofi+verbs;ofi_rxm"
 	ds.Spec.Images.Client = "registry/daos-client:2.8.0"
+	ds.Spec.ClientAgent.Enabled = true
 	return ds
 }
 
@@ -49,6 +50,9 @@ func objects() []runtime.Object {
 		system(),
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "app"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "ml", Labels: map[string]string{AnnotationMode: ModeIoil}}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "locked", Labels: map[string]string{"pod-security.kubernetes.io/enforce": "baseline"}}},
+		&corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "locked", Name: "bound"},
+			Spec: corev1.PersistentVolumeClaimSpec{VolumeName: "pv-bound"}},
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "daos"}, Provisioner: driver},
 		&storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "local"}, Provisioner: "rancher.io/local-path"},
 		&corev1.PersistentVolume{ObjectMeta: metav1.ObjectMeta{Name: "pv-bound"}, Spec: corev1.PersistentVolumeSpec{
@@ -119,6 +123,7 @@ func TestHandle(t *testing.T) {
 		{"missing PVC", podWith("app", "nope", map[string]string{AnnotationMode: ModeIoil}), "skipped/no-daos-volume"},
 		{"namespace default", podWith("ml", "bound", nil), "injected/libioil"},
 		{"pod annotation overrides namespace", podWith("ml", "bound", map[string]string{AnnotationMode: ModeOff}), ""},
+		{"baseline Pod Security", podWith("locked", "bound", map[string]string{AnnotationMode: ModeIoil}), "skipped/pod-security"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
