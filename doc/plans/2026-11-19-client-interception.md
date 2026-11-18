@@ -41,10 +41,10 @@
 
 ## 3. 구성요소
 
-1. **Mutating webhook (operator):** 파드 생성 시 볼륨의 PVC → PV 의 `csi.driver` 가 DAOS CSI 인 것만 본다. `failurePolicy: Ignore`(operator 가 죽어도 파드 생성은 막지 않음), `namespaceSelector` 로 범위 제한. 주입 내용:
+1. **Mutating webhook (operator):** 파드 생성 시 볼륨이 DAOS CSI 인지 본다 — 바운드된 PVC 는 PV 의 `csi.driver`, 아직 바운드 안 된 PVC(지연 바인딩 포함)는 StorageClass 의 `provisioner`, generic ephemeral 볼륨은 템플릿의 StorageClass. `failurePolicy: Ignore`(operator 가 죽어도 파드 생성은 막지 않음), `namespaceSelector` 로 범위 제한. 주입 내용:
    - init container `daos-il-bundle`(daos-client 이미지) · `daos-il-check`(앱 이미지)
    - emptyDir `daos-il` 을 앱 컨테이너 `/opt/daos-il` 에 읽기 전용으로
-   - `LD_PRELOAD=/opt/daos-il/lib/<lib>.so`, `NA_PLUGIN_PATH=/opt/daos-il/lib/mercury`, `IBV_DRIVERS=/opt/daos-il/lib/libibverbs/libmlx5`(설정 가능), `D_IL_REPORT`(주석으로 켬)
+   - `LD_PRELOAD=/opt/daos-il/active/<lib>.so`(il-check 가 통과할 때만 생기는 링크), `NA_PLUGIN_PATH=/opt/daos-il/lib/mercury`, `IBV_DRIVERS=/opt/daos-il/lib/libibverbs/libmlx5`(설정 가능), `D_IL_REPORT`(주석으로 켬)
    - agent 소켓 hostPath(없을 때만)
 2. **묶음 복사 (첫 init container, daos-client 이미지):** `/opt/daos-il` 묶음을 emptyDir 로 복사만 한다. 연결 확인은 하지 않는다 — 실행 시점에 붙지 못하면 라이브러리가 스스로 dfuse 로 돌아가고(S0, S0c), init container 에 앱과 같은 RDMA 장치·리소스를 붙이기도 어렵다.
 2b. **앱 이미지 검사 (두 번째 init container):** 앱 컨테이너와 **같은 이미지·같은 securityContext** 로 정적 바이너리 `il-check`(emptyDir 에서 실행, 셸 불필요)를 돌린다. 이 도구는 묶음에 든 작은 동적 프로그램을 `LD_PRELOAD` 를 걸고 실행해 보고, 되면 `active/<lib>.so` 심볼릭 링크를 만든다. 앱의 `LD_PRELOAD` 는 이 링크를 가리키므로, 실패하면(glibc 낮음, musl, 로더 없음) 파일이 없어 경고 한 줄 뒤 dfuse 로 돈다. `active/` 는 sticky 없는 0777(남의 심볼릭 링크를 커널이 막지 않게). 앱 이미지의 로더·glibc 로 시험하므로 S0b 의 실패를 앱 시작 전에 걸러낸다. 결과는 `interception-result: skipped/image-incompatible`.
@@ -56,7 +56,8 @@
 - **glibc 버전·musl:** 묶음은 EL9(glibc 2.34) 빌드다. 낮은 glibc·musl 이미지에서는 앱이 시작하지 못한다(S0b 확인). 2b 검사로 막지만, 검사가 빠지거나 틀리면 파드가 죽는 종류의 실패라 기본은 opt-in 으로 둔다. 정적 바이너리(Go)는 효과 없이 지나간다.
 - **pil4dfs 호환:** mmap·fork 후 동작·io_uring 등 맞지 않는 앱이 있다. 기본은 ioil, pil4dfs 는 명시할 때만.
 - **연결 수:** 파드마다 pool/container 를 연다.
-- **Pod Security:** hostNetwork·hostPath 파드는 이미 `privileged` 예외 네임스페이스에 있다. webhook 이 그 수준을 올리지 않는다(hostNetwork 를 켜지 않는다).
+- **Pod Security:** webhook 은 hostNetwork 를 켜지 않는다. agent 소켓 hostPath 를 더해야 하는데 네임스페이스 enforce 가 baseline·restricted 면 건너뛴다(`skipped/pod-security`). agent DaemonSet 이 꺼져 있으면 소켓 디렉터리가 없어 건너뛴다(`skipped/no-client-agent`).
+- **동적 로더 차이:** il-test 는 이미지의 기본 로더(`/lib64/ld-linux-x86-64.so.2`)로 시험한다. 앱 바이너리가 다른 `PT_INTERP`(conda·nix 류 자체 로더)를 쓰면 검사 결과와 다를 수 있다 — 그런 앱은 주석 `off`.
 
 ## 5. 단계
 
