@@ -18,7 +18,9 @@ a)
     WORKER_VMIDS=(109 110 112 113)
     STORAGE_NODES=(exaci5-3a exaci5-3b exaci5-4b)
     CLIENT_NODE=exaci5-4a
-    GPU_VMID=112
+    # 2026-11-18: 4A 의 A2(b1:00.0) 를 18A(VM154, GPUFlow)로 옮겼다. 112.conf 와 k8s-ready 스냅숏 양쪽에서
+    # hostpci2 를 지웠으므로 레인 A 에는 GPU 가 없다. GPU 시험은 cxl2(gpuq)에서 한다. 다시 붙이지 말 것.
+    GPU_VMID=""
     KCFG=$HOME/.kube/daos-ci.conf
     declare -A VM_NAME=([108]=exaci5-3j [111]=exaci5-4j [109]=exaci5-3a [110]=exaci5-3b [112]=exaci5-4a [113]=exaci5-4b)
     declare -A VM_IP=([108]=192.168.35.30 [111]=192.168.35.40 [109]=192.168.35.31 [110]=192.168.35.32 [112]=192.168.35.41 [113]=192.168.35.42)
