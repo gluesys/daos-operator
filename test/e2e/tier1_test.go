@@ -570,6 +570,9 @@ spec:
 		waitGone("daospool", "e2epool", 12*time.Minute)
 	})
 
+	// Case 15: interception injection (interception_test.go).
+	It("injects the interception library into pods that ask for it and leaves the others on dfuse (case 15)", interceptionCase)
+
 	// Case 7. The chart keeps the DaosSystem on uninstall (helm.sh/resource-policy: keep:
 	// "uninstall must never stop engines"), and pools and containers carry finalizers only the
 	// operator releases. So a clean removal is: tear the DAOS objects down while the operator

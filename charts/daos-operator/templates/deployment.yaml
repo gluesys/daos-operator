@@ -46,10 +46,29 @@ spec:
             {{- if .Values.leaderElect }}
             - --leader-elect
             {{- end }}
+            {{- if .Values.interception.enabled }}
+            - --interception
+            - --interception-system={{ .Values.csi.system | default .Values.system.name }}
+            - --interception-csi-driver={{ .Values.csi.driverName }}
+            - --interception-ibv-drivers={{ .Values.interception.ibvDrivers }}
+            - --interception-rdma-resources={{ join "," .Values.interception.rdmaResources }}
+            - --interception-default-pod-security={{ .Values.interception.defaultPodSecurity }}
+            - --webhook-service={{ include "daos-operator.fullname" . }}-webhook
+            - --webhook-secret={{ include "daos-operator.fullname" . }}-webhook-cert
+            - --webhook-config={{ include "daos-operator.fullname" . }}-interception
+            {{- end }}
           env:
             - name: DAOS_HOSTPREP_DEFAULT_IMAGE
               value: {{ include "daos-operator.hostprepImage" . | quote }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef: {fieldPath: metadata.namespace}
           ports:
+            {{- if .Values.interception.enabled }}
+            - name: webhook
+              containerPort: 9443
+              protocol: TCP
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - name: metrics
               containerPort: {{ .Values.metrics.port }}
@@ -73,6 +92,17 @@ spec:
             periodSeconds: 10
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if .Values.interception.enabled }}
+          volumeMounts:
+            # the operator writes the webhook certificate here (read-only root filesystem)
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+          {{- end }}
+      {{- if .Values.interception.enabled }}
+      volumes:
+        - name: webhook-certs
+          emptyDir: {}
+      {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

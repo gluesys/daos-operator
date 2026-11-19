@@ -147,6 +147,35 @@ csi:
   #    # spaceLimit: "false" stops daos-csi from capping each container at its PVC size
   #    # (spec.spaceLimit; enforced by the extended edition of DAOS only)
 
+# Interception library injection (doc/plans/2026-11-19-client-interception.md). A mutating
+# webhook preloads libioil or libpil4dfs into pods that mount a csi DAOS volume and ask for it
+# with the pod annotation daos.gluesys.com/interception: ioil | pil4dfs | pil4dfs-compat | off (or
+# the same label on their namespace as a default), so their I/O bypasses dfuse. pil4dfs breaks
+# dash (/bin/sh on Debian/Ubuntu) redirecting into DAOS files; pil4dfs-compat (slower open/create)
+# or ioil do not. User guide: doc/interception.md. Only pods that can be DAOS
+# clients themselves get it: the agent's network side (hostNetwork for RDMA) and, for RDMA, a
+# device (privileged, a /dev/infiniband hostPath, or a resource in rdmaResources). Two init
+# containers copy the bundle from the daos-client image and test-load it in the application's
+# own image; an image that cannot load it (glibc < 2.34, musl) runs on dfuse as before. The
+# operator keeps the webhook's certificate itself (no cert-manager). Needs csi.enabled and a
+# daos-client image with /opt/daos-il (daos-images !11 or later).
+interception:
+  enabled: false
+  # IBV_DRIVERS for injected containers: bundled rdma-core providers without the -rdmav<N>.so suffix
+  ibvDrivers: /opt/daos-il/lib/libibverbs/libmlx5
+  # extended resources that give a container an RDMA device (a trailing / matches a prefix)
+  rdmaResources: []
+  #  - rdma/
+  #  - nvidia.com/hostdev
+  # The cluster's default Pod Security enforce level (privileged | baseline | restricted), used for
+  # namespaces without a pod-security.kubernetes.io/enforce label. Empty = unknown: then the agent
+  # socket hostPath is only added to pods that already pass as privileged (hostNetwork, hostPath,
+  # privileged), and other pods in unlabelled namespaces are skipped.
+  defaultPodSecurity: ""
+  # Namespaces the webhook never sees (the release namespace and kube-system are always excluded)
+  excludeNamespaces: []
+  timeoutSeconds: 5
+
 # DaosPools to create, each optionally with the StorageClass that provisions into it.
 # DAOS enforces capacity per pool, not per container: a PVC's requested size is not
 # a limit, and every PVC in a pool shares the pool's size. To give teams or uses their

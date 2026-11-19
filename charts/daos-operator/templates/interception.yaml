@@ -1,0 +1,59 @@
+{{- /* SPDX-License-Identifier: Apache-2.0 */ -}}
+{{- /* Copyright 2026 Gluesys Co., Ltd. */ -}}
+{{- if .Values.interception.enabled }}
+{{- if not .Values.csi.enabled }}{{ fail "interception.enabled needs csi.enabled: it injects into pods that mount the chart's DAOS CSI volumes" }}{{ end }}
+# Interception webhook (doc/plans/2026-11-19-client-interception.md). The operator creates the
+# serving certificate in Secret <fullname>-webhook-cert and fills caBundle below itself.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+spec:
+  selector:
+    {{- include "daos-operator.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: webhook
+      port: 443
+      targetPort: webhook
+      protocol: TCP
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "daos-operator.fullname" . }}-interception
+  labels:
+    {{- include "daos-operator.labels" . | nindent 4 }}
+webhooks:
+  - name: interception.daos.gluesys.com
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    # a pod without interception still works on dfuse: never block pod creation
+    failurePolicy: Ignore
+    reinvocationPolicy: Never
+    timeoutSeconds: {{ .Values.interception.timeoutSeconds }}
+    clientConfig:
+      service:
+        name: {{ include "daos-operator.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate-daos-interception
+        port: 443
+    rules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE]
+        resources: [pods]
+        scope: Namespaced
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+            - kube-system
+            {{- range .Values.interception.excludeNamespaces }}
+            - {{ . }}
+            {{- end }}
+{{- end }}
