@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // NVMe is one PCI NVMe controller.
@@ -56,6 +57,37 @@ type Sys struct {
 	Root   string // "" -> "/"
 	Mounts string // "" -> /proc/1/mounts (the host's, hostPID), else /proc/mounts
 	Swaps  string // "" -> /proc/swaps (not namespaced: the host's list)
+	// Signature reads a device's on-disk signature; nil -> blockSignature (tests stub it).
+	Signature func(dev string) string
+	// SignatureTimeout bounds one signature read; 0 -> DefaultSignatureTimeout.
+	SignatureTimeout time.Duration
+}
+
+// DefaultSignatureTimeout bounds the read of a device's first blocks. A native-multipath
+// head with no live path queues I/O (queue_if_no_path) instead of failing it, and the scan
+// must still finish so the node's annotations are published.
+const DefaultSignatureTimeout = 10 * time.Second
+
+// signature returns the device's signature and whether the read finished in time. A read
+// that does not finish is left behind (it may be stuck in the kernel) and reported as unknown.
+func (s Sys) signature(dev string) (string, bool) {
+	probe, wait := s.Signature, s.SignatureTimeout
+	if probe == nil {
+		probe = blockSignature
+	}
+	if wait <= 0 {
+		wait = DefaultSignatureTimeout
+	}
+	ch := make(chan string, 1)
+	go func() { ch <- probe(dev) }()
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case sig := <-ch:
+		return sig, true
+	case <-t.C:
+		return "", false
+	}
 }
 
 func (s Sys) path(p string) string {
@@ -126,7 +158,11 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 				// SPDK setup.sh (daos_server nvme prepare) skips a device that still carries
 				// a filesystem or partition-table signature and reports success: hostprep then
 				// published bound=0 with no error (moon, ext4 left on an unmounted disk, 2026-11-13).
-				if sig := blockSignature(s.path("/dev/" + name)); sig != "" {
+				// An unfinished read is not a blank disk: keep it out.
+				switch sig, ok := s.signature(s.path("/dev/" + name)); {
+				case !ok:
+					n.InUse, n.InUseWhy = true, fmt.Sprintf("signature check of %s did not finish (no live path?); not offered to DAOS", name)
+				case sig != "":
 					n.InUse, n.InUseWhy = true, fmt.Sprintf("%s signature on %s: SPDK will not take it; wipefs -a /dev/%s to give it to DAOS", sig, name, name)
 				}
 			}

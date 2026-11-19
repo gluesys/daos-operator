@@ -362,3 +362,38 @@ func TestMultipathHead(t *testing.T) {
 		}
 	}
 }
+
+// A head whose paths are all down queues the read; the scan must still return, and the
+// device must not look blank (bot review of !113).
+func TestSignatureReadThatDoesNotFinish(t *testing.T) {
+	root := t.TempDir()
+	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false) // stuck head
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme0n1/holders"), 0o755)
+	fakeNVMe(t, root, "0000:73:00.0", "nvme", 0, 0, "nvme3n1", false) // answers, blank
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, nil, 0o644)
+	block := make(chan struct{})
+	defer close(block)
+	probe := func(dev string) string {
+		if strings.HasSuffix(dev, "/nvme0n1") {
+			<-block
+		}
+		return ""
+	}
+	start := time.Now()
+	devs, err := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps"),
+		Signature: probe, SignatureTimeout: 100 * time.Millisecond}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Fatalf("scan took %s", d)
+	}
+	_, cand, skipped := Classify(devs)
+	if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
+		t.Fatalf("candidates %+v", cand)
+	}
+	if len(skipped) != 1 || skipped[0].PCI != "0000:6f:00.0" || !strings.Contains(skipped[0].InUseWhy, "signature check of nvme0n1 did not finish") {
+		t.Fatalf("skipped %+v", skipped)
+	}
+}
