@@ -24,7 +24,7 @@ import (
 
 const (
 	// AnnotationMode on a pod (or label on its namespace, as a default) asks
-	// for injection: "ioil", "pil4dfs" or "off".
+	// for injection: "ioil", "pil4dfs", "pil4dfs-compat" or "off".
 	AnnotationMode = "daos.gluesys.com/interception"
 	// AnnotationReport "true" sets D_IL_REPORT=1 in the application containers.
 	AnnotationReport = "daos.gluesys.com/interception-report"
@@ -35,7 +35,14 @@ const (
 
 	ModeIoil    = "ioil"
 	ModePil4dfs = "pil4dfs"
-	ModeOff     = "off"
+	// ModePil4dfsCompat is libpil4dfs in its compatible mode (D_IL_COMPATIBLE=1):
+	// kernel fds from dfuse instead of fake fds. Default pil4dfs breaks dash
+	// (/bin/sh on Debian and Ubuntu) redirecting into a DAOS file: echo and
+	// printf fail with EIO, external commands with EBADF, and a later shell can
+	// hang. Compatible mode fixes that at about twice the cost of open/create
+	// (lane A, 2026-11-19: 1500 creates 0.97 s -> 1.8 s, dfuse 0.8 s).
+	ModePil4dfsCompat = "pil4dfs-compat"
+	ModeOff           = "off"
 
 	// BundleVolume is the emptyDir holding the copied /opt/daos-il bundle.
 	BundleVolume = "daos-il"
@@ -95,7 +102,7 @@ func Library(mode string) string {
 	switch mode {
 	case ModeIoil:
 		return "libioil"
-	case ModePil4dfs:
+	case ModePil4dfs, ModePil4dfsCompat:
 		return "libpil4dfs"
 	}
 	return ""
@@ -159,6 +166,10 @@ func Decide(cfg Config, sys System, r Request) string {
 				return "env-from-source"
 			case "D_IL_REPORT":
 				if r.Report {
+					return "env-from-source"
+				}
+			case "D_IL_COMPATIBLE":
+				if r.Mode == ModePil4dfsCompat {
 					return "env-from-source"
 				}
 			}
@@ -330,6 +341,9 @@ func Mutate(cfg Config, sys System, r Request, existingSecrets map[string]bool) 
 		setEnv(c, "IBV_DRIVERS", func(string) string { return ibv })
 		if r.Report {
 			setEnv(c, "D_IL_REPORT", func(string) string { return "1" })
+		}
+		if r.Mode == ModePil4dfsCompat {
+			setEnv(c, "D_IL_COMPATIBLE", func(string) string { return "1" })
 		}
 		if !hasAgentSocket(c) {
 			needAgent = true

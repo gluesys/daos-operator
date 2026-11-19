@@ -130,6 +130,7 @@ func TestHandle(t *testing.T) {
 		{"unbound PVC, DAOS StorageClass", podWith("app", "pending", map[string]string{AnnotationMode: ModePil4dfs}), "injected/libpil4dfs"},
 		{"other driver", podWith("app", "other", map[string]string{AnnotationMode: ModeIoil}), "skipped/no-daos-volume"},
 		{"missing PVC", podWith("app", "nope", map[string]string{AnnotationMode: ModeIoil}), "skipped/no-daos-volume"},
+		{"pil4dfs-compat", podWith("app", "bound", map[string]string{AnnotationMode: ModePil4dfsCompat}), "injected/libpil4dfs"},
 		{"namespace default", podWith("ml", "bound", nil), "injected/libioil"},
 		{"pod annotation overrides namespace", podWith("ml", "bound", map[string]string{AnnotationMode: ModeOff}), ""},
 		{"baseline Pod Security", podWith("locked", "bound", map[string]string{AnnotationMode: ModeIoil}), "skipped/pod-security"},

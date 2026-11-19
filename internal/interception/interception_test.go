@@ -60,6 +60,13 @@ func TestDecide(t *testing.T) {
 	}{
 		{name: "host network, privileged", reason: ""},
 		{name: "pil4dfs", mode: ModePil4dfs, reason: ""},
+		{name: "pil4dfs-compat", mode: ModePil4dfsCompat, reason: ""},
+		{name: "D_IL_COMPATIBLE from a ConfigMap, compat asked", mode: ModePil4dfsCompat, pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "D_IL_COMPATIBLE", ValueFrom: &corev1.EnvVarSource{}}}
+		}, reason: "env-from-source"},
+		{name: "D_IL_COMPATIBLE from a ConfigMap, plain pil4dfs", mode: ModePil4dfs, pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "D_IL_COMPATIBLE", ValueFrom: &corev1.EnvVarSource{}}}
+		}, reason: ""},
 		{name: "unknown mode", mode: "fast", reason: "unknown-mode"},
 		{name: "no DAOS volume mounted", daos: map[string]bool{"other": true}, reason: "no-daos-volume"},
 		{name: "already injected", pod: func(p *corev1.Pod) {
@@ -212,6 +219,9 @@ func TestMutate(t *testing.T) {
 	if v, _ := env(app, "D_IL_REPORT"); v != "1" {
 		t.Fatalf("D_IL_REPORT %q", v)
 	}
+	if _, ok := env(app, "D_IL_COMPATIBLE"); ok {
+		t.Fatalf("D_IL_COMPATIBLE set for plain pil4dfs")
+	}
 	if v, _ := env(app, "DAOS_AGENT_DRPC_DIR"); v != AgentMountPath {
 		t.Fatalf("DAOS_AGENT_DRPC_DIR %q", v)
 	}
@@ -263,5 +273,24 @@ func TestMutateKeepsExistingAgentMount(t *testing.T) {
 	}
 	if len(pod.Spec.ImagePullSecrets) != 0 {
 		t.Fatalf("pull secrets added that are not in the namespace")
+	}
+}
+
+func TestMutatePil4dfsCompat(t *testing.T) {
+	pod, sys := hostPod(), verbsSystem()
+	pod.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "D_IL_COMPATIBLE", Value: "0"}}
+	Mutate(Config{}, sys, req(pod, ModePil4dfsCompat), nil)
+	if got := pod.Annotations[AnnotationResult]; got != "injected/libpil4dfs" {
+		t.Fatalf("result annotation %q", got)
+	}
+	app := pod.Spec.Containers[0]
+	if v, _ := env(app, "LD_PRELOAD"); v != "/opt/daos-il/active/libpil4dfs.so" {
+		t.Fatalf("LD_PRELOAD %q", v)
+	}
+	if v, _ := env(app, "D_IL_COMPATIBLE"); v != "1" {
+		t.Fatalf("D_IL_COMPATIBLE %q", v)
+	}
+	if c := pod.Spec.InitContainers[1]; strings.Join(c.Command, " ") != "/opt/daos-il/bin/il-check /opt/daos-il libpil4dfs" {
+		t.Fatalf("check init container: %v", c.Command)
 	}
 }
