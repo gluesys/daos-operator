@@ -77,10 +77,11 @@ var pendingReads = struct {
 	m map[string]chan string
 }{m: map[string]chan string{}}
 
-// signature returns the device's signature and whether the read finished in time. A read
-// that does not finish is left running (it may be stuck in the kernel) and reported as
-// unknown; later calls wait on that same read instead of starting another, and take its
-// result once it ends, so the device is checked again after the fault clears.
+// signature returns the device's signature and whether a read started by this call
+// finished in time. A read that does not finish is left running (it may be stuck in the
+// kernel) and reported as unknown. Later calls wait for that read instead of starting
+// another; when it ends they drop its result, which is from an earlier scan (the disk may
+// have been written since), and read afresh within what is left of their own wait.
 func (s Sys) signature(dev string) (string, bool) {
 	probe, wait := s.Signature, s.SignatureTimeout
 	if probe == nil {
@@ -89,24 +90,29 @@ func (s Sys) signature(dev string) (string, bool) {
 	if wait <= 0 {
 		wait = DefaultSignatureTimeout
 	}
-	pendingReads.Lock()
-	ch, running := pendingReads.m[dev]
-	if !running {
-		ch = make(chan string, 1)
-		pendingReads.m[dev] = ch
-		go func() { ch <- probe(dev) }()
-	}
-	pendingReads.Unlock()
 	t := time.NewTimer(wait)
 	defer t.Stop()
-	select {
-	case sig := <-ch:
+	for {
 		pendingReads.Lock()
-		delete(pendingReads.m, dev)
+		ch, running := pendingReads.m[dev]
+		if !running {
+			ch = make(chan string, 1)
+			pendingReads.m[dev] = ch
+			go func() { ch <- probe(dev) }()
+		}
 		pendingReads.Unlock()
-		return sig, true
-	case <-t.C:
-		return "", false
+		select {
+		case sig := <-ch:
+			pendingReads.Lock()
+			delete(pendingReads.m, dev)
+			pendingReads.Unlock()
+			if !running {
+				return sig, true
+			}
+			// an earlier scan's read: stale, read again
+		case <-t.C:
+			return "", false
+		}
 	}
 }
 

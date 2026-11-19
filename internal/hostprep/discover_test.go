@@ -380,9 +380,14 @@ func TestSignatureReadThatDoesNotFinish(t *testing.T) {
 	probe := func(dev string) string {
 		mu.Lock()
 		calls[filepath.Base(dev)]++
+		n := calls[filepath.Base(dev)]
 		mu.Unlock()
 		if strings.HasSuffix(dev, "/nvme0n1") {
-			<-block
+			if n == 1 {
+				<-block
+				return "" // the stuck read ends blank...
+			}
+			return "ext2/3/4" // ...but the disk got a filesystem meanwhile
 		}
 		return ""
 	}
@@ -416,12 +421,16 @@ func TestSignatureReadThatDoesNotFinish(t *testing.T) {
 	}
 	mu.Unlock()
 
-	close(block) // the path comes back: the pending read ends blank
-	cand, _ := scan()
-	if len(cand) != 2 {
+	// the path comes back: the old read ends blank, and the scan must not take that from an
+	// earlier scan as the answer but read again
+	close(block)
+	cand, skipped := scan()
+	if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
 		t.Fatalf("after the read ended: candidates %+v", cand)
 	}
-	scan() // and the next scan reads it afresh
+	if len(skipped) != 1 || !strings.Contains(skipped[0].InUseWhy, "ext2/3/4 signature on nvme0n1") {
+		t.Fatalf("after the read ended: skipped %+v", skipped)
+	}
 	mu.Lock()
 	defer mu.Unlock()
 	if calls["nvme0n1"] != 2 {
