@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -288,5 +289,151 @@ func TestHugepages2M(t *testing.T) {
 	}
 	if KubeletHugepagesWarning(-1, 0) != "" {
 		t.Error("unknown 2M count must not warn")
+	}
+}
+
+// Native NVMe multipath (Rocky 10, kernel 6.12): the controller lists the path node nvmeXcYnZ,
+// while partitions, holders, the mount and the /dev node are on the head nvmeXnZ in /sys/block.
+// Found on io500-5/6 (2026-11-19): the LVM root disk was offered for binding.
+func TestMultipathPathNodeUsesHead(t *testing.T) {
+	root := t.TempDir()
+	// OS disk as on io500-5: path node under the controller (the PCI address comes from the
+	// controller, the head's device/address is empty), head with p1..p3 and LVM on p3's
+	// holders, the head's own holders empty
+	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false)
+	head := filepath.Join(root, "sys/block/nvme0n1")
+	os.MkdirAll(filepath.Join(head, "holders"), 0o755)
+	os.MkdirAll(filepath.Join(head, "device"), 0o755)
+	os.WriteFile(filepath.Join(head, "device/address"), nil, 0o644)
+	for _, p := range []string{"p1", "p2", "p3"} {
+		os.MkdirAll(filepath.Join(head, "nvme0n1"+p, "holders"), 0o755)
+	}
+	os.MkdirAll(filepath.Join(head, "nvme0n1p3/holders/dm-0"), 0o755)
+	// a namespace shared by two controllers: in use through either
+	fakeNVMe(t, root, "0000:70:00.0", "nvme", 0, 0, "nvme1c1n1", false)
+	fakeNVMe(t, root, "0000:71:00.0", "nvme", 0, 0, "nvme1c2n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme1n1/holders/md0"), 0o755)
+	// an unused multipath disk and a plain (non-multipath) one stay candidates
+	fakeNVMe(t, root, "0000:72:00.0", "nvme", 0, 0, "nvme2c3n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme2n1/holders"), 0o755)
+	fakeNVMe(t, root, "0000:73:00.0", "nvme", 0, 0, "nvme3n1", false)
+	// a mount of the head is the head's, too
+	fakeNVMe(t, root, "0000:74:00.0", "nvme", 0, 0, "nvme4c4n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme4n1/holders"), 0o755)
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, []byte("/dev/nvme4n1 /scratch xfs rw 0 0\n"), 0o644)
+
+	devs, err := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps")}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cand, skipped := Classify(devs)
+	var got []string
+	for _, c := range cand {
+		got = append(got, c.PCI)
+	}
+	if strings.Join(got, ",") != "0000:72:00.0,0000:73:00.0" {
+		t.Fatalf("candidates %v, skipped %+v", got, skipped)
+	}
+	why := map[string]string{}
+	for _, s := range skipped {
+		why[s.PCI] = s.InUseWhy
+	}
+	for pci, want := range map[string]string{
+		"0000:6f:00.0": "nvme0n1 has partitions",
+		"0000:70:00.0": "nvme1n1 has holders",
+		"0000:71:00.0": "nvme1n1 has holders",
+		"0000:74:00.0": "nvme4n1 is mounted",
+	} {
+		if !strings.Contains(why[pci], want) {
+			t.Errorf("%s: %q, want %q", pci, why[pci], want)
+		}
+	}
+	for _, d := range devs {
+		if d.PCI == "0000:6f:00.0" && strings.Join(d.BlockDevs, ",") != "nvme0n1" {
+			t.Errorf("block devices %v, want the head", d.BlockDevs)
+		}
+	}
+}
+
+func TestMultipathHead(t *testing.T) {
+	for in, want := range map[string]string{"nvme4c4n1": "nvme4n1", "nvme10c12n3": "nvme10n3", "nvme0n1": "", "nvme0n1p1": "", "nvme1c1n1p2": ""} {
+		if got := multipathHead(in); got != want {
+			t.Errorf("%s: %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A head whose paths are all down queues the read; the scan must still return, the device
+// must not look blank, rescans must not start another read of it, and once the read ends
+// the device is checked again (bot reviews of !113).
+func TestSignatureReadThatDoesNotFinish(t *testing.T) {
+	root := t.TempDir()
+	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false) // stuck head
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme0n1/holders"), 0o755)
+	fakeNVMe(t, root, "0000:73:00.0", "nvme", 0, 0, "nvme3n1", false) // answers, blank
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, nil, 0o644)
+	block := make(chan struct{})
+	var mu sync.Mutex
+	calls := map[string]int{}
+	probe := func(dev string) string {
+		mu.Lock()
+		calls[filepath.Base(dev)]++
+		n := calls[filepath.Base(dev)]
+		mu.Unlock()
+		if strings.HasSuffix(dev, "/nvme0n1") {
+			if n == 1 {
+				<-block
+				return "" // the stuck read ends blank...
+			}
+			return "ext2/3/4" // ...but the disk got a filesystem meanwhile
+		}
+		return ""
+	}
+	sys := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps"),
+		Signature: probe, SignatureTimeout: 100 * time.Millisecond}
+	scan := func() (cand, skipped []NVMe) {
+		t.Helper()
+		devs, err := sys.NVMeDevices()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, cand, skipped = Classify(devs)
+		return
+	}
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		cand, skipped := scan()
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("scan %d took %s", i, d)
+		}
+		if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
+			t.Fatalf("scan %d: candidates %+v", i, cand)
+		}
+		if len(skipped) != 1 || skipped[0].PCI != "0000:6f:00.0" || !strings.Contains(skipped[0].InUseWhy, "signature check of nvme0n1 did not finish") {
+			t.Fatalf("scan %d: skipped %+v", i, skipped)
+		}
+	}
+	mu.Lock()
+	if calls["nvme0n1"] != 1 || calls["nvme3n1"] != 3 {
+		t.Fatalf("reads %v: one of the stuck head, one per scan of the other", calls)
+	}
+	mu.Unlock()
+
+	// the path comes back: the old read ends blank, and the scan must not take that from an
+	// earlier scan as the answer but read again
+	close(block)
+	cand, skipped := scan()
+	if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
+		t.Fatalf("after the read ended: candidates %+v", cand)
+	}
+	if len(skipped) != 1 || !strings.Contains(skipped[0].InUseWhy, "ext2/3/4 signature on nvme0n1") {
+		t.Fatalf("after the read ended: skipped %+v", skipped)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls["nvme0n1"] != 2 {
+		t.Fatalf("reads of the head %d, want 2", calls["nvme0n1"])
 	}
 }

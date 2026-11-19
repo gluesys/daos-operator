@@ -30,9 +30,12 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // NVMe is one PCI NVMe controller.
@@ -55,6 +58,62 @@ type Sys struct {
 	Root   string // "" -> "/"
 	Mounts string // "" -> /proc/1/mounts (the host's, hostPID), else /proc/mounts
 	Swaps  string // "" -> /proc/swaps (not namespaced: the host's list)
+	// Signature reads a device's on-disk signature; nil -> blockSignature (tests stub it).
+	Signature func(dev string) string
+	// SignatureTimeout bounds one signature read; 0 -> DefaultSignatureTimeout.
+	SignatureTimeout time.Duration
+}
+
+// DefaultSignatureTimeout bounds the read of a device's first blocks. A native-multipath
+// head with no live path queues I/O (queue_if_no_path) instead of failing it, and the scan
+// must still finish so the node's annotations are published.
+const DefaultSignatureTimeout = 10 * time.Second
+
+// pendingReads holds, per device, the signature read still running from an earlier call:
+// hostprep rescans every few minutes, and a head without a live path must not collect one
+// stuck read (fd, goroutine, OS thread) per scan.
+var pendingReads = struct {
+	sync.Mutex
+	m map[string]chan string
+}{m: map[string]chan string{}}
+
+// signature returns the device's signature and whether a read started by this call
+// finished in time. A read that does not finish is left running (it may be stuck in the
+// kernel) and reported as unknown. Later calls wait for that read instead of starting
+// another; when it ends they drop its result, which is from an earlier scan (the disk may
+// have been written since), and read afresh within what is left of their own wait.
+func (s Sys) signature(dev string) (string, bool) {
+	probe, wait := s.Signature, s.SignatureTimeout
+	if probe == nil {
+		probe = blockSignature
+	}
+	if wait <= 0 {
+		wait = DefaultSignatureTimeout
+	}
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	for {
+		pendingReads.Lock()
+		ch, running := pendingReads.m[dev]
+		if !running {
+			ch = make(chan string, 1)
+			pendingReads.m[dev] = ch
+			go func() { ch <- probe(dev) }()
+		}
+		pendingReads.Unlock()
+		select {
+		case sig := <-ch:
+			pendingReads.Lock()
+			delete(pendingReads.m, dev)
+			pendingReads.Unlock()
+			if !running {
+				return sig, true
+			}
+			// an earlier scan's read: stale, read again
+		case <-t.C:
+			return "", false
+		}
+	}
 }
 
 func (s Sys) path(p string) string {
@@ -93,8 +152,23 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 			n.DSN = parseDSN(cfg)
 		}
 		blks, _ := filepath.Glob(filepath.Join(d, "nvme", "nvme*", "nvme*n*"))
+		seen := map[string]bool{}
 		for _, b := range blks {
 			name := filepath.Base(b)
+			if head := multipathHead(name); head != "" {
+				// Native NVMe multipath (Rocky 10, 6.12): under the controller sits the
+				// hidden path node nvmeXcYnZ; partitions, holders, mounts and the /dev
+				// node belong to the head nvmeXnZ, which every controller sharing the
+				// namespace reports, so a namespace in use keeps all of them out.
+				name = head
+				if hb := s.path("/sys/block/" + head); isDir(hb) {
+					b = hb
+				}
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
 			n.BlockDevs = append(n.BlockDevs, name)
 			parts, _ := filepath.Glob(filepath.Join(b, name+"p*"))
 			holders, _ := os.ReadDir(filepath.Join(b, "holders"))
@@ -110,7 +184,11 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 				// SPDK setup.sh (daos_server nvme prepare) skips a device that still carries
 				// a filesystem or partition-table signature and reports success: hostprep then
 				// published bound=0 with no error (moon, ext4 left on an unmounted disk, 2026-11-13).
-				if sig := blockSignature(s.path("/dev/" + name)); sig != "" {
+				// An unfinished read is not a blank disk: keep it out.
+				switch sig, ok := s.signature(s.path("/dev/" + name)); {
+				case !ok:
+					n.InUse, n.InUseWhy = true, fmt.Sprintf("signature check of %s did not finish (no live path?); not offered to DAOS", name)
+				case sig != "":
 					n.InUse, n.InUseWhy = true, fmt.Sprintf("%s signature on %s: SPDK will not take it; wipefs -a /dev/%s to give it to DAOS", sig, name, name)
 				}
 			}
@@ -119,6 +197,23 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PCI < out[j].PCI })
 	return out, nil
+}
+
+var pathNode = regexp.MustCompile(`^nvme(\d+)c\d+n(\d+)$`)
+
+// multipathHead maps a native-multipath path node nvmeXcYnZ to its head nvmeXnZ
+// (X the subsystem, Z the namespace head instance), or "" for any other name.
+func multipathHead(name string) string {
+	m := pathNode.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	return "nvme" + m[1] + "n" + m[2]
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 // blockSignature names the filesystem, volume or partition-table signature at the start of a
