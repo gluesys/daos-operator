@@ -296,11 +296,18 @@ func TestHugepages2M(t *testing.T) {
 // Found on io500-5/6 (2026-11-19): the LVM root disk was offered for binding.
 func TestMultipathPathNodeUsesHead(t *testing.T) {
 	root := t.TempDir()
-	// OS disk: path node under the controller, head with a partition and an LVM holder
+	// OS disk as on io500-5: path node under the controller (the PCI address comes from the
+	// controller, the head's device/address is empty), head with p1..p3 and LVM on p3's
+	// holders, the head's own holders empty
 	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false)
 	head := filepath.Join(root, "sys/block/nvme0n1")
-	os.MkdirAll(filepath.Join(head, "nvme0n1p1"), 0o755)
-	os.MkdirAll(filepath.Join(head, "holders/dm-0"), 0o755)
+	os.MkdirAll(filepath.Join(head, "holders"), 0o755)
+	os.MkdirAll(filepath.Join(head, "device"), 0o755)
+	os.WriteFile(filepath.Join(head, "device/address"), nil, 0o644)
+	for _, p := range []string{"p1", "p2", "p3"} {
+		os.MkdirAll(filepath.Join(head, "nvme0n1"+p, "holders"), 0o755)
+	}
+	os.MkdirAll(filepath.Join(head, "nvme0n1p3/holders/dm-0"), 0o755)
 	// a namespace shared by two controllers: in use through either
 	fakeNVMe(t, root, "0000:70:00.0", "nvme", 0, 0, "nvme1c1n1", false)
 	fakeNVMe(t, root, "0000:71:00.0", "nvme", 0, 0, "nvme1c2n1", false)
