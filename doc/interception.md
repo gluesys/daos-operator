@@ -25,7 +25,8 @@ interception:
 
 - DaosSystem 의 `spec.images.client` 가 `/opt/daos-il` 묶음이 든 daos-client 이미지(daos-images !11 이후)여야 합니다.
 - 인증서는 operator 가 직접 만들고 갱신합니다(cert-manager 불필요).
-- 클라이언트 agent(`spec.clientAgent.enabled`)가 켜져 있어야 합니다.
+- 클라이언트 agent(`spec.clientAgent.enabled`)가 켜져 있어야 합니다. agent 에 `nodeSelector` 를 주었다면
+  인터셉션을 쓸 파드도 `nodeSelector` 에 같은 키·값을 가져야 합니다(아니면 `skipped/agent-placement`).
 
 ## 2. 쓰기 (앱 사용자)
 
@@ -75,6 +76,7 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 | `agent-network-mismatch`, `pod-network-rdma` | 파드 네트워크 파드: `hostNetwork: true` 필요 |
 | `no-rdma-device` | verbs 시스템인데 RDMA 장치가 없음 |
 | `no-client-agent` | DaosSystem 의 클라이언트 agent 가 꺼져 있음 |
+| `agent-placement` | agent 에 `nodeSelector` 가 있는데 파드의 `nodeSelector` 가 그 키·값을 모두 갖지 않음 — agent 가 없는 노드에 뜰 수 있음. 파드 `nodeSelector` 에 같은 키·값을 넣을 것(nodeAffinity 는 보지 않음) |
 | `no-client-image`, `no-daos-system` | operator 설정(DaosSystem·`spec.images.client`) 문제 |
 | `mixed-images` | DAOS 볼륨을 쓰는 컨테이너들의 이미지가 다름 |
 | `ld-preload-from-source`, `env-from-source` | `LD_PRELOAD`·`NA_PLUGIN_PATH`·`IBV_DRIVERS`(그리고 요청한 경우 `D_IL_REPORT`·`D_IL_COMPATIBLE`)를 ConfigMap/Secret 에서 받음 — 값으로 바꾸거나 `off` |

@@ -170,7 +170,8 @@ func TestSystemFromDefaults(t *testing.T) {
 	}
 	ds.Spec.ClientAgent.HostNetwork = ptr.To(false)
 	ds.Spec.ClientAgent.HostSocketDir = "/run/x/"
-	if s := SystemFrom(ds); s.AgentHostNetwork || s.AgentSocketDir != "/run/x" {
+	ds.Spec.ClientAgent.NodeSelector = map[string]string{"daos/client": "true"}
+	if s := SystemFrom(ds); s.AgentHostNetwork || s.AgentSocketDir != "/run/x" || s.AgentNodeSelector["daos/client"] != "true" {
 		t.Fatalf("%+v", s)
 	}
 }

@@ -17,8 +17,9 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-// ilNS is outside the release namespace, which the interception webhook never sees.
-const ilNS = "e2e-il"
+// ilNS is the run's own namespace, outside the release namespace (which the
+// interception webhook never sees); interceptionCase sets it.
+var ilNS string
 
 // ilClientImage has the /opt/daos-il bundle (daos-images !11); the profiles' client image predates it.
 var ilClientImage = envOr("E2E_IL_CLIENT_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/daos-client:2.8.0-20261119-g995d6836")
@@ -28,6 +29,18 @@ func applyIn(namespace, manifest string) {
 	cmd.Stdin = strings.NewReader(manifest)
 	b, err := cmd.CombinedOutput()
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "kubectl apply\n%s\n%s", manifest, b)
+}
+
+// applySecret applies a Secret without putting its manifest or kubectl's output
+// (which can echo it) into the failure message: the pull secret holds
+// registry credentials.
+func applySecret(kubectlBin, namespace, name string, manifest []byte) error {
+	cmd := exec.Command(kubectlBin, "-n", namespace, "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(string(manifest))
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("kubectl apply secret %s/%s: %v", namespace, name, err)
+	}
+	return nil
 }
 
 func ilField(pod, path string) string {
@@ -46,6 +59,14 @@ func interceptionCase() {
 	sel := envOr("E2E_CLIENT_SELECTOR", "daos.gluesys.com/client=true")
 	k, v, _ := strings.Cut(sel, "=")
 
+	By("creating a namespace of this run's own")
+	// a fixed name could be someone else's namespace, and the cleanup deletes it
+	ilNS = fmt.Sprintf("e2e-il-%d", time.Now().UnixNano()%1_000_000_000)
+	if out, err := runE("kubectl", "create", "namespace", ilNS); err != nil {
+		Fail("create namespace " + ilNS + ": " + out)
+	}
+	DeferCleanup(func() { _, _ = runE("kubectl", "delete", "namespace", ilNS, "--wait=true", "--timeout=5m") })
+
 	By("turning the client agent on and using a client image with the bundle")
 	before := jsonpath("daossystem", sysName, ".spec.images.client")
 	patch, _ := json.Marshal(map[string]any{"spec": map[string]any{
@@ -60,17 +81,15 @@ func interceptionCase() {
 	})
 	Eventually(func() string { return condStatus("ClientAgent") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
 
-	By("creating the pool, a namespace with the pull secret, and a volume in it")
+	By("creating the pool, the pull secret and a volume in the namespace")
 	apply(`apiVersion: daos.gluesys.com/v1alpha1
 kind: DaosPool
 metadata: {name: e2epool}
 spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 	Eventually(func() string { return jsonpath("daospool", "e2epool", `.status.conditions[?(@.type=="Ready")].status`) }).
 		WithTimeout(5 * time.Minute).Should(Equal("True"))
-	if out, err := runE("kubectl", "create", "namespace", ilNS); err != nil && !strings.Contains(out, "AlreadyExists") {
-		Fail("create namespace " + ilNS + ": " + out)
-	}
 	DeferCleanup(func() {
+		// the volume's container goes with the namespace, before the pool
 		_, _ = runE("kubectl", "delete", "namespace", ilNS, "--wait=true", "--timeout=5m")
 		Eventually(func() string { out, _ := kubectlE("get", "daoscontainer", "-o", "name"); return strings.TrimSpace(out) }).
 			WithTimeout(12*time.Minute).Should(BeEmpty(), "DaosContainer left behind")
@@ -78,12 +97,13 @@ spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		kubectl("delete", "daospool", "e2epool", "--wait=false")
 		waitGone("daospool", "e2epool", 12*time.Minute)
 	})
-	secret := kubectl("get", "secret", "gitlab-registry", "-o", "json")
+	secret, err := kubectlE("get", "secret", "gitlab-registry", "-o", "json")
+	Expect(err).NotTo(HaveOccurred(), "get secret gitlab-registry")
 	var s map[string]any
-	Expect(json.Unmarshal([]byte(secret), &s)).To(Succeed())
+	Expect(json.Unmarshal([]byte(secret), &s)).To(Succeed(), "secret gitlab-registry is not JSON")
 	s["metadata"] = map[string]any{"name": "gitlab-registry", "namespace": ilNS}
 	b, _ := json.Marshal(s)
-	applyIn(ilNS, string(b))
+	Expect(applySecret("kubectl", ilNS, "gitlab-registry", b)).To(Succeed())
 	applyIn(ilNS, `apiVersion: v1
 kind: PersistentVolumeClaim
 metadata: {name: il-data}
@@ -97,7 +117,13 @@ spec:
 	}).
 		WithTimeout(15 * time.Minute).Should(Equal("Bound"))
 
-	pod := func(name, mode, image string, hostNetwork bool, script string) string {
+	pinned := fmt.Sprintf("nodeSelector: {%q: %q}", k, v)
+	// same nodes, but by affinity, which the webhook does not evaluate
+	byAffinity := fmt.Sprintf(`affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms: [{matchExpressions: [{key: %q, operator: In, values: [%q]}]}]`, k, v)
+	pod := func(name, mode, image string, hostNetwork bool, placement, script string) string {
 		return fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata:
@@ -108,25 +134,26 @@ spec:
   hostNetwork: %t
   dnsPolicy: ClusterFirstWithHostNet
   imagePullSecrets: [{name: gitlab-registry}]
-  nodeSelector: {%q: %q}
+  %s
   containers:
     - name: app
       image: %s
       command: [sh, -c, %q]
       volumeMounts: [{name: d, mountPath: /data}]
-  volumes: [{name: d, persistentVolumeClaim: {claimName: il-data}}]`, name, mode, hostNetwork, k, v, image, script)
+  volumes: [{name: d, persistentVolumeClaim: {claimName: il-data}}]`, name, mode, hostNetwork, placement, image, script)
 	}
 	write := func(dir string) string {
 		return "set -e; mkdir -p /data/" + dir + "; dd if=/dev/zero of=/data/" + dir + "/blob bs=1M count=16 status=none; " +
 			"for i in 1 2 3; do echo $i > /data/" + dir + "/f$i; done; cat /data/" + dir + "/f3; echo IL-DONE"
 	}
 
-	By("starting a compatible pod (pil4dfs-compat), an Alpine pod (ioil) and a pod-network pod (ioil)")
-	applyIn(ilNS, pod("il-el9", "pil4dfs-compat", ilClientImage, true, write("el9")))
-	applyIn(ilNS, pod("il-alpine", "ioil", envOr("E2E_ALPINE_IMAGE", "docker.io/library/alpine:3.20"), true, write("alpine")))
-	applyIn(ilNS, pod("il-podnet", "ioil", ilClientImage, false, write("podnet")))
+	By("starting a compatible pod (pil4dfs-compat), an Alpine pod, a pod-network pod and a pod not pinned to the agent's nodes")
+	applyIn(ilNS, pod("il-el9", "pil4dfs-compat", ilClientImage, true, pinned, write("el9")))
+	applyIn(ilNS, pod("il-alpine", "ioil", envOr("E2E_ALPINE_IMAGE", "docker.io/library/alpine:3.20"), true, pinned, write("alpine")))
+	applyIn(ilNS, pod("il-podnet", "ioil", ilClientImage, false, pinned, write("podnet")))
+	applyIn(ilNS, pod("il-unpinned", "ioil", ilClientImage, true, byAffinity, write("unpinned")))
 
-	for _, p := range []string{"il-el9", "il-alpine", "il-podnet"} {
+	for _, p := range []string{"il-el9", "il-alpine", "il-podnet", "il-unpinned"} {
 		Eventually(func() string { return ilField(p, ".status.phase") }).WithTimeout(10*time.Minute).
 			Should(Equal("Succeeded"), "pod %s", p)
 		logs, _ := runE("kubectl", "-n", ilNS, "logs", p, "-c", "app")
@@ -153,4 +180,8 @@ spec:
 	Expect(result("il-podnet")).To(HavePrefix("skipped/"))
 	Expect(ilField("il-podnet", ".spec.initContainers")).To(BeEmpty(), "a skipped pod is left as it was")
 	Expect(regexp.MustCompile(`LD_PRELOAD`).MatchString(ilField("il-podnet", ".spec.containers[0].env"))).To(BeFalse())
+
+	Expect(result("il-unpinned")).To(Equal("skipped/agent-placement"), "the agent has a nodeSelector the pod does not carry")
+	Expect(ilField("il-unpinned", ".spec.initContainers")).To(BeEmpty())
+	Expect(ilField("il-unpinned", ".spec.volumes")).NotTo(ContainSubstring("hostPath"))
 }

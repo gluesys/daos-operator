@@ -121,12 +121,13 @@ func SystemFrom(ds *daosv1alpha1.DaosSystem) System {
 		socket = filepath.Join("/var/run/daos-operator/agent", ds.Name)
 	}
 	return System{
-		Provider:         provider,
-		AgentEnabled:     ds.Spec.ClientAgent.Enabled,
-		AgentHostNetwork: ds.Spec.ClientAgent.HostNetwork == nil || *ds.Spec.ClientAgent.HostNetwork,
-		AgentSocketDir:   filepath.Clean(socket),
-		ClientImage:      ds.Spec.Images.Client,
-		ImagePullSecrets: ds.Spec.ImagePullSecrets,
+		Provider:          provider,
+		AgentEnabled:      ds.Spec.ClientAgent.Enabled,
+		AgentHostNetwork:  ds.Spec.ClientAgent.HostNetwork == nil || *ds.Spec.ClientAgent.HostNetwork,
+		AgentSocketDir:    filepath.Clean(socket),
+		AgentNodeSelector: ds.Spec.ClientAgent.NodeSelector,
+		ClientImage:       ds.Spec.Images.Client,
+		ImagePullSecrets:  ds.Spec.ImagePullSecrets,
 	}
 }
 

@@ -130,6 +130,20 @@ func TestDecide(t *testing.T) {
 			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "IBV_DRIVERS", ValueFrom: &corev1.EnvVarSource{}}}
 		}, reason: "env-from-source"},
 		{name: "client agent off, no socket of its own", sys: func(s *System) { s.AgentEnabled = false }, reason: "no-client-agent"},
+		{name: "agent on selected nodes, pod not pinned to them", sys: func(s *System) {
+			s.AgentNodeSelector = map[string]string{"daos/client": "true"}
+		}, reason: "agent-placement"},
+		{name: "agent on selected nodes, pod on other ones", sys: func(s *System) {
+			s.AgentNodeSelector = map[string]string{"daos/client": "true"}
+		}, pod: func(p *corev1.Pod) { p.Spec.NodeSelector = map[string]string{"daos/client": "false"} }, reason: "agent-placement"},
+		{name: "agent on selected nodes, pod pinned to them", sys: func(s *System) {
+			s.AgentNodeSelector = map[string]string{"daos/client": "true"}
+		}, pod: func(p *corev1.Pod) { p.Spec.NodeSelector = map[string]string{"daos/client": "true", "zone": "a"} }, reason: ""},
+		{name: "agent on selected nodes, pod brings its socket", sys: func(s *System) {
+			s.AgentNodeSelector = map[string]string{"daos/client": "true"}
+		}, pod: func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "DAOS_AGENT_DRPC_DIR", Value: "/run/agent"}}
+		}, reason: ""},
 		{name: "client agent off, pod brings its socket", sys: func(s *System) { s.AgentEnabled = false }, pod: func(p *corev1.Pod) {
 			p.Spec.Containers[0].Env = []corev1.EnvVar{{Name: "DAOS_AGENT_DRPC_DIR", Value: "/run/agent"}}
 		}, reason: ""},
@@ -245,8 +259,9 @@ func TestMutate(t *testing.T) {
 			agentVol = &pod.Spec.Volumes[i]
 		}
 	}
-	if agentVol == nil || agentVol.HostPath.Path != sys.AgentSocketDir {
-		t.Fatalf("agent volume %+v", agentVol)
+	if agentVol == nil || agentVol.HostPath.Path != sys.AgentSocketDir ||
+		agentVol.HostPath.Type == nil || *agentVol.HostPath.Type != corev1.HostPathDirectoryOrCreate {
+		t.Fatalf("agent volume %+v (DirectoryOrCreate, so a node without the agent still starts the pod)", agentVol)
 	}
 	if Decide(Config{}, sys, r) != "already-injected" {
 		t.Fatalf("a second admission must not inject again")

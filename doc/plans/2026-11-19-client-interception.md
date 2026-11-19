@@ -57,7 +57,7 @@
 - **pil4dfs 호환:** mmap·fork 후 동작·io_uring 등 맞지 않는 앱이 있다. 기본은 ioil, pil4dfs 는 명시할 때만.
 - **pil4dfs × dash(실기 확인):** 기본 pil4dfs(fake fd)는 dash(`/bin/sh`)의 DAOS 파일 리다이렉션을 깨뜨린다(echo·printf EIO, 외부 명령 EBADF, 이후 sh 멈춤). `D_IL_COMPATIBLE=1` 과 ioil 은 정상이지만 호환 모드는 생성이 약 2배 느리다. 결정(2026-11-19): pil4dfs 는 그대로 두고 주석 값 `pil4dfs-compat` 으로 호환 모드를 고르게 하며, 사용 안내(`doc/interception.md`)에 적는다.
 - **연결 수:** 파드마다 pool/container 를 연다.
-- **Pod Security:** webhook 은 hostNetwork 를 켜지 않는다. agent 소켓 hostPath 를 더해야 하는데 네임스페이스 enforce 가 baseline·restricted 면 건너뛴다(`skipped/pod-security`). agent DaemonSet 이 꺼져 있으면 소켓 디렉터리가 없어 건너뛴다(`skipped/no-client-agent`).
+- **Pod Security:** webhook 은 hostNetwork 를 켜지 않는다. agent 소켓 hostPath 를 더해야 하는데 네임스페이스 enforce 가 baseline·restricted 면 건너뛴다(`skipped/pod-security`). agent DaemonSet 이 꺼져 있으면 소켓 디렉터리가 없어 건너뛴다(`skipped/no-client-agent`). agent 에 nodeSelector 가 있으면 파드 nodeSelector 가 그것을 모두 포함할 때만 주입한다(`skipped/agent-placement`, CSI 노드 플러그인은 agent 가 없는 노드에도 뜨므로). 소켓 hostPath 는 DirectoryOrCreate 라 그래도 agent 가 없는 노드(톨러레이션 차이)에서 파드는 뜨고 라이브러리가 daos_init 실패 후 dfuse 로 돈다.
 - **동적 로더 차이(남는 위험):** il-test 는 이미지의 기본 로더(`/lib64/ld-linux-x86-64.so.2`)로 시험한다. webhook·init container 는 앱이 실제로 실행할 바이너리를 알 수 없어(엔트리포인트·셸 스크립트·자식 프로세스) 로더를 미리 맞출 수 없다. 앱 바이너리가 다른 `PT_INTERP`(conda·nix 류 자체 로더)를 쓰면 검사 통과 후에도 시작이 실패할 수 있다. 그래서 주입은 기본 opt-in(D2)이고, 그런 앱은 주석 `off`. e2e 와 문서에 증상(앱 시작 시 `version GLIBC_* not found` 등)을 적는다.
 
 ## 5. 단계

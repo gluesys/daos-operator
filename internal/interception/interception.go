@@ -82,8 +82,11 @@ type System struct {
 	AgentEnabled     bool
 	AgentHostNetwork bool
 	AgentSocketDir   string
-	ClientImage      string
-	ImagePullSecrets []corev1.LocalObjectReference
+	// AgentNodeSelector is the agent DaemonSet's nodeSelector: the socket
+	// directory only exists on those nodes.
+	AgentNodeSelector map[string]string
+	ClientImage       string
+	ImagePullSecrets  []corev1.LocalObjectReference
 }
 
 // Request is one admission: the pod, the requested mode and which of its
@@ -179,6 +182,11 @@ func Decide(cfg Config, sys System, r Request) string {
 	if needAgent && !sys.AgentEnabled {
 		// the socket directory only exists where the agent DaemonSet runs
 		return "no-client-agent"
+	}
+	if needAgent && !onAgentNodes(sys.AgentNodeSelector, pod) {
+		// the CSI node plugin can run where the agent does not; the pod
+		// would then wait for a socket directory that never appears
+		return "agent-placement"
 	}
 	level := r.PodSecurity
 	if level == "" {
@@ -355,7 +363,10 @@ func Mutate(cfg Config, sys System, r Request, existingSecrets map[string]bool) 
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
 			Name: AgentVolume,
 			VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{
-				Path: sys.AgentSocketDir, Type: ptr.To(corev1.HostPathDirectory),
+				// DirectoryOrCreate like the agent's own volume: if the agent is
+				// missing anyway (a taint it does not tolerate), the pod still
+				// starts, daos_init fails and the library falls back to dfuse
+				Path: sys.AgentSocketDir, Type: ptr.To(corev1.HostPathDirectoryOrCreate),
 			}},
 		})
 	}
@@ -370,6 +381,18 @@ func checkEnv(env []corev1.EnvVar) []corev1.EnvVar {
 		}
 	}
 	return out
+}
+
+// onAgentNodes reports whether the pod can only be scheduled on nodes the
+// agent DaemonSet selects: no agent selector (every node), or the pod's own
+// nodeSelector carries all of it. Affinity is not evaluated.
+func onAgentNodes(agent map[string]string, pod *corev1.Pod) bool {
+	for k, v := range agent {
+		if got, ok := pod.Spec.NodeSelector[k]; !ok || got != v {
+			return false
+		}
+	}
+	return true
 }
 
 // Skip records why a pod that asked for injection did not get it.
