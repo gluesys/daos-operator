@@ -290,3 +290,68 @@ func TestHugepages2M(t *testing.T) {
 		t.Error("unknown 2M count must not warn")
 	}
 }
+
+// Native NVMe multipath (Rocky 10, kernel 6.12): the controller lists the path node nvmeXcYnZ,
+// while partitions, holders, the mount and the /dev node are on the head nvmeXnZ in /sys/block.
+// Found on io500-5/6 (2026-11-19): the LVM root disk was offered for binding.
+func TestMultipathPathNodeUsesHead(t *testing.T) {
+	root := t.TempDir()
+	// OS disk: path node under the controller, head with a partition and an LVM holder
+	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false)
+	head := filepath.Join(root, "sys/block/nvme0n1")
+	os.MkdirAll(filepath.Join(head, "nvme0n1p1"), 0o755)
+	os.MkdirAll(filepath.Join(head, "holders/dm-0"), 0o755)
+	// a namespace shared by two controllers: in use through either
+	fakeNVMe(t, root, "0000:70:00.0", "nvme", 0, 0, "nvme1c1n1", false)
+	fakeNVMe(t, root, "0000:71:00.0", "nvme", 0, 0, "nvme1c2n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme1n1/holders/md0"), 0o755)
+	// an unused multipath disk and a plain (non-multipath) one stay candidates
+	fakeNVMe(t, root, "0000:72:00.0", "nvme", 0, 0, "nvme2c3n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme2n1/holders"), 0o755)
+	fakeNVMe(t, root, "0000:73:00.0", "nvme", 0, 0, "nvme3n1", false)
+	// a mount of the head is the head's, too
+	fakeNVMe(t, root, "0000:74:00.0", "nvme", 0, 0, "nvme4c4n1", false)
+	os.MkdirAll(filepath.Join(root, "sys/block/nvme4n1/holders"), 0o755)
+	mounts := filepath.Join(root, "mounts")
+	os.WriteFile(mounts, []byte("/dev/nvme4n1 /scratch xfs rw 0 0\n"), 0o644)
+
+	devs, err := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps")}.NVMeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, cand, skipped := Classify(devs)
+	var got []string
+	for _, c := range cand {
+		got = append(got, c.PCI)
+	}
+	if strings.Join(got, ",") != "0000:72:00.0,0000:73:00.0" {
+		t.Fatalf("candidates %v, skipped %+v", got, skipped)
+	}
+	why := map[string]string{}
+	for _, s := range skipped {
+		why[s.PCI] = s.InUseWhy
+	}
+	for pci, want := range map[string]string{
+		"0000:6f:00.0": "nvme0n1 has partitions",
+		"0000:70:00.0": "nvme1n1 has holders",
+		"0000:71:00.0": "nvme1n1 has holders",
+		"0000:74:00.0": "nvme4n1 is mounted",
+	} {
+		if !strings.Contains(why[pci], want) {
+			t.Errorf("%s: %q, want %q", pci, why[pci], want)
+		}
+	}
+	for _, d := range devs {
+		if d.PCI == "0000:6f:00.0" && strings.Join(d.BlockDevs, ",") != "nvme0n1" {
+			t.Errorf("block devices %v, want the head", d.BlockDevs)
+		}
+	}
+}
+
+func TestMultipathHead(t *testing.T) {
+	for in, want := range map[string]string{"nvme4c4n1": "nvme4n1", "nvme10c12n3": "nvme10n3", "nvme0n1": "", "nvme0n1p1": "", "nvme1c1n1p2": ""} {
+		if got := multipathHead(in); got != want {
+			t.Errorf("%s: %q, want %q", in, got, want)
+		}
+	}
+}

@@ -30,6 +30,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -93,8 +94,23 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 			n.DSN = parseDSN(cfg)
 		}
 		blks, _ := filepath.Glob(filepath.Join(d, "nvme", "nvme*", "nvme*n*"))
+		seen := map[string]bool{}
 		for _, b := range blks {
 			name := filepath.Base(b)
+			if head := multipathHead(name); head != "" {
+				// Native NVMe multipath (Rocky 10, 6.12): under the controller sits the
+				// hidden path node nvmeXcYnZ; partitions, holders, mounts and the /dev
+				// node belong to the head nvmeXnZ, which every controller sharing the
+				// namespace reports, so a namespace in use keeps all of them out.
+				name = head
+				if hb := s.path("/sys/block/" + head); isDir(hb) {
+					b = hb
+				}
+			}
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
 			n.BlockDevs = append(n.BlockDevs, name)
 			parts, _ := filepath.Glob(filepath.Join(b, name+"p*"))
 			holders, _ := os.ReadDir(filepath.Join(b, "holders"))
@@ -119,6 +135,23 @@ func (s Sys) NVMeDevices() ([]NVMe, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].PCI < out[j].PCI })
 	return out, nil
+}
+
+var pathNode = regexp.MustCompile(`^nvme(\d+)c\d+n(\d+)$`)
+
+// multipathHead maps a native-multipath path node nvmeXcYnZ to its head nvmeXnZ
+// (X the subsystem, Z the namespace head instance), or "" for any other name.
+func multipathHead(name string) string {
+	m := pathNode.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	return "nvme" + m[1] + "n" + m[2]
+}
+
+func isDir(p string) bool {
+	st, err := os.Stat(p)
+	return err == nil && st.IsDir()
 }
 
 // blockSignature names the filesystem, volume or partition-table signature at the start of a
