@@ -42,8 +42,8 @@ metadata:
 | 값 | 가로채는 것 | 고를 때 |
 |---|---|---|
 | `ioil` | 데이터 읽기·쓰기 | 기본 선택. 셸 스크립트·대부분의 앱에서 안전 |
-| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱(레인 측정 생성·삭제 약 4배). **엔트리포인트가 dash(`/bin/sh`) 스크립트면 쓰지 말 것**(4절) |
-| `pil4dfs-compat` | pil4dfs 와 같음, 호환 모드(`D_IL_COMPATIBLE=1`) | sh 스크립트가 DAOS 파일로 리다이렉션하는 앱. open·create 가 기본 pil4dfs 보다 약 2배 느림 |
+| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱(레인 측정 생성·삭제 약 4배). **client 이미지에 `/opt/daos-il/PATCHES` 가 없으면(패치 전 이미지) 쓰지 말 것**(4절) |
+| `pil4dfs-compat` | pil4dfs 와 같음, 호환 모드(`D_IL_COMPATIBLE=1`) | 패치 전 client 이미지에서 pil4dfs 대신(4절). open·create 가 기본 pil4dfs 보다 약 2배 느림 |
 | `off` | 없음 | 네임스페이스 기본값에서 이 파드만 뺄 때 |
 
 주입되려면 파드가 스스로 DAOS 클라이언트가 될 수 있어야 합니다.
@@ -84,14 +84,25 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 
 ## 4. 알려진 문제와 증상
 
-**pil4dfs 와 dash.** 기본 pil4dfs 는 가짜 파일 번호(fake fd)를 씁니다. Debian·Ubuntu 의 `/bin/sh`(dash)가 DAOS
-파일로 리다이렉션하면 깨집니다(2026-11-19 레인 A 확인).
+**pil4dfs 결함과 client 이미지.** DAOS 2.8.0 RPM 의 libpil4dfs 기본(fake fd) 모드에는 결함이 셋 있습니다
+(2026-11-19~20 레인 A 확인, exastor/daos#14). daos-images !12 이후의 client 이미지는 패치한 libpil4dfs 를 넣어 셋 다
+고쳤습니다. 이미지에 `/opt/daos-il/PATCHES`(적용한 패치 목록)가 있으면 고친 이미지입니다.
 
-- `echo a > f`·`printf` 가 `I/O error` 로 실패하고 파일이 비어 있음.
-- 리다이렉션한 외부 명령이 `lseek failed ... Bad file descriptor`, rc 126.
-- 그 뒤 실행한 `sh` 가 `daos_event_priv_get() private event is inuse` 와 함께 멈춤.
+```sh
+podman run --rm --entrypoint cat <spec.images.client> /opt/daos-il/PATCHES   # 없으면 패치 전 이미지
+```
 
-bash 는 괜찮습니다. 이런 앱은 `pil4dfs-compat` 이나 `ioil` 을 쓰세요.
+| 결함 | 패치 전 이미지에서의 증상 |
+|---|---|
+| dash 리다이렉션 | Debian·Ubuntu 의 `/bin/sh`(dash)에서 `echo a > f`·`printf` 가 `I/O error`, 파일이 비어 있음. 그 뒤 실행한 `sh` 가 `daos_event_priv_get() private event is inuse` 와 함께 멈춤 |
+| 외부 명령 리다이렉션 | `/bin/echo a > f` 처럼 리다이렉션한 외부 명령이 **bash·dash 모두** 멈춤(dash 는 `lseek failed ... Bad file descriptor`, rc 126) |
+| fork 뒤 파일 생성 | 앱이 DAOS 파일을 한 번 연 뒤 fork 한 자식(셸 subshell·외부 명령, Python `multiprocessing`·`os.fork`)이 만든 파일이 부모·다른 자식의 파일과 **같은 객체**가 됨 — 이름은 여럿이고 내용은 마지막에 쓴 것 하나(**데이터 손상**, 오류 없음) |
+
+패치 전 이미지에서는 `pil4dfs` 대신 `pil4dfs-compat` 이나 `ioil` 을 쓰세요. 둘 다 세 결함이 없습니다(레인 확인).
+
+**쓰기 직후 다른 프로세스의 읽기.** pil4dfs 는 dfuse 를 거치지 않고 씁니다. 가로채지 않는 프로세스(주입되지 않은
+컨테이너, 정적 바이너리, 다른 노드, pil4dfs 가 스스로 건너뛰는 `cat` 같은 명령)가 dfuse 로 같은 파일을 읽으면 dfuse 캐시 때문에 몇 초 동안 이전 내용이 보일 수
+있습니다(레인에서 append 직후 약 3 s). 패치와 무관하며 RPM 그대로의 동작입니다.
 
 **자체 로더를 쓰는 바이너리.** 검사는 이미지 기본 로더로 합니다. 앱이 다른 동적 로더(`PT_INTERP`, conda·nix 류)를
 쓰는 바이너리를 실행하면 검사를 통과해도 시작 때 `version 'GLIBC_2.3x' not found` 같은 오류로 실패할 수 있습니다.
