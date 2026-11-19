@@ -42,7 +42,7 @@ metadata:
 | 값 | 가로채는 것 | 고를 때 |
 |---|---|---|
 | `ioil` | 데이터 읽기·쓰기 | 기본 선택. 셸 스크립트·대부분의 앱에서 안전 |
-| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱(레인 측정 생성·삭제 약 4배). **client 이미지에 `/opt/daos-il/PATCHES` 가 없으면(패치 전 이미지) 쓰지 말 것**(4절) |
+| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱(레인 측정 생성·삭제 약 4배). **주입된 묶음에 `/opt/daos-il/PATCHES` 가 없으면(패치 전) 쓰지 말 것**(4절) |
 | `pil4dfs-compat` | pil4dfs 와 같음, 호환 모드(`D_IL_COMPATIBLE=1`) | 패치 전 client 이미지에서 pil4dfs 대신(4절). open·create 가 기본 pil4dfs 보다 약 2배 느림 |
 | `off` | 없음 | 네임스페이스 기본값에서 이 파드만 뺄 때 |
 
@@ -86,11 +86,20 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 
 **pil4dfs 결함과 client 이미지.** DAOS 2.8.0 RPM 의 libpil4dfs 기본(fake fd) 모드에는 결함이 셋 있습니다
 (2026-11-19~20 레인 A 확인, exastor/daos#14). daos-images !12 이후의 client 이미지(`daos-client:2.8.0-20261120-g27347e0e` 부터)는 패치한
-libpil4dfs 를 넣어 셋 다 고쳤습니다. 이미지에 `/opt/daos-il/PATCHES`(적용한 패치 목록)가 있으면 고친 이미지입니다.
+libpil4dfs 를 넣어 셋 다 고쳤습니다. 고친 묶음에는 `/opt/daos-il/PATCHES`(적용한 패치 목록)가 있습니다.
+
+판정은 **실제로 주입된 파드**에서 합니다. 같은 태그라도 노드에 받아 둔 이미지는 다를 수 있습니다(태그 이미지는
+`IfNotPresent` 로 받음).
 
 ```sh
-podman run --rm --entrypoint cat <spec.images.client> /opt/daos-il/PATCHES   # 없으면 패치 전 이미지
+# 주입된 파드의 앱 컨테이너에 복사된 묶음: 0001-…, 0002-… 가 나오면 고친 묶음, 파일이 없으면 패치 전
+kubectl exec P -c <앱 컨테이너> -- cat /opt/daos-il/PATCHES
+# 묶음을 복사한 이미지(다이제스트)
+kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il-bundle")].imageID}'
 ```
+
+이렇게 확인할 수 없으면 `pil4dfs` 를 쓰지 말고 `pil4dfs-compat` 이나 `ioil` 을 쓰세요. 노드마다 다른 이미지가 쓰이지
+않게 하려면 `spec.images.client` 를 확인한 이미지의 다이제스트(`…/daos-client@sha256:…`)로 고정합니다.
 
 | 결함 | 패치 전 이미지에서의 증상 |
 |---|---|
