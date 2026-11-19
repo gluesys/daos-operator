@@ -85,8 +85,8 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 ## 4. 알려진 문제와 증상
 
 **pil4dfs 결함과 client 이미지.** DAOS 2.8.0 RPM 의 libpil4dfs 기본(fake fd) 모드에는 결함이 셋 있습니다
-(2026-11-19~20 레인 A 확인, exastor/daos#14). daos-images !12 이후의 client 이미지는 패치한 libpil4dfs 를 넣어 셋 다
-고쳤습니다. 이미지에 `/opt/daos-il/PATCHES`(적용한 패치 목록)가 있으면 고친 이미지입니다.
+(2026-11-19~20 레인 A 확인, exastor/daos#14). daos-images !12 이후의 client 이미지(`daos-client:2.8.0-20261120-g27347e0e` 부터)는 패치한
+libpil4dfs 를 넣어 셋 다 고쳤습니다. 이미지에 `/opt/daos-il/PATCHES`(적용한 패치 목록)가 있으면 고친 이미지입니다.
 
 ```sh
 podman run --rm --entrypoint cat <spec.images.client> /opt/daos-il/PATCHES   # 없으면 패치 전 이미지
