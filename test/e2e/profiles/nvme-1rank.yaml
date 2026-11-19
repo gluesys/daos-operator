@@ -52,3 +52,6 @@ csi:
     - name: daos-e2e
       reclaimPolicy: Delete
       parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
+# Tier 1 case 15: the interception webhook (it only touches annotated pods outside the release namespace).
+interception:
+  enabled: true

@@ -69,7 +69,7 @@
 - [x] S2-2 operator: webhook(주입·판단 표), 단위 시험 (!112)
 - [x] S2-4 차트: webhook 설정·인증서·RBAC(PVC/PV/StorageClass get, MutatingWebhookConfiguration get/update), 기본 꺼짐
 - [x] S2-5 e2e(레인 A 수동, 2026-11-19): ubuntu22 pil4dfs 주입·가로채기, ubuntu20·alpine image-incompatible 로 rc 0, pod network 파드 승인 단계 skipped
-- [ ] S2-6 CI e2e 케이스(레인 B tier1 은 ofi+tcp 1 rank — TCP 경로로 주입·검사·skip 확인)
+- [ ] S2-6 CI e2e 케이스 15(test/e2e/interception_test.go, 레인 B tier1 ofi+tcp): EL9 pil4dfs-compat 주입·가로채기, Alpine image-incompatible, 파드 네트워크 skipped
 
 ## 6. 결정 필요
 
