@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -363,8 +364,9 @@ func TestMultipathHead(t *testing.T) {
 	}
 }
 
-// A head whose paths are all down queues the read; the scan must still return, and the
-// device must not look blank (bot review of !113).
+// A head whose paths are all down queues the read; the scan must still return, the device
+// must not look blank, rescans must not start another read of it, and once the read ends
+// the device is checked again (bot reviews of !113).
 func TestSignatureReadThatDoesNotFinish(t *testing.T) {
 	root := t.TempDir()
 	fakeNVMe(t, root, "0000:6f:00.0", "nvme", 0, 0, "nvme0c0n1", false) // stuck head
@@ -373,27 +375,56 @@ func TestSignatureReadThatDoesNotFinish(t *testing.T) {
 	mounts := filepath.Join(root, "mounts")
 	os.WriteFile(mounts, nil, 0o644)
 	block := make(chan struct{})
-	defer close(block)
+	var mu sync.Mutex
+	calls := map[string]int{}
 	probe := func(dev string) string {
+		mu.Lock()
+		calls[filepath.Base(dev)]++
+		mu.Unlock()
 		if strings.HasSuffix(dev, "/nvme0n1") {
 			<-block
 		}
 		return ""
 	}
-	start := time.Now()
-	devs, err := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps"),
-		Signature: probe, SignatureTimeout: 100 * time.Millisecond}.NVMeDevices()
-	if err != nil {
-		t.Fatal(err)
+	sys := Sys{Root: root, Mounts: mounts, Swaps: filepath.Join(root, "noswaps"),
+		Signature: probe, SignatureTimeout: 100 * time.Millisecond}
+	scan := func() (cand, skipped []NVMe) {
+		t.Helper()
+		devs, err := sys.NVMeDevices()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, cand, skipped = Classify(devs)
+		return
 	}
-	if d := time.Since(start); d > 5*time.Second {
-		t.Fatalf("scan took %s", d)
+	for i := 0; i < 3; i++ {
+		start := time.Now()
+		cand, skipped := scan()
+		if d := time.Since(start); d > 5*time.Second {
+			t.Fatalf("scan %d took %s", i, d)
+		}
+		if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
+			t.Fatalf("scan %d: candidates %+v", i, cand)
+		}
+		if len(skipped) != 1 || skipped[0].PCI != "0000:6f:00.0" || !strings.Contains(skipped[0].InUseWhy, "signature check of nvme0n1 did not finish") {
+			t.Fatalf("scan %d: skipped %+v", i, skipped)
+		}
 	}
-	_, cand, skipped := Classify(devs)
-	if len(cand) != 1 || cand[0].PCI != "0000:73:00.0" {
-		t.Fatalf("candidates %+v", cand)
+	mu.Lock()
+	if calls["nvme0n1"] != 1 || calls["nvme3n1"] != 3 {
+		t.Fatalf("reads %v: one of the stuck head, one per scan of the other", calls)
 	}
-	if len(skipped) != 1 || skipped[0].PCI != "0000:6f:00.0" || !strings.Contains(skipped[0].InUseWhy, "signature check of nvme0n1 did not finish") {
-		t.Fatalf("skipped %+v", skipped)
+	mu.Unlock()
+
+	close(block) // the path comes back: the pending read ends blank
+	cand, _ := scan()
+	if len(cand) != 2 {
+		t.Fatalf("after the read ended: candidates %+v", cand)
+	}
+	scan() // and the next scan reads it afresh
+	mu.Lock()
+	defer mu.Unlock()
+	if calls["nvme0n1"] != 2 {
+		t.Fatalf("reads of the head %d, want 2", calls["nvme0n1"])
 	}
 }

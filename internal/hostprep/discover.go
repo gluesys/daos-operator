@@ -34,6 +34,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -68,8 +69,18 @@ type Sys struct {
 // must still finish so the node's annotations are published.
 const DefaultSignatureTimeout = 10 * time.Second
 
+// pendingReads holds, per device, the signature read still running from an earlier call:
+// hostprep rescans every few minutes, and a head without a live path must not collect one
+// stuck read (fd, goroutine, OS thread) per scan.
+var pendingReads = struct {
+	sync.Mutex
+	m map[string]chan string
+}{m: map[string]chan string{}}
+
 // signature returns the device's signature and whether the read finished in time. A read
-// that does not finish is left behind (it may be stuck in the kernel) and reported as unknown.
+// that does not finish is left running (it may be stuck in the kernel) and reported as
+// unknown; later calls wait on that same read instead of starting another, and take its
+// result once it ends, so the device is checked again after the fault clears.
 func (s Sys) signature(dev string) (string, bool) {
 	probe, wait := s.Signature, s.SignatureTimeout
 	if probe == nil {
@@ -78,12 +89,21 @@ func (s Sys) signature(dev string) (string, bool) {
 	if wait <= 0 {
 		wait = DefaultSignatureTimeout
 	}
-	ch := make(chan string, 1)
-	go func() { ch <- probe(dev) }()
+	pendingReads.Lock()
+	ch, running := pendingReads.m[dev]
+	if !running {
+		ch = make(chan string, 1)
+		pendingReads.m[dev] = ch
+		go func() { ch <- probe(dev) }()
+	}
+	pendingReads.Unlock()
 	t := time.NewTimer(wait)
 	defer t.Stop()
 	select {
 	case sig := <-ch:
+		pendingReads.Lock()
+		delete(pendingReads.m, dev)
+		pendingReads.Unlock()
 		return sig, true
 	case <-t.C:
 		return "", false
