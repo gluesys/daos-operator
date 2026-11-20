@@ -150,9 +150,10 @@ csi:
 # Interception library injection (doc/plans/2026-11-19-client-interception.md). A mutating
 # webhook preloads libioil or libpil4dfs into pods that mount a csi DAOS volume and ask for it
 # with the pod annotation daos.gluesys.com/interception: ioil | pil4dfs | pil4dfs-compat | off (or
-# the same label on their namespace as a default), so their I/O bypasses dfuse. pil4dfs breaks
-# dash (/bin/sh on Debian/Ubuntu) redirecting into DAOS files; pil4dfs-compat (slower open/create)
-# or ioil do not. User guide: doc/interception.md. Only pods that can be DAOS
+# the same label on their namespace as a default), so their I/O bypasses dfuse. Client images
+# without /opt/daos-il/PATCHES (before daos-images !12) carry an unpatched pil4dfs that breaks shell
+# redirections and makes files created after fork() share one object: use pil4dfs-compat (slower
+# open/create) or ioil with those. User guide: doc/interception.md. Only pods that can be DAOS
 # clients themselves get it: the agent's network side (hostNetwork for RDMA) and, for RDMA, a
 # device (privileged, a /dev/infiniband hostPath, or a resource in rdmaResources). Two init
 # containers copy the bundle from the daos-client image and test-load it in the application's
