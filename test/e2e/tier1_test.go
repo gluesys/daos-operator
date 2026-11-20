@@ -164,10 +164,11 @@ metadata: {name: e2es3}
 spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		Eventually(func() string { return jsonpath("daospool", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
-		// -fix28: the gateway works around #28, an object write pattern that SIGSEGVs the DAOS 2.8
-		// engine in vos_fetch_begin. The plain 2.8.0-20260923 image reproduced that crash here
-		// twice (2026-10-03), so it must not be used; this case catches a regression of the workaround.
-		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20260923-fix28")
+		// The gateway must carry the workaround for #28, an object write pattern that SIGSEGVs the
+		// DAOS 2.8 engine in vos_fetch_begin. The plain 2.8.0-20260923 image reproduced that crash here
+		// twice (2026-10-03) and must not be used; -fix28 and every build of the fork's
+		// feature/daos-backend since have the workaround, and this case catches a regression of it.
+		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261121-vgweacd7594")
 		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
 kind: S3Service
 metadata: {name: e2es3}
