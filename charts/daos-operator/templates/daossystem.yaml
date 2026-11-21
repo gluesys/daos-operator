@@ -14,8 +14,13 @@ metadata:
 {{- $_ := set $spec "imagePullSecrets" .Values.imagePullSecrets }}
 {{- end }}
 {{- /* default selector only when none is given: Helm would otherwise merge it into the user's */}}
-{{- if not $spec.nodeSelector }}
+{{- if kindIs "invalid" $spec.nodeSelector }}
 {{- $_ := set $spec "nodeSelector" (dict "daos.gluesys.com/role" "storage") }}
+{{- else }}
+{{- /* `key: null` (how the role key used to be dropped) still removes that key */}}
+{{- range $k, $v := $spec.nodeSelector }}
+{{- if kindIs "invalid" $v }}{{- $_ := unset $spec.nodeSelector $k }}{{- end }}
+{{- end }}
 {{- end }}
 spec:
   {{- toYaml $spec | nindent 2 }}

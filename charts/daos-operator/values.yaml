@@ -69,10 +69,11 @@ system:
       admin: ghcr.io/gluesys/daos-admin:2.8.0-20260914
       client: ghcr.io/gluesys/daos-client:2.8.0-20260914
     placement: dedicated
-    # Storage nodes (Jobs only, for an external system). Empty means
+    # Storage nodes (Jobs only, for an external system). Unset means
     # {daos.gluesys.com/role: storage}; a selector you set replaces that default instead of
-    # being merged with it, so a selector by hostname needs no role label.
-    nodeSelector: {}
+    # being merged with it, so a selector by hostname needs no role label. `{}` selects
+    # every node (what `daos.gluesys.com/role: null` did before).
+    nodeSelector: null
     msReplicas: 1
     provider: "ofi+verbs;ofi_rxm"
     nrHugepages: 8192
