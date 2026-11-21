@@ -90,20 +90,24 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 	if !sys.Spec.ClientAgent.Enabled {
 		return 0, 0, client.IgnoreNotFound(r.Delete(ctx, ds))
 	}
+	// The agent reads its config through a subPath mount and never sees a
+	// ConfigMap update, so the pod template carries a hash of what it mounts:
+	// any change (an external system's cache_expiration, telemetry) rolls it.
+	base := &corev1.ConfigMap{}
+	if e := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: configName}, base); e != nil {
+		return 0, 0, e
+	}
+	cfg := base.Data[clientAgentConfigKey]
 	if telemetry {
 		// Never enable HTTP on the shared sidecar/job config: several agents
 		// can share a host network and would all try to bind the same port.
-		base := &corev1.ConfigMap{}
-		if e := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: configName}, base); e != nil {
-			return 0, 0, e
-		}
-		cfg := base.Data[clientAgentConfigKey] + fmt.Sprintf("telemetry_enabled: true\ntelemetry_port: %d\n", port)
+		cfg += fmt.Sprintf("telemetry_enabled: true\ntelemetry_port: %d\n", port)
 		configName = telemetryConfig.Name
-		configHash = fmt.Sprintf("%x", sha256.Sum256([]byte(cfg)))
 		if e := r.upsertConfigMap(ctx, sys, ns, configName, "", map[string]string{clientAgentConfigKey: cfg}); e != nil {
 			return 0, 0, e
 		}
 	}
+	configHash = fmt.Sprintf("%x", sha256.Sum256([]byte(cfg)))
 
 	labels := map[string]string{"app.kubernetes.io/name": "daos-agent", daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelRole: "client-agent"}
 	hostDir, hostDirCreate := corev1.HostPathDirectory, corev1.HostPathDirectoryOrCreate
@@ -114,11 +118,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		if ds.Spec.Template.Annotations == nil {
 			ds.Spec.Template.Annotations = map[string]string{}
 		}
-		if telemetry {
-			ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"] = configHash
-		} else {
-			delete(ds.Spec.Template.Annotations, "daos.gluesys.com/agent-config-hash")
-		}
+		ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"] = configHash
 		pod := &ds.Spec.Template.Spec
 		pod.NodeSelector = sys.Spec.ClientAgent.NodeSelector
 		pod.Tolerations = sys.Spec.ClientAgent.Tolerations

@@ -29,6 +29,10 @@ CSI driver {{ .Values.csi.driverName }} installed for DaosSystem "{{ .Values.csi
   kubectl get csinode -o custom-columns=NODE:.metadata.name,DRIVERS:.spec.drivers[*].name
 {{- if .Release.IsUpgrade }}
 
+system.spec.nodeSelector: unset (or null) now means {daos.gluesys.com/role: storage} and a
+selector you set is no longer merged with it. A values file that used `nodeSelector: null`
+to select every node must say `nodeSelector: {}`.
+
 The node plugin's daos_agent reads <system>-agent through a subPath mount and does not see
 ConfigMap changes (e.g. cache_expiration added for external systems). After the operator
 has rewritten it, restart the node plugin:

@@ -597,6 +597,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(ds.Spec.Template.Spec.HostIPC).To(BeFalse())
 		Expect(ds.Spec.Template.Spec.HostPID).To(BeFalse())
 		Expect(ds.Spec.Template.Spec.Containers[0].Ports).To(BeEmpty())
+		// without telemetry the hash follows the shared config, so its changes still roll the agents
+		plain := ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"]
+		Expect(plain).NotTo(BeEmpty())
+		Expect(plain).NotTo(Equal(hash))
 		key.Name = "t1-agent-metrics"
 		Expect(k8sClient.Get(ctx, key, svc)).NotTo(Succeed())
 		key.Name = "t1-agent-telemetry"

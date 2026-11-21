@@ -72,7 +72,9 @@ system:
     # Storage nodes (Jobs only, for an external system). Unset means
     # {daos.gluesys.com/role: storage}; a selector you set replaces that default instead of
     # being merged with it, so a selector by hostname needs no role label. `{}` selects
-    # every node (what `daos.gluesys.com/role: null` did before).
+    # every node (what `daos.gluesys.com/role: null` did before). Upgrading from 0.2.1: a
+    # values file that set `nodeSelector: null` to drop the default now gets the default
+    # back (unset and null look the same after the merge); write `{}` instead.
     nodeSelector: null
     msReplicas: 1
     provider: "ofi+verbs;ofi_rxm"
