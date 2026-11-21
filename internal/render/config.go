@@ -228,6 +228,21 @@ func Agent(systemName string, accessPoints []string, port int32, allowInsecure b
 	return b.String()
 }
 
+// ExternalAgentCacheMinutes is cache_expiration for agents of a system the
+// operator does not run. daos_agent caches the system's attach info (rank
+// URIs) forever by default; when that system restarts elsewhere every client
+// keeps the old URIs and fails with DER_BAD_TARGET until its agent restarts
+// (cxl2, 2026-11-21: CSI NodeStageVolume stuck 14 min). With an expiry the
+// agent refetches on the next request after it lapses.
+const ExternalAgentCacheMinutes = 5
+
+// AgentExternal is Agent for an external system: the same file plus
+// cache_expiration, so a restart of that system heals without restarting agents.
+func AgentExternal(systemName string, accessPoints []string, port int32, allowInsecure bool, includeIfaces []string) string {
+	return Agent(systemName, accessPoints, port, allowInsecure, includeIfaces) +
+		fmt.Sprintf("cache_expiration: %d\n", ExternalAgentCacheMinutes)
+}
+
 // Control renders daos_control.yml for dmg.
 func Control(systemName string, hostlist []string, port int32, allowInsecure bool) string {
 	var b bytes.Buffer

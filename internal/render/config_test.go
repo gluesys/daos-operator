@@ -18,6 +18,7 @@ limitations under the License.
 package render
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -113,6 +114,27 @@ func TestAgentAndControl(t *testing.T) {
 	}
 	if _, ok := noIfaces["include_fabric_ifaces"]; ok {
 		t.Error("empty iface list must not emit include_fabric_ifaces")
+	}
+}
+
+// An external system restarts out of our sight; its agents must not cache its
+// attach info forever (DER_BAD_TARGET until restart, cxl2 2026-11-21).
+func TestAgentExternalExpiresCache(t *testing.T) {
+	var a, plain map[string]any
+	if err := yaml.Unmarshal([]byte(AgentExternal("s", []string{"10.0.0.1:10401"}, 10401, true, []string{"ib0"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(a["cache_expiration"]); got != fmt.Sprint(ExternalAgentCacheMinutes) {
+		t.Errorf("cache_expiration = %v, want %d", got, ExternalAgentCacheMinutes)
+	}
+	if a["name"] != "s" || fmt.Sprint(a["port"]) != "10401" {
+		t.Errorf("external agent lost the base fields: %v", a)
+	}
+	if err := yaml.Unmarshal([]byte(Agent("s", []string{"10.0.0.1"}, 10001, false, nil)), &plain); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := plain["cache_expiration"]; ok {
+		t.Error("an operator-run system keeps the default (no expiry)")
 	}
 }
 

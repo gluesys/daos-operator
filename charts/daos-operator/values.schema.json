@@ -350,7 +350,7 @@
           "description": "StorageClasses to create, one per DaosPool"
         }
       },
-      "description": "exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a daos_agent sidecar). One driver per DaosSystem: csi.system names the system whose <system>-agent ConfigMap (and <system>-certs when tls) the node plugin uses."
+      "description": "exastor/daos-csi: CSI driver (controller Deployment + node DaemonSet with a daos_agent sidecar). One driver per DaosSystem: csi.system names the system whose <system>-agent ConfigMap (and <system>-certs when tls) the node plugin uses. The driver runs in the release namespace and the operator writes those into the system's namespace, so install the release into system.spec.namespace (the chart refuses to render otherwise when it creates the system)."
     },
     "interception": {
       "type": "object",
