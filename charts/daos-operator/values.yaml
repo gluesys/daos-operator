@@ -342,7 +342,7 @@ s3:
   services: []
   #  - name: s3
   #    poolRef: kv                    # an existing DaosPool
-  #    image: <your-registry>/versitygw-daos:<tag>   # internal: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261121-vgweacd7594 -- never the plain 2.8.0-20260923 tag: it crashes the DAOS 2.8 engine (#28)
+  #    image: <your-registry>/versitygw-daos:<tag>   # internal: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261121-vgw44c6480f -- never the plain 2.8.0-20260923 tag: it crashes the DAOS 2.8 engine (#28)
   #    replicas: 1
   #    port: 7070
   #    region: kr-1
