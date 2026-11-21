@@ -33,6 +33,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
@@ -621,9 +622,14 @@ var _ = Describe("DaosSystem Controller", func() {
 		sys := getSys()
 		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true}
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
-		// an agent DaemonSet from before config versioning mounted this one
+		// an agent DaemonSet from before config versioning mounted this one...
 		legacy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "t1-agent-telemetry", Namespace: "daos-test"}}
+		Expect(controllerutil.SetControllerReference(sys, legacy, k8sClient.Scheme())).To(Succeed())
 		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+		// ...while these only look like ours and must survive every prune
+		foreign := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "t1-agent-config-0000000000", Namespace: "daos-test",
+			Labels: map[string]string{daosv1alpha1.LabelSystem: "t1", daosv1alpha1.LabelRole: "client-agent-config"}}}
+		Expect(k8sClient.Create(ctx, foreign)).To(Succeed())
 		reconcileOnce()
 		key := types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}
 		ds := &appsv1.DaemonSet{}
@@ -657,6 +663,13 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v1), &corev1.ConfigMap{})).NotTo(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(legacy), &corev1.ConfigMap{})).NotTo(Succeed())
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v2), &corev1.ConfigMap{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(foreign), &corev1.ConfigMap{})).To(Succeed(), "not owned by this system")
+
+		By("a same-named ConfigMap someone else owns is left alone")
+		other := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "t1-agent-telemetry", Namespace: "daos-test"}}
+		Expect(k8sClient.Create(ctx, other)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(other), &corev1.ConfigMap{})).To(Succeed())
 
 		By("switching the agent off removes every version")
 		sys = getSys()
@@ -664,6 +677,8 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 		reconcileOnce()
 		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v2), &corev1.ConfigMap{})).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(foreign), &corev1.ConfigMap{})).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(other), &corev1.ConfigMap{})).To(Succeed())
 	})
 
 	It("creates one pinned server StatefulSet per rendered node (#9)", func() {

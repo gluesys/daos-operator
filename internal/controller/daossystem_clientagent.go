@@ -96,12 +96,26 @@ func (r *DaosSystemReconciler) pruneClientAgentConfigs(ctx context.Context, sys 
 	}
 	for i := range list.Items {
 		if cm := &list.Items[i]; cm.Name != keep {
-			if err := client.IgnoreNotFound(r.Delete(ctx, cm)); err != nil {
+			if err := r.deleteOwnedConfigMap(ctx, sys, cm); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
+}
+
+// deleteOwnedConfigMap deletes the named ConfigMap only if this DaosSystem is
+// its controller: a name or label match alone could be someone else's object.
+// The UID precondition keeps a replacement created in between.
+func (r *DaosSystemReconciler) deleteOwnedConfigMap(ctx context.Context, sys *daosv1alpha1.DaosSystem, cm *corev1.ConfigMap) error {
+	cur := &corev1.ConfigMap{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cm), cur); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if owner := metav1.GetControllerOf(cur); owner == nil || owner.UID != sys.UID {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, cur, client.Preconditions{UID: &cur.UID}))
 }
 
 // clientAgentSocketDir is where the node-level agent publishes its socket on the host.
@@ -144,7 +158,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		if e := client.IgnoreNotFound(r.Delete(ctx, ds)); e != nil {
 			return 0, 0, e
 		}
-		if e := client.IgnoreNotFound(r.Delete(ctx, telemetryConfig)); e != nil {
+		if e := r.deleteOwnedConfigMap(ctx, sys, telemetryConfig); e != nil {
 			return 0, 0, e
 		}
 		return 0, 0, r.pruneClientAgentConfigs(ctx, sys, ns, "")
@@ -260,7 +274,7 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 	// until every agent runs the current template: a pod being replaced, or
 	// one restarted in place, still needs the ConfigMap its spec names.
 	if clientAgentRolledOut(ds) {
-		if e := client.IgnoreNotFound(r.Delete(ctx, telemetryConfig)); e != nil {
+		if e := r.deleteOwnedConfigMap(ctx, sys, telemetryConfig); e != nil {
 			return 0, 0, e
 		}
 		if e := r.pruneClientAgentConfigs(ctx, sys, ns, configName); e != nil {
