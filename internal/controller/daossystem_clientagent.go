@@ -26,6 +26,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -48,6 +49,75 @@ func clientAgentHostNetwork(sys *daosv1alpha1.DaosSystem) bool {
 	return sys.Spec.ClientAgent.HostNetwork == nil || *sys.Spec.ClientAgent.HostNetwork
 }
 
+// clientAgentConfigRole labels the hash-named ConfigMaps the client agent mounts.
+const clientAgentConfigRole = "client-agent-config"
+
+// ensureClientAgentConfig creates the immutable ConfigMap holding one version
+// of the client agent's config and returns its name.
+func (r *DaosSystemReconciler) ensureClientAgentConfig(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, hash, cfg string) (string, error) {
+	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: clientAgentName(sys) + "-config-" + hash[:10], Namespace: ns}}
+	labelManaged(&cm.ObjectMeta, sys, "")
+	cm.Labels["app.kubernetes.io/name"] = "daos-agent"
+	cm.Labels[daosv1alpha1.LabelRole] = clientAgentConfigRole
+	cm.Annotations = map[string]string{"daos.gluesys.com/agent-config-hash": hash}
+	cm.Data = map[string]string{clientAgentConfigKey: cfg}
+	cm.Immutable = new(true)
+	if err := controllerutil.SetControllerReference(sys, cm, r.Scheme); err != nil {
+		return "", err
+	}
+	err := r.Create(ctx, cm)
+	if apierrors.IsAlreadyExists(err) {
+		cur := &corev1.ConfigMap{}
+		if err = r.Get(ctx, client.ObjectKeyFromObject(cm), cur); err == nil && cur.Data[clientAgentConfigKey] != cfg {
+			// a 40-bit hash prefix collision: refuse rather than mount the wrong config
+			err = fmt.Errorf("client agent config %s exists with different content", cm.Name)
+		}
+	}
+	if err != nil {
+		return "", fmt.Errorf("client agent config: %w", err)
+	}
+	return cm.Name, nil
+}
+
+// clientAgentRolledOut reports whether every scheduled agent runs the
+// DaemonSet's current template, so no pod still needs an older config.
+func clientAgentRolledOut(ds *appsv1.DaemonSet) bool {
+	st := ds.Status
+	return ds.Generation != 0 && st.ObservedGeneration >= ds.Generation &&
+		st.UpdatedNumberScheduled == st.DesiredNumberScheduled && st.NumberUnavailable == 0
+}
+
+// pruneClientAgentConfigs deletes the client agent config versions other than keep.
+func (r *DaosSystemReconciler) pruneClientAgentConfigs(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns, keep string) error {
+	list := &corev1.ConfigMapList{}
+	if err := r.List(ctx, list, client.InNamespace(ns),
+		client.MatchingLabels{daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelRole: clientAgentConfigRole}); err != nil {
+		return err
+	}
+	for i := range list.Items {
+		if cm := &list.Items[i]; cm.Name != keep {
+			if err := r.deleteOwnedConfigMap(ctx, sys, cm); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// deleteOwnedConfigMap deletes the named ConfigMap only if this DaosSystem is
+// its controller: a name or label match alone could be someone else's object.
+// The UID precondition keeps a replacement created in between.
+func (r *DaosSystemReconciler) deleteOwnedConfigMap(ctx context.Context, sys *daosv1alpha1.DaosSystem, cm *corev1.ConfigMap) error {
+	cur := &corev1.ConfigMap{}
+	if err := r.Get(ctx, client.ObjectKeyFromObject(cm), cur); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+	if owner := metav1.GetControllerOf(cur); owner == nil || owner.UID != sys.UID {
+		return nil
+	}
+	return client.IgnoreNotFound(r.Delete(ctx, cur, client.Preconditions{UID: &cur.UID}))
+}
+
 // clientAgentSocketDir is where the node-level agent publishes its socket on the host.
 func clientAgentSocketDir(sys *daosv1alpha1.DaosSystem) string {
 	if d := sys.Spec.ClientAgent.HostSocketDir; d != "" {
@@ -63,9 +133,11 @@ func clientAgentSocketDir(sys *daosv1alpha1.DaosSystem) string {
 
 // ensureClientAgent keeps the per-node daos_agent DaemonSet in step with
 // spec.clientAgent: one agent per selected node, socket on the host at
-// clientAgentSocketDir. It reads the same <sys>-agent ConfigMap (and the agent
-// certificate set when the system uses TLS) as every other agent the operator
-// runs. Returns the DaemonSet's ready/desired counts for the status condition.
+// clientAgentSocketDir. Its config is the <sys>-agent ConfigMap every other
+// agent the operator runs reads (plus telemetry settings), copied into a
+// hash-named version (see ensureClientAgentConfig); with TLS it also mounts the
+// agent certificate set. Returns the DaemonSet's ready/desired counts for the
+// status condition.
 func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv1alpha1.DaosSystem, ns string) (ready, desired int32, err error) {
 	name := clientAgentName(sys)
 	ds := &appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns}}
@@ -76,25 +148,30 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 	}
 	metricsName := name + "-metrics"
 	svc := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: metricsName, Namespace: ns}}
-	configName := sys.Name + "-agent"
-	configHash := ""
 	telemetryConfig := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: name + "-telemetry", Namespace: ns}}
 	if !telemetry {
 		if e := client.IgnoreNotFound(r.Delete(ctx, svc)); e != nil {
 			return 0, 0, e
 		}
-		if e := client.IgnoreNotFound(r.Delete(ctx, telemetryConfig)); e != nil {
-			return 0, 0, e
-		}
 	}
 	if !sys.Spec.ClientAgent.Enabled {
-		return 0, 0, client.IgnoreNotFound(r.Delete(ctx, ds))
+		if e := client.IgnoreNotFound(r.Delete(ctx, ds)); e != nil {
+			return 0, 0, e
+		}
+		if e := r.deleteOwnedConfigMap(ctx, sys, telemetryConfig); e != nil {
+			return 0, 0, e
+		}
+		return 0, 0, r.pruneClientAgentConfigs(ctx, sys, ns, "")
 	}
-	// The agent reads its config through a subPath mount and never sees a
-	// ConfigMap update, so the pod template carries a hash of what it mounts:
-	// any change (an external system's cache_expiration, telemetry) rolls it.
+	// The agent reads its config once, through a subPath mount, so a pod keeps
+	// the file it started with. Each distinct config therefore gets its own
+	// immutable ConfigMap named after its hash, and the pod template mounts
+	// that name: a pod created for a new config cannot start from an older
+	// copy (kubelet has never seen an older version of that name), and any
+	// change -- an external system's cache_expiration, telemetry -- rolls the
+	// agents. Versions the rollout no longer needs are pruned below.
 	base := &corev1.ConfigMap{}
-	if e := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: configName}, base); e != nil {
+	if e := r.Get(ctx, client.ObjectKey{Namespace: ns, Name: sys.Name + "-agent"}, base); e != nil {
 		return 0, 0, e
 	}
 	cfg := base.Data[clientAgentConfigKey]
@@ -102,12 +179,12 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 		// Never enable HTTP on the shared sidecar/job config: several agents
 		// can share a host network and would all try to bind the same port.
 		cfg += fmt.Sprintf("telemetry_enabled: true\ntelemetry_port: %d\n", port)
-		configName = telemetryConfig.Name
-		if e := r.upsertConfigMap(ctx, sys, ns, configName, "", map[string]string{clientAgentConfigKey: cfg}); e != nil {
-			return 0, 0, e
-		}
 	}
-	configHash = fmt.Sprintf("%x", sha256.Sum256([]byte(cfg)))
+	configHash := fmt.Sprintf("%x", sha256.Sum256([]byte(cfg)))
+	configName, err := r.ensureClientAgentConfig(ctx, sys, ns, configHash, cfg)
+	if err != nil {
+		return 0, 0, err
+	}
 
 	labels := map[string]string{"app.kubernetes.io/name": "daos-agent", daosv1alpha1.LabelSystem: sys.Name, daosv1alpha1.LabelRole: "client-agent"}
 	hostDir, hostDirCreate := corev1.HostPathDirectory, corev1.HostPathDirectoryOrCreate
@@ -192,6 +269,17 @@ func (r *DaosSystemReconciler) ensureClientAgent(ctx context.Context, sys *daosv
 	})
 	if err != nil {
 		return 0, 0, fmt.Errorf("client agent daemonset: %w", err)
+	}
+	// Older config versions (and the pre-versioning <name>-telemetry) stay
+	// until every agent runs the current template: a pod being replaced, or
+	// one restarted in place, still needs the ConfigMap its spec names.
+	if clientAgentRolledOut(ds) {
+		if e := r.deleteOwnedConfigMap(ctx, sys, telemetryConfig); e != nil {
+			return 0, 0, e
+		}
+		if e := r.pruneClientAgentConfigs(ctx, sys, ns, configName); e != nil {
+			return 0, 0, e
+		}
 	}
 	if telemetry {
 		if _, e := controllerutil.CreateOrUpdate(ctx, r.Client, svc, func() error {
