@@ -1,6 +1,10 @@
 {{- if .Values.csi.enabled }}
 {{- $sys := .Values.csi.system | default .Values.system.name }}
 {{- $ns := .Release.Namespace }}
+{{- /* the node plugin mounts <system>-agent, which the operator writes into the system's namespace */}}
+{{- if and .Values.system.create (eq $sys .Values.system.name) (ne (.Values.system.spec.namespace | default "daos-system") $ns) }}
+{{- fail (printf "csi: the CSI node plugin reads ConfigMap %s-agent from the release namespace %q, but the operator writes it into system.spec.namespace %q. Install the release into %q (helm -n %s), or set system.spec.namespace to %q." $sys $ns (.Values.system.spec.namespace | default "daos-system") (.Values.system.spec.namespace | default "daos-system") (.Values.system.spec.namespace | default "daos-system") $ns) }}
+{{- end }}
 {{- $img := printf "%s:%s" .Values.csi.image.repository (include "daos-operator.tag" (list .Values.csi.image.tag .Chart.AppVersion "csi.image.tag")) }}
 # exastor/daos-csi (deploy/ mirrored as templates). One CSI deployment per DaosSystem:
 # the node DaemonSet's daos_agent sidecar reads <system>-agent, so csi.system must

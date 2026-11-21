@@ -37,6 +37,7 @@ import (
 
 	daosv1alpha1 "github.com/gluesys/daos-operator/api/v1alpha1"
 	"github.com/gluesys/daos-operator/internal/dmg"
+	"github.com/gluesys/daos-operator/internal/render"
 )
 
 func mkNode(ctx context.Context, name, ip string, ann map[string]string) {
@@ -596,6 +597,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(ds.Spec.Template.Spec.HostIPC).To(BeFalse())
 		Expect(ds.Spec.Template.Spec.HostPID).To(BeFalse())
 		Expect(ds.Spec.Template.Spec.Containers[0].Ports).To(BeEmpty())
+		// without telemetry the hash follows the shared config, so its changes still roll the agents
+		plain := ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"]
+		Expect(plain).NotTo(BeEmpty())
+		Expect(plain).NotTo(Equal(hash))
 		key.Name = "t1-agent-metrics"
 		Expect(k8sClient.Get(ctx, key, svc)).NotTo(Succeed())
 		key.Name = "t1-agent-telemetry"
@@ -1525,6 +1530,8 @@ var _ = Describe("DaosSystem Controller", func() {
 		cm := &corev1.ConfigMap{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
 		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.9.9.1\n  - 10.9.9.2"))
+		// the system restarts out of our sight: its agents must refetch attach info
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring(fmt.Sprintf("cache_expiration: %d\n", render.ExternalAgentCacheMinutes)))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-control"}, cm)).To(Succeed())
 		Expect(cm.Data["daos_control.yml"]).To(ContainSubstring("hostlist:\n  - 10.9.9.1\n  - 10.9.9.2"))
 		Expect(cond(sys, daosv1alpha1.ConditionConfigRendered).Reason).To(Equal("ExternalClientConfig"))
