@@ -42,7 +42,7 @@ metadata:
 | 값 | 가로채는 것 | 고를 때 |
 |---|---|---|
 | `ioil` | 데이터 읽기·쓰기 | 기본 선택. 셸 스크립트·대부분의 앱에서 안전. 작은 블록 랜덤 읽기·단일 스트림 I/O 가 많은 앱 |
-| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱(생성·삭제 약 4배). **주입된 묶음에 `/opt/daos-il/PATCHES` 가 없으면(패치 전) 쓰지 말 것**(4절) |
+| `pil4dfs` | 데이터 + 메타데이터(open·create·stat·unlink·mkdir …) | 작은 파일을 많이 만들고 지우는 앱 자체(생성·삭제 약 4배). **주입된 묶음에 `/opt/daos-il/PATCHES` 가 없으면(패치 전) 쓰지 말 것**, **tar 같은 범용 셸 도구를 DAOS 볼륨에 돌리는 파드에는 쓰지 말 것**(4절) |
 | `pil4dfs-compat` | pil4dfs 와 같음, 호환 모드(`D_IL_COMPATIBLE=1`) | 패치 전 client 이미지에서 pil4dfs 대신(4절). open·create 가 기본 pil4dfs 보다 약 2배 느림 |
 | `off` | 없음 | 네임스페이스 기본값에서 이 파드만 뺄 때 |
 
@@ -51,6 +51,7 @@ metadata:
 - 4 KiB 랜덤 읽기 약 4배(스레드 4개), 약 8배(16개). 단일 스트림 쓰기 약 1.7배, 읽기 1.2~1.4배. 동시 순차 읽기 1.2~1.5배.
 - 여러 스레드가 동시에 큰 블록을 쓰는 부하는 dfuse 가 3~11 % 빠릅니다. 이런 부하만 있는 앱은 주입할 이유가 없습니다.
 - 메타데이터는 `pil4dfs` 만 빨라집니다(생성·삭제 약 4배). `pil4dfs-compat` 은 삭제만 빨라지고 생성은 dfuse 와 같습니다. `stat` 은 pil4dfs 계열이 약 20 % 느립니다.
+- 실제 앱(CSI 볼륨, 2026-11-21): 8 GiB 체크포인트 쓰기 약 3.8배·읽기 약 3배(세 모드 모두). 소스 트리(10만 항목) 풀기·검색·지우기는 `ioil` 로 빨라지지 않고 `find`·`grep -r` 은 오히려 9~13 % 느립니다. `pil4dfs-compat` 은 풀기 1.24배·지우기 1.32배, `find` 는 0.57배.
 
 주입되려면 파드가 스스로 DAOS 클라이언트가 될 수 있어야 합니다.
 
@@ -114,6 +115,17 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 | fork 뒤 파일 생성 | 앱이 DAOS 파일을 한 번 연 뒤 fork 한 자식(셸 subshell·외부 명령, Python `multiprocessing`·`os.fork`)이 만든 파일이 부모·다른 자식의 파일과 **같은 객체**가 됨 — 이름은 여럿이고 내용은 마지막에 쓴 것 하나(**데이터 손상**, 오류 없음) |
 
 패치 전 이미지에서는 `pil4dfs` 대신 `pil4dfs-compat` 이나 `ioil` 을 쓰세요. 둘 다 세 결함이 없습니다(레인 확인).
+
+**GNU tar 와 소유권·권한 호출(2026-11-21, CSI 볼륨 실측, exastor/daos#14 후속).** 패치한 묶음에서도 남아 있는 문제입니다.
+
+| 모드 | 증상 | 원인 |
+|---|---|---|
+| `pil4dfs` | `tar xf` 가 모든 항목에서 `Cannot mkdir/open: Bad file descriptor` 로 실패, 파일이 하나도 풀리지 않음(rc 2) | 미규명. 최상위 디렉터리의 `fchownat` 실패가 첫 오류 |
+| `pil4dfs` | `fchownat(dirfd, …, AT_SYMLINK_NOFOLLOW)`(`chown -h`, Python `os.chown(…, dir_fd=…)`)이 `EBADF` | pil4dfs 가 `fchownat`·`linkat`·`mknodat` 을 가로채지 않아 가짜 디렉터리 fd 가 커널로 감 |
+| `pil4dfs-compat` | `tar xf` 는 파일을 모두 풀지만 상대 경로 심볼릭 링크의 권한·소유권 설정이 `No such file or directory` 로 실패해 rc 2 | `fchmodat(…, AT_SYMLINK_NOFOLLOW)` 의 NOFOLLOW 를 무시하고 링크를 따라가 상대 대상을 못 찾음 |
+
+dfuse·`ioil` 은 셋 다 정상입니다. 셸 스크립트·빌드·압축 해제처럼 범용 도구가 DAOS 볼륨을 다루는 파드에는 `ioil` 을
+쓰고, `pil4dfs` 는 직접 짠 앱(학습 데이터 로더, 체크포인트 저장 등)에 씁니다.
 
 **쓰기 직후 다른 프로세스의 읽기.** pil4dfs 는 dfuse 를 거치지 않고 씁니다. 가로채지 않는 프로세스(주입되지 않은
 컨테이너, 정적 바이너리, 다른 노드, pil4dfs 가 스스로 건너뛰는 `cat` 같은 명령)가 dfuse 로 같은 파일을 읽으면 dfuse 캐시 때문에 몇 초 동안 이전 내용이 보일 수
