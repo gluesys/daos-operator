@@ -48,6 +48,19 @@ func mkNode(ctx context.Context, name, ip string, ann map[string]string) {
 	Expect(k8sClient.Status().Update(ctx, n)).To(Succeed())
 }
 
+// agentConfigOf fetches the ConfigMap a client agent DaemonSet mounts as its config.
+func agentConfigOf(ctx context.Context, ds *appsv1.DaemonSet) *corev1.ConfigMap {
+	for _, v := range ds.Spec.Template.Spec.Volumes {
+		if v.Name == "agentcfg" {
+			cm := &corev1.ConfigMap{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: ds.Namespace, Name: v.ConfigMap.Name}, cm)).To(Succeed())
+			return cm
+		}
+	}
+	Fail("client agent DaemonSet has no agentcfg volume")
+	return nil
+}
+
 var _ = Describe("DaosSystem Controller", func() {
 	ctx := context.Background()
 	const sysName = "t1"
@@ -573,9 +586,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		cm := &corev1.ConfigMap{}
 		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
 		Expect(cm.Data["daos_agent.yml"]).NotTo(ContainSubstring("telemetry_enabled"))
-		key.Name = "t1-agent-telemetry"
-		Expect(k8sClient.Get(ctx, key, cm)).To(Succeed())
-		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("telemetry_port: 9192"))
+		Expect(agentConfigOf(ctx, ds).Data["daos_agent.yml"]).To(ContainSubstring("telemetry_port: 9192"))
 		key.Name = "t1-agent-metrics"
 		svc := &corev1.Service{}
 		Expect(k8sClient.Get(ctx, key, svc)).To(Succeed())
@@ -603,8 +614,56 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(plain).NotTo(Equal(hash))
 		key.Name = "t1-agent-metrics"
 		Expect(k8sClient.Get(ctx, key, svc)).NotTo(Succeed())
-		key.Name = "t1-agent-telemetry"
-		Expect(k8sClient.Get(ctx, key, cm)).NotTo(Succeed())
+		Expect(agentConfigOf(ctx, ds).Data["daos_agent.yml"]).NotTo(ContainSubstring("telemetry_enabled"))
+	})
+
+	It("mounts each client agent config version by name and prunes old ones after the rollout", func() {
+		sys := getSys()
+		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		// an agent DaemonSet from before config versioning mounted this one
+		legacy := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "t1-agent-telemetry", Namespace: "daos-test"}}
+		Expect(k8sClient.Create(ctx, legacy)).To(Succeed())
+		reconcileOnce()
+		key := types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, key, ds)).To(Succeed())
+		v1 := agentConfigOf(ctx, ds)
+		Expect(v1.Name).To(HavePrefix("t1-agent-config-"))
+		Expect(v1.Immutable).NotTo(BeNil())
+		Expect(*v1.Immutable).To(BeTrue(), "a name stands for one content, so kubelet can never hand a new pod an older copy")
+		shared := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, key, shared)).To(Succeed())
+		Expect(v1.Data).To(Equal(shared.Data))
+		Expect(v1.Name).To(HaveSuffix(ds.Spec.Template.Annotations["daos.gluesys.com/agent-config-hash"][:10]))
+
+		By("a config change mounts a new version and keeps the old one while pods may still use it")
+		sys = getSys()
+		sys.Spec.ClientAgent.Telemetry.Enabled = true
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, key, ds)).To(Succeed())
+		v2 := agentConfigOf(ctx, ds)
+		Expect(v2.Name).NotTo(Equal(v1.Name))
+		Expect(v2.Data["daos_agent.yml"]).To(ContainSubstring("telemetry_enabled: true"))
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v1), &corev1.ConfigMap{})).To(Succeed(), "envtest runs no DaemonSet controller: the rollout never finishes")
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(legacy), &corev1.ConfigMap{})).To(Succeed())
+
+		By("once every agent runs the current template, older versions go")
+		ds.Status = appsv1.DaemonSetStatus{ObservedGeneration: ds.Generation, DesiredNumberScheduled: 1,
+			CurrentNumberScheduled: 1, UpdatedNumberScheduled: 1, NumberReady: 1, NumberAvailable: 1}
+		Expect(k8sClient.Status().Update(ctx, ds)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v1), &corev1.ConfigMap{})).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(legacy), &corev1.ConfigMap{})).NotTo(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v2), &corev1.ConfigMap{})).To(Succeed())
+
+		By("switching the agent off removes every version")
+		sys = getSys()
+		sys.Spec.ClientAgent.Enabled = false
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileOnce()
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(v2), &corev1.ConfigMap{})).NotTo(Succeed())
 	})
 
 	It("creates one pinned server StatefulSet per rendered node (#9)", func() {
@@ -1522,6 +1581,7 @@ var _ = Describe("DaosSystem Controller", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
 		sys := getSys()
 		sys.Spec.ExternalMsReplicas = []string{"10.9.9.1", "10.9.9.2"}
+		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true}
 		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
 		reconcileWith(f)
 		sys = getSys()
@@ -1532,6 +1592,10 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.9.9.1\n  - 10.9.9.2"))
 		// the system restarts out of our sight: its agents must refetch attach info
 		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring(fmt.Sprintf("cache_expiration: %d\n", render.ExternalAgentCacheMinutes)))
+		// ...including the node agents, whose pods mount it under a name of its own
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		Expect(agentConfigOf(ctx, ds).Data).To(Equal(cm.Data))
 		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-control"}, cm)).To(Succeed())
 		Expect(cm.Data["daos_control.yml"]).To(ContainSubstring("hostlist:\n  - 10.9.9.1\n  - 10.9.9.2"))
 		Expect(cond(sys, daosv1alpha1.ConditionConfigRendered).Reason).To(Equal("ExternalClientConfig"))
@@ -1565,6 +1629,18 @@ var _ = Describe("DaosSystem Controller", func() {
 		reconcileWith(f)
 		reconcileWith(f)
 		Expect(getSys().Status.LastRankOp.Succeeded).To(BeTrue())
+
+		By("a moved management service reaches the node agents as a new config version")
+		sys = getSys()
+		old := agentConfigOf(ctx, ds).Name
+		sys.Spec.ExternalMsReplicas = []string{"10.9.9.3"}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		moved := agentConfigOf(ctx, ds)
+		Expect(moved.Name).NotTo(Equal(old))
+		Expect(moved.Data["daos_agent.yml"]).To(ContainSubstring("access_points:\n  - 10.9.9.3\n"))
+		Expect(moved.Data["daos_agent.yml"]).To(ContainSubstring(fmt.Sprintf("cache_expiration: %d\n", render.ExternalAgentCacheMinutes)))
 	})
 
 	It("renders a test-bed engine without SPDK and on the configured control port (#23)", func() {
