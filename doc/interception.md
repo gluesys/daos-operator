@@ -116,16 +116,24 @@ kubectl get pod P -o jsonpath='{.status.initContainerStatuses[?(@.name=="daos-il
 
 패치 전 이미지에서는 `pil4dfs` 대신 `pil4dfs-compat` 이나 `ioil` 을 쓰세요. 둘 다 세 결함이 없습니다(레인 확인).
 
-**GNU tar 와 소유권·권한 호출(2026-11-21, CSI 볼륨 실측, exastor/daos#14 후속).** 패치한 묶음에서도 남아 있는 문제입니다.
+**GNU tar 와 소유권·권한 호출(2026-11-21, CSI 볼륨 실측, exastor/daos#14 후속).** daos-images !13 이후의 client
+이미지(`daos-client:2.8.0-20261122-g738daa31` 부터)는 아래 B·C 를 고친 libpil4dfs 를 넣습니다. 고친 묶음의
+`/opt/daos-il/PATCHES` 에는 `0003-…`·`0004-…` 가 더 있습니다.
 
-| 모드 | 증상 | 원인 |
-|---|---|---|
-| `pil4dfs` | `tar xf` 가 모든 항목에서 `Cannot mkdir/open: Bad file descriptor` 로 실패, 파일이 하나도 풀리지 않음(rc 2) | 미규명. 최상위 디렉터리의 `fchownat` 실패가 첫 오류 |
-| `pil4dfs` | `fchownat(dirfd, …, AT_SYMLINK_NOFOLLOW)`(`chown -h`, Python `os.chown(…, dir_fd=…)`)이 `EBADF` | pil4dfs 가 `fchownat`·`linkat`·`mknodat` 을 가로채지 않아 가짜 디렉터리 fd 가 커널로 감 |
-| `pil4dfs-compat` | `tar xf` 는 파일을 모두 풀지만 상대 경로 심볼릭 링크의 권한·소유권 설정이 `No such file or directory` 로 실패해 rc 2 | `fchmodat(…, AT_SYMLINK_NOFOLLOW)` 의 NOFOLLOW 를 무시하고 링크를 따라가 상대 대상을 못 찾음 |
+| | 모드 | 증상 | 원인 | 상태 |
+|---|---|---|---|---|
+| A | `pil4dfs` | `tar xf` 가 모든 항목에서 `Cannot mkdir/open: Bad file descriptor` 로 실패, 파일이 하나도 풀리지 않음(rc 2) | RHEL 9.8 의 GNU tar(CVE-2025-45582 수정판)는 `syscall(SYS_openat2)` 로 파일을 여는데, pil4dfs 가 이를 가로채지 않아 가짜 디렉터리 fd 가 커널로 감 | daos-images !14 의 0005 로 해결(머지 대기) |
+| B | `pil4dfs` | `fchownat(dirfd, …, AT_SYMLINK_NOFOLLOW)`(`chown -h`, Python `os.chown(…, dir_fd=…)`)이 `EBADF`. `linkat`·`mknodat` 도 같음 | pil4dfs 가 `fchownat`·`linkat`·`mknodat` 을 가로채지 않아 가짜 디렉터리 fd 가 커널로 감 | **0003 으로 해결**: dfuse 와 같은 결과 |
+| C | `pil4dfs-compat`(기본도 같음) | `tar xf` 가 상대 경로 심볼릭 링크의 권한 설정에서 `No such file or directory` 로 rc 2. 링크 대상이 있으면 **대상의 권한이 바뀜** | `fchmodat(…, AT_SYMLINK_NOFOLLOW)` 의 NOFOLLOW 를 무시하고 링크를 따라감 | **0004 로 해결**: Linux 처럼 `EOPNOTSUPP`, 대상 그대로 |
+| D | `pil4dfs-compat` | 상위 디렉터리 항목이 없는 tar(`tar cf x.tar d/f` 처럼 파일만 담은 것)를 풀면 `Cannot mkdir/open: No such file or directory` | 첫 open 실패를 dfuse 가 "없음"으로 캐시했는데, tar 가 만든 상위 디렉터리는 pil4dfs 가 DFS 로 직접 만들어 dfuse 가 모름 | daos-images !14 의 0005·0006 으로 해결(머지 대기) |
 
-dfuse·`ioil` 은 셋 다 정상입니다. 셸 스크립트·빌드·압축 해제처럼 범용 도구가 DAOS 볼륨을 다루는 파드에는 `ioil` 을
-쓰고, `pil4dfs` 는 직접 짠 앱(학습 데이터 로더, 체크포인트 저장 등)에 씁니다.
+B·C 를 고친 이미지에서 compat 모드로 리눅스 커널 소스 tar 를 풀면 rc 0, dfuse 로 푼 트리와 모드·소유자·링크까지 같습니다.
+A·D 까지 고친 묶음(0005·0006)에서는 기본 모드도 rc 0·차이 0 이고 dfuse 보다 약 1.5배 빠릅니다(레인 측정). dfuse·`ioil` 은
+넷 다 정상입니다. 0005·0006 이 든 이미지가 나오기 전까지는 셸 스크립트·빌드·압축 해제처럼 범용 도구가 DAOS 볼륨을 다루는
+파드에 `ioil` 을 쓰고, `pil4dfs` 는 직접 짠 앱(학습 데이터 로더, 체크포인트 저장 등)에 씁니다.
+
+고친 범위의 한계: 디렉터리 fd 를 연 뒤 그 디렉터리의 이름이 바뀌면, 여러 단계 상대 경로·`linkat`·`mknodat`·링크를
+따라가는 `fchownat` 은 연 디렉터리가 아니라 원래 경로를 기준으로 처리됩니다(pil4dfs 의 기존 경로 모델과 같음).
 
 **쓰기 직후 다른 프로세스의 읽기.** pil4dfs 는 dfuse 를 거치지 않고 씁니다. 가로채지 않는 프로세스(주입되지 않은
 컨테이너, 정적 바이너리, 다른 노드, pil4dfs 가 스스로 건너뛰는 `cat` 같은 명령)가 dfuse 로 같은 파일을 읽으면 dfuse 캐시 때문에 몇 초 동안 이전 내용이 보일 수
