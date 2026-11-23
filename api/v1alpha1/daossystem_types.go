@@ -323,6 +323,8 @@ type ClientSpec struct {
 	// Keys are a decimal UID or "default" (any UID not listed). The names must
 	// match the principals in the pool and container ACLs; one "default"
 	// entry is enough when ACLs are not per user.
+	// The size bound keeps the key rule within the API server's CEL cost budget.
+	// +kubebuilder:validation:MaxProperties=1024
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k == 'default' || k.matches('^[0-9]{1,10}$'))",message="keys must be \"default\" or a decimal UID"
 	ClientUserMap map[string]MappedClientUser `json:"clientUserMap,omitempty"`
 }

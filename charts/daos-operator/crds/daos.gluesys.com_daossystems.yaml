@@ -121,6 +121,8 @@ spec:
                       Keys are a decimal UID or "default" (any UID not listed). The names must
                       match the principals in the pool and container ACLs; one "default"
                       entry is enough when ACLs are not per user.
+                      The size bound keeps the key rule within the API server's CEL cost budget.
+                    maxProperties: 1024
                     type: object
                     x-kubernetes-validations:
                     - message: keys must be "default" or a decimal UID
