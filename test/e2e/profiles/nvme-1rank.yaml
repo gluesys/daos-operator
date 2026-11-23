@@ -45,13 +45,19 @@ csi:
   enabled: true
   image:
     repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
-    tag: 96c28a0b  # main with snapshotEpoch (csi!2) and EXPAND_VOLUME (csi!3)
+    tag: 0327b22f  # main with the volume root owner (csi!7)
+  # dfuse --multi-user: account-UID pods may use the mount (FUSE allow_other) and the root
+  # owner can be set; case 15 runs pods as UID 1001, as KISTI's 6th supercomputer does
+  multiUser: true
   expansion: {enabled: true}
   snapshots: {enabled: true}  # VolumeSnapshot: the suite installs the CRDs and snapshot-controller
   storageClasses:
     - name: daos-e2e
       reclaimPolicy: Delete
       parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", chunkSize: "4194304", csum: crc32}
+    - name: daos-e2e-owner  # case 15: the volume root belongs to UID 1001 (csi!7)
+      reclaimPolicy: Delete
+      parameters: {pool: e2epool, oclass: SX, dirOclass: S1, rdFac: "0", rootUID: "1001", rootGID: "1001", rootMode: "2770"}
 # Tier 1 case 15: the interception webhook (it only touches annotated pods outside the release namespace).
 interception:
   enabled: true
