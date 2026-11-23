@@ -14,7 +14,7 @@ metadata:
   namespace: daos-system
 spec:
   poolRef: p0
-  image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261122-vgw92202477
+  image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261123-vgw53afe7e5
   replicas: 1
   port: 7070
   region: kr-1
