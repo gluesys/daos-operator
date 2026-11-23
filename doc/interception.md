@@ -146,20 +146,27 @@ A·D 까지 고친 묶음(0005·0006)에서는 기본 모드도 rc 0·차이 0 �
 **기타.** 정적 바이너리(Go 등)는 가로채지 않고 그대로 dfuse 를 씁니다. pil4dfs 는 mmap·fork 이후·io_uring 에서
 맞지 않는 앱이 있습니다(DAOS 문서 "Bypassing function interception", `D_IL_BYPASS_LIST`).
 
-**계정 UID 로 실행하는 파드(operator #40).** 주입된 파드는 dfuse 를 거치지 않고 DAOS 에 직접 붙으므로, 풀·컨테이너
-접속 credential 을 agent 가 **호출한 프로세스의 UID** 로 만듭니다. agent 는 UID 를 자기 컨테이너의 `/etc/passwd` 로 이름
-(ACL 주체)으로 바꾸는데, 클러스터 계정 UID(예: `runAsUser: 1001`)는 거기 없어서 credential 을 만들지 못합니다.
-`spec.client.clientUserMap` 으로 이런 UID 에 줄 이름을 정하세요. 풀·컨테이너 ACL 을 사용자별로 나누지 않으면
-`default` 하나로 충분합니다.
+**계정 UID 로 실행하는 파드(operator #40).** 계정 UID(예: `runAsUser: 1001`)로 도는 파드는 dfuse 의 풀 핸들을
+받지 못합니다(dfuse 는 자기 UID 에만 줌). 그래서 라이브러리마다 동작이 다릅니다.
+
+- `ioil`: 스스로 풀에 접속합니다. 이때 agent 가 호출한 UID 를 자기 컨테이너의 `/etc/passwd` 로 이름(ACL 주체)으로 바꾸는데,
+  클러스터 계정은 거기 없어 credential 을 만들지 못하고, 조용히 dfuse 로 읽고 씁니다(동작은 정상, 인터셉션만 없음).
+- `pil4dfs`, `pil4dfs-compat`: 이런 파드에서는 스스로 접속하지 않고 늘 dfuse 로 갑니다. 매핑과 무관합니다.
+
+`spec.client.clientUserMap` 으로 이런 UID 에 이름을 주면 `ioil` 이 접속합니다. 이름은 풀·컨테이너 ACL 이 허용하는 주체여야
+합니다. operator 가 만든 풀은 `root@` 소유라 `root` 가 이미 접근 권한이 있는 이름입니다(dfuse 와 같은 권한). 다른 이름을
+쓰려면 그 이름의 ACL 항목을 먼저 넣어야 하고(`daos pool update-acl`, `daos cont update-acl`), 없으면 접속이 거부돼 다시
+dfuse 로 갑니다.
 
 ```yaml
 spec:
   client:
     clientUserMap:
-      default: {user: nobody, group: nobody}                 # 목록에 없는 모든 UID
-      "1001": {user: alice, group: hpc, groups: [proj-a]}    # 사용자별 ACL 을 쓸 때
+      default: {user: root, group: root}                     # 목록에 없는 모든 UID
+      "1001": {user: alice, group: hpc, groups: [proj-a]}    # 사용자별 ACL: alice@·hpc@ ACL 항목도 넣을 것
 ```
 
-이름은 풀·컨테이너 ACL 의 주체와 맞아야 합니다(`daos pool get-acl`). agent 가 스스로 풀 수 있는 UID(root 등)에는 쓰이지
-않습니다. 바꾸면 client agent DaemonSet 은 새 설정으로 다시 뜨지만, CSI 노드 플러그인 사이드카 agent 는 파드를
-다시 만들어야 새 값을 읽습니다.
+레인 실측(Tier 1 케이스 15, dfuse `--multi-user`): UID 1001 `ioil` 파드가 매핑 없이는 dfuse 로 읽고, `1001`→`root`
+매핑이면 인터셉션되며(129 읽기), `default`→`nobody` 면 ACL 거부로 다시 dfuse 로 갑니다. agent 가 스스로 풀 수 있는
+UID(root 등)에는 쓰이지 않습니다. 바꾸면 client agent DaemonSet 은 새 설정으로 다시 뜨지만, CSI 노드 플러그인 사이드카
+agent 는 파드를 다시 만들어야 새 값을 읽습니다.
