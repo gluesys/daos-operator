@@ -59,6 +59,23 @@ for values in "$chart"/ci/*-values.yaml; do
         fi
     done
 done
+# CSI node update strategy (MR !124 review): an upgrade with --reuse-values keeps the old values,
+# which have no nodeUpdateStrategy, and Kubernetes takes maxUnavailable as a number or a percentage.
+strategy() {
+    helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" "$@" 2>&1 |
+        python3 -c 'import sys, yaml, json
+ds = [d for d in yaml.safe_load_all(sys.stdin) if d and d.get("kind") == "DaemonSet" and "csi" in d["metadata"]["name"]]
+print(json.dumps(ds[0]["spec"]["updateStrategy"], sort_keys=True) if ds else "none")' 2>&1
+}
+check_strategy() {
+    want=$1; shift
+    got=$(strategy "$@")
+    if [ "$got" = "$want" ]; then echo "ok    csi updateStrategy $*"; else echo "FAIL  csi updateStrategy $*: $got, want $want"; fail=1; fi
+}
+check_strategy '{"rollingUpdate": {"maxUnavailable": 1}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy=null
+check_strategy '{"rollingUpdate": {"maxUnavailable": "10%"}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy.type=RollingUpdate --set-string 'csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=10%'
+check_strategy '{"rollingUpdate": {"maxSurge": 1, "maxUnavailable": 0}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy.type=RollingUpdate --set csi.nodeUpdateStrategy.rollingUpdate.maxSurge=1 --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=0
+check_strategy '{"type": "OnDelete"}' --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=2
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
 # as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
 if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then

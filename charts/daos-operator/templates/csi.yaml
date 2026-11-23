@@ -220,10 +220,17 @@ spec:
   selector:
     matchLabels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: node}
   updateStrategy:
-    {{- if eq (.Values.csi.nodeUpdateStrategy.type | default "RollingUpdate") "OnDelete" }}
+    {{- /* an upgrade with --reuse-values keeps the old release's values, which have no nodeUpdateStrategy */}}
+    {{- $us := .Values.csi.nodeUpdateStrategy | default dict }}
+    {{- if eq ($us.type | default "RollingUpdate") "OnDelete" }}
     type: OnDelete
     {{- else }}
-    {{- toYaml .Values.csi.nodeUpdateStrategy | nindent 4 }}
+    type: RollingUpdate
+    {{- /* hasKey, not default: maxUnavailable 0 (with maxSurge) is a valid choice */}}
+    {{- $ru := deepCopy ($us.rollingUpdate | default dict) }}
+    {{- if not (hasKey $ru "maxUnavailable") }}{{- $_ := set $ru "maxUnavailable" 1 }}{{- end }}
+    rollingUpdate:
+      {{- toYaml $ru | nindent 6 }}
     {{- end }}
   template:
     metadata:

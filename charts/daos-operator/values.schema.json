@@ -281,7 +281,11 @@
               "additionalProperties": true,
               "properties": {
                 "maxUnavailable": {
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "string"
+                  ],
+                  "pattern": "^[0-9]+%$"
                 }
               }
             }
