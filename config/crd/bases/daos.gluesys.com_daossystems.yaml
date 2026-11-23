@@ -86,6 +86,45 @@ spec:
                   ClientSpec tunes the daos_agent config that every DAOS client uses (the CSI
                   node plugin and the operator's own dmg/daos Jobs).
                 properties:
+                  clientUserMap:
+                    additionalProperties:
+                      description: MappedClientUser is the identity one client UID
+                        is given in its credential.
+                      properties:
+                        group:
+                          description: Group is the primary group principal name.
+                          minLength: 1
+                          type: string
+                        groups:
+                          description: Groups are extra group principal names.
+                          items:
+                            type: string
+                          type: array
+                        user:
+                          description: User is the user principal name (user@ in an
+                            ACL).
+                          minLength: 1
+                          type: string
+                      required:
+                      - group
+                      - user
+                      type: object
+                    description: |-
+                      ClientUserMap becomes credential_config.client_user_map: the user and
+                      group names the agent puts in a client's credential when it cannot
+                      resolve the client's UID itself. The agent turns a caller's UID into a
+                      name (the pool and container ACL principal) with its own /etc/passwd,
+                      and an agent container does not know the cluster's accounts, so a pod
+                      running as an account UID that talks to DAOS directly (interception
+                      libraries, libdfs, the daos CLI) fails to get a credential. dfuse
+                      behind the CSI driver is not affected: it connects as root.
+                      Keys are a decimal UID or "default" (any UID not listed). The names must
+                      match the principals in the pool and container ACLs; one "default"
+                      entry is enough when ACLs are not per user.
+                    type: object
+                    x-kubernetes-validations:
+                    - message: keys must be "default" or a decimal UID
+                      rule: self.all(k, k == 'default' || k.matches('^[0-9]{1,10}$'))
                   includeFabricIfaces:
                     description: |-
                       IncludeFabricIfaces restricts the agent's fabric scan to these interfaces.

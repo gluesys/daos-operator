@@ -24,6 +24,9 @@ package render
 import (
 	"bytes"
 	"fmt"
+	"math"
+	"sort"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -241,6 +244,55 @@ const ExternalAgentCacheMinutes = 5
 func AgentExternal(systemName string, accessPoints []string, port int32, allowInsecure bool, includeIfaces []string) string {
 	return Agent(systemName, accessPoints, port, allowInsecure, includeIfaces) +
 		fmt.Sprintf("cache_expiration: %d\n", ExternalAgentCacheMinutes)
+}
+
+// MappedUser is one client_user_map entry: the names a client UID the agent
+// cannot resolve is given in its credential.
+type MappedUser struct {
+	User   string
+	Group  string
+	Groups []string
+}
+
+// AgentCredentials renders credential_config for daos_agent.yml, or "" when
+// userMap is empty. Keys are "default" or a decimal UID; the agent reserves
+// the all-ones UID for "default", so that one is refused here rather than by
+// an agent that will not start.
+func AgentCredentials(userMap map[string]MappedUser) (string, error) {
+	if len(userMap) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(userMap))
+	for k, m := range userMap {
+		if k != "default" {
+			uid, err := strconv.ParseUint(k, 10, 32)
+			if err != nil {
+				return "", fmt.Errorf("render: client_user_map key %q is not \"default\" or a UID", k)
+			}
+			if uid == math.MaxUint32 {
+				return "", fmt.Errorf("render: client_user_map uid %d is reserved", uid)
+			}
+		}
+		if m.User == "" || m.Group == "" {
+			return "", fmt.Errorf("render: client_user_map %q needs user and group", k)
+		}
+		keys = append(keys, k)
+	}
+	// stable output: the config hash rolls the client agents on any change
+	sort.Strings(keys)
+	var b bytes.Buffer
+	b.WriteString("credential_config:\n  client_user_map:\n")
+	for _, k := range keys {
+		m := userMap[k]
+		fmt.Fprintf(&b, "    %q:\n      user: %q\n      group: %q\n", k, m.User, m.Group)
+		if len(m.Groups) > 0 {
+			b.WriteString("      groups:\n")
+			for _, g := range m.Groups {
+				fmt.Fprintf(&b, "        - %q\n", g)
+			}
+		}
+	}
+	return b.String(), nil
 }
 
 // Control renders daos_control.yml for dmg.
