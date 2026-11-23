@@ -196,7 +196,7 @@ spec:
 // dfuse; with a map whose names the ACLs grant, the reads are intercepted; a
 // map to a name the ACLs do not grant falls back again.
 func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placement, script string) string, pinned string) {
-	read := "set -e; id; cat /data/el9/blob > /dev/null; echo IL-DONE"
+	read := "set -e; id; ls -ln /data/uid; cat /data/uid/blob > /dev/null; echo IL-DONE"
 	asUser := func(name string) string {
 		return strings.Replace(pod(name, "ioil", ilClientImage, true, pinned, read),
 			"  restartPolicy: Never\n", "  restartPolicy: Never\n  securityContext: {runAsUser: 1001, runAsGroup: 1001}\n", 1)
@@ -224,14 +224,21 @@ func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placeme
 	runPod := func(name string) string {
 		applyIn(ilNS, asUser(name))
 		Eventually(func() string { return ilField(name, ".status.phase") }).WithTimeout(10*time.Minute).
-			Should(Equal("Succeeded"), "pod %s must read through dfuse at least", name)
+			Should(BeElementOf("Succeeded", "Failed"), "pod %s", name)
 		logs, _ := runE("kubectl", "-n", ilNS, "logs", name, "-c", "app")
+		Expect(ilField(name, ".status.phase")).To(Equal("Succeeded"), "pod %s must read through dfuse at least:\n%s", name, tail(logs, 20))
 		Expect(logs).To(ContainSubstring("uid=1001"), "pod %s", name)
 		Expect(logs).To(ContainSubstring("IL-DONE"), "pod %s", name)
 		Expect(ilField(name, `.metadata.annotations.daos\.gluesys\.com/interception-result`)).To(Equal("injected/libioil"))
 		fmt.Fprintf(GinkgoWriter, "%s:\n%s\n", name, tail(logs, 20))
 		return logs
 	}
+	By("a root pod leaves a file every UID may read")
+	applyIn(ilNS, pod("il-uid-seed", "off", ilClientImage, true, pinned,
+		"set -e; mkdir -p /data/uid; dd if=/dev/zero of=/data/uid/blob bs=1M count=16 status=none; "+
+			"chmod 0755 /data/uid; chmod 0644 /data/uid/blob; ls -ln /data/uid; echo IL-DONE"))
+	Eventually(func() string { return ilField("il-uid-seed", ".status.phase") }).WithTimeout(10 * time.Minute).Should(Equal("Succeeded"))
+
 	By("an account UID without a map: no credential, libioil leaves the reads on dfuse")
 	logs := runPod("il-uid-nomap")
 	Expect(logs).NotTo(ContainSubstring("[libioil] Intercepting read"), "no credential, so no pool handle")
