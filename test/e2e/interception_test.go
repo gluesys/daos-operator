@@ -201,23 +201,51 @@ func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placeme
 		return strings.Replace(pod(name, "ioil", ilClientImage, true, pinned, read),
 			"  restartPolicy: Never\n", "  restartPolicy: Never\n  securityContext: {runAsUser: 1001, runAsGroup: 1001}\n", 1)
 	}
-	setMap := func(m any) {
-		patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"client": map[string]any{"clientUserMap": m}}})
+	// setMap replaces the whole map: a merge patch keeps keys it does not name,
+	// so each key the previous call set and this one does not is sent as null.
+	// It returns once every node agent runs a config that has exactly these keys.
+	var prev []string
+	setMap := func(m map[string]any) {
+		cm := map[string]any{}
+		for _, k := range prev {
+			cm[k] = nil
+		}
+		prev = nil
+		for k, v := range m {
+			cm[k] = v
+			prev = append(prev, k)
+		}
+		var val any = cm
+		if len(m) == 0 {
+			val = nil
+		}
+		patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"client": map[string]any{"clientUserMap": val}}})
 		kubectl("patch", "daossystem", sysName, "--type", "merge", "-p", string(patch))
-		Eventually(func() string {
-			out, _ := kubectlE("get", "configmap", sysName+"-agent", "-o", `jsonpath={.data.daos_agent\.yml}`)
-			return out
-		}).WithTimeout(2 * time.Minute).Should(func() OmegaMatcher {
-			if m == nil {
-				return Not(ContainSubstring("client_user_map"))
+		want := func(cfg string) bool {
+			if len(m) == 0 {
+				return !strings.Contains(cfg, "client_user_map")
 			}
-			return ContainSubstring("client_user_map")
-		}())
-		// the node agents roll to a config version of their own
-		Eventually(func() error {
-			_, err := kubectlE("rollout", "status", "daemonset/"+sysName+"-agent", "--timeout=30s")
-			return err
-		}).WithTimeout(5 * time.Minute).Should(Succeed())
+			for _, k := range []string{"default", "1001"} {
+				_, set := m[k]
+				if strings.Contains(cfg, fmt.Sprintf("    %q:\n", k)) != set {
+					return false
+				}
+			}
+			return true
+		}
+		// the config the DaemonSet's pod template mounts (a hash-named version), not the shared one
+		Eventually(func() bool {
+			name, _ := kubectlE("get", "daemonset", sysName+"-agent", "-o", `jsonpath={.spec.template.spec.volumes[?(@.name=="agentcfg")].configMap.name}`)
+			cfg, _ := kubectlE("get", "configmap", strings.TrimSpace(name), "-o", `jsonpath={.data.daos_agent\.yml}`)
+			return want(cfg)
+		}).WithTimeout(3*time.Minute).Should(BeTrue(), "agent config for %v", m)
+		// and every pod of that template is up
+		Eventually(func() bool {
+			st, _ := kubectlE("get", "daemonset", sysName+"-agent", "-o",
+				`jsonpath={.metadata.generation} {.status.observedGeneration} {.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}`)
+			f := strings.Fields(st)
+			return len(f) == 5 && f[0] == f[1] && f[2] == f[3] && f[3] == f[4] && f[2] != "0"
+		}).WithTimeout(5*time.Minute).Should(BeTrue(), "agent rollout")
 		Eventually(func() string { return condStatus("ClientAgent") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
 	}
 	DeferCleanup(func() { setMap(nil) })
