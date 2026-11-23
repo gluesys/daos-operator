@@ -24,7 +24,15 @@ csi:
   enabled: true
   snapshots: {enabled: true}   # csi-snapshotter sidecar, snapshot RBAC, VolumeSnapshotClass
   expansion: {enabled: true}   # csi-resizer sidecar, allowVolumeExpansion
+  multiUser: true              # dfuse --multi-user (account-UID pods, rootUID)
+  dfuseArgs: [--disable-caching]
+  nodeUpdateStrategy: {type: OnDelete}
+  controllerNodeSelector: {daos.gluesys.com/role: storage}
+  controllerTolerations: [{key: dedicated, operator: Equal, value: daos, effect: NoSchedule}]
   storageClasses:
     - name: daos-kv
       reclaimPolicy: Delete
       parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
+    - name: daos-kv-user
+      reclaimPolicy: Delete
+      parameters: {pool: kv, rootUID: "1001", rootGID: "1001", rootMode: "0770", rootOwnerFromPVC: "true"}
