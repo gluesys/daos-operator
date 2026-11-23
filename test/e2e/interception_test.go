@@ -184,4 +184,65 @@ spec:
 	Expect(result("il-unpinned")).To(Equal("skipped/agent-placement"), "the agent has a nodeSelector the pod does not carry")
 	Expect(ilField("il-unpinned", ".spec.initContainers")).To(BeEmpty())
 	Expect(ilField("il-unpinned", ".spec.volumes")).NotTo(ContainSubstring("hostPath"))
+
+	accountUIDCase(pod, pinned)
+}
+
+// Part of case 15 (operator #40). A pod running as an account UID cannot take
+// dfuse's pool handle (dfuse answers that ioctl only for its own UID), so
+// libioil connects to the pool itself, and the agent has to build the
+// credential from a UID its container does not know. Without
+// spec.client.clientUserMap that fails and libioil quietly leaves the file on
+// dfuse; with a map whose names the ACLs grant, the reads are intercepted; a
+// map to a name the ACLs do not grant falls back again.
+func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placement, script string) string, pinned string) {
+	read := "set -e; id; cat /data/el9/blob > /dev/null; echo IL-DONE"
+	asUser := func(name string) string {
+		return strings.Replace(pod(name, "ioil", ilClientImage, true, pinned, read),
+			"  restartPolicy: Never\n", "  restartPolicy: Never\n  securityContext: {runAsUser: 1001, runAsGroup: 1001}\n", 1)
+	}
+	setMap := func(m any) {
+		patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"client": map[string]any{"clientUserMap": m}}})
+		kubectl("patch", "daossystem", sysName, "--type", "merge", "-p", string(patch))
+		Eventually(func() string {
+			out, _ := kubectlE("get", "configmap", sysName+"-agent", "-o", `jsonpath={.data.daos_agent\.yml}`)
+			return out
+		}).WithTimeout(2 * time.Minute).Should(func() OmegaMatcher {
+			if m == nil {
+				return Not(ContainSubstring("client_user_map"))
+			}
+			return ContainSubstring("client_user_map")
+		}())
+		// the node agents roll to a config version of their own
+		Eventually(func() error {
+			_, err := kubectlE("rollout", "status", "daemonset/"+sysName+"-agent", "--timeout=30s")
+			return err
+		}).WithTimeout(5 * time.Minute).Should(Succeed())
+		Eventually(func() string { return condStatus("ClientAgent") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
+	}
+	DeferCleanup(func() { setMap(nil) })
+	runPod := func(name string) string {
+		applyIn(ilNS, asUser(name))
+		Eventually(func() string { return ilField(name, ".status.phase") }).WithTimeout(10*time.Minute).
+			Should(Equal("Succeeded"), "pod %s must read through dfuse at least", name)
+		logs, _ := runE("kubectl", "-n", ilNS, "logs", name, "-c", "app")
+		Expect(logs).To(ContainSubstring("uid=1001"), "pod %s", name)
+		Expect(logs).To(ContainSubstring("IL-DONE"), "pod %s", name)
+		Expect(ilField(name, `.metadata.annotations.daos\.gluesys\.com/interception-result`)).To(Equal("injected/libioil"))
+		fmt.Fprintf(GinkgoWriter, "%s:\n%s\n", name, tail(logs, 20))
+		return logs
+	}
+	By("an account UID without a map: no credential, libioil leaves the reads on dfuse")
+	logs := runPod("il-uid-nomap")
+	Expect(logs).NotTo(ContainSubstring("[libioil] Intercepting read"), "no credential, so no pool handle")
+
+	By("mapping UID 1001 to the pool owner's principals: the reads are intercepted")
+	setMap(map[string]any{"1001": map[string]any{"user": "root", "group": "root"}})
+	logs = runPod("il-uid-map")
+	Expect(logs).To(ContainSubstring("[libioil] Intercepting read"), "a mapped UID connects with the mapped names")
+
+	By("mapping to names the ACLs do not grant: the pool refuses, libioil falls back again")
+	setMap(map[string]any{"default": map[string]any{"user": "nobody", "group": "nobody"}})
+	logs = runPod("il-uid-nobody")
+	Expect(logs).NotTo(ContainSubstring("[libioil] Intercepting read"), "nobody@ is not in the default pool ACL")
 }
