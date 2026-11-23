@@ -134,6 +134,18 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- with .Values.csi.controllerNodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.csi.controllerTolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.csi.controllerAffinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: csi-provisioner
           image: {{ .Values.csi.sidecars.provisioner }}
@@ -208,8 +220,11 @@ spec:
   selector:
     matchLabels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: node}
   updateStrategy:
-    type: RollingUpdate
-    rollingUpdate: {maxUnavailable: 1}
+    {{- if eq (.Values.csi.nodeUpdateStrategy.type | default "RollingUpdate") "OnDelete" }}
+    type: OnDelete
+    {{- else }}
+    {{- toYaml .Values.csi.nodeUpdateStrategy | nindent 4 }}
+    {{- end }}
   template:
     metadata:
       labels: {app.kubernetes.io/name: daos-csi, app.kubernetes.io/component: node}
@@ -252,7 +267,10 @@ spec:
         - name: daos-csi
           image: {{ $img }}
           imagePullPolicy: {{ .Values.csi.image.pullPolicy }}
-          args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--kubelet-dir={{ .Values.csi.kubeletDir }}", "--driver-name={{ .Values.csi.driverName }}", "--v=2"]
+          args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--kubelet-dir={{ .Values.csi.kubeletDir }}", "--driver-name={{ .Values.csi.driverName }}", "--v=2"
+            {{- $dfuse := .Values.csi.dfuseArgs | default list }}
+            {{- if .Values.csi.multiUser }}{{ $dfuse = prepend $dfuse "--multi-user" | uniq }}{{ end }}
+            {{- with $dfuse }}, {{ printf "--dfuse-args=%s" (join "," .) | quote }}{{ end }}]
           env:
             - name: NODE_ID
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}

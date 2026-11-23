@@ -261,6 +261,45 @@
         "tolerations": {
           "type": "array"
         },
+        "multiUser": {
+          "type": "boolean",
+          "description": "dfuse --multi-user on the node plugin: each pod's own uid/gid on the files it creates, and access for pods that do not run as root. Needed for StorageClass rootUID/rootGID (a volume root owned by an account UID) and by any pod that runs as an account UID."
+        },
+        "dfuseArgs": {
+          "type": "array",
+          "description": "extra dfuse flags for every volume on the node plugin (daos-csi --dfuse-args), e.g. [--disable-caching]"
+        },
+        "nodeUpdateStrategy": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "rollingUpdate": {
+              "type": "object",
+              "additionalProperties": true,
+              "properties": {
+                "maxUnavailable": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "description": "node plugin DaemonSet update strategy. OnDelete lets the operator of the cluster choose when each node's plugin restarts: a restart cuts the DAOS volumes of the pods running on that node (their mounts do not come back until the pods are recreated), so drain those pods, then delete the plugin pod. The default restarts one node at a time as soon as the DaemonSet changes. With type: OnDelete, rollingUpdate is ignored."
+        },
+        "controllerNodeSelector": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "where the controller (provisioner) Deployment may run; empty = anywhere"
+        },
+        "controllerTolerations": {
+          "type": "array"
+        },
+        "controllerAffinity": {
+          "type": "object",
+          "additionalProperties": true
+        },
         "controllerResources": {
           "type": "object",
           "additionalProperties": true,
