@@ -77,12 +77,14 @@ check_strategy '{"rollingUpdate": {"maxUnavailable": "10%"}, "type": "RollingUpd
 check_strategy '{"rollingUpdate": {"maxSurge": 1, "maxUnavailable": 0}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy.type=RollingUpdate --set csi.nodeUpdateStrategy.rollingUpdate.maxSurge=1 --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=0
 check_strategy '{"type": "OnDelete"}' --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=2
 # the output first: under pipefail a helm that fails (as it should) would fail the grep pipeline too
-refusal=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set csi.nodeUpdateStrategy.type=Ondelete 2>&1 || true)
-if grep -q 'csi.nodeUpdateStrategy.type must be RollingUpdate or OnDelete' <<<"$refusal"; then
-    echo "ok    csi updateStrategy type Ondelete refused"
-else
-    echo "FAIL  csi updateStrategy type Ondelete was not refused"; fail=1
-fi
+for bad in Ondelete '""'; do
+    refusal=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set "csi.nodeUpdateStrategy.type=$bad" 2>&1 || true)
+    if grep -q 'csi.nodeUpdateStrategy.type must be RollingUpdate or OnDelete' <<<"$refusal"; then
+        echo "ok    csi updateStrategy type $bad refused"
+    else
+        echo "FAIL  csi updateStrategy type $bad was not refused"; fail=1
+    fi
+done
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
 # as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
 if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then

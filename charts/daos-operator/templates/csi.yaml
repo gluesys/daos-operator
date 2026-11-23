@@ -222,7 +222,9 @@ spec:
   updateStrategy:
     {{- /* an upgrade with --reuse-values keeps the old release's values, which have no nodeUpdateStrategy */}}
     {{- $us := .Values.csi.nodeUpdateStrategy | default dict }}
-    {{- $ut := $us.type | default "RollingUpdate" }}
+    {{- /* only a missing key means RollingUpdate; an explicit "" (an empty substitution) is refused below */}}
+    {{- $ut := "RollingUpdate" }}
+    {{- if hasKey $us "type" }}{{- $ut = $us.type }}{{- end }}
     {{- if not (has $ut (list "RollingUpdate" "OnDelete")) }}
     {{- fail (printf "csi.nodeUpdateStrategy.type must be RollingUpdate or OnDelete, not %q" $ut) }}
     {{- end }}
