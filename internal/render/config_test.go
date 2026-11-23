@@ -202,3 +202,58 @@ func TestServerKeepsTheSingleTierShapeWhenNoTiersAreGiven(t *testing.T) {
 		t.Errorf("single-tier default changed:\n%s", yml)
 	}
 }
+
+// An agent container cannot resolve the cluster's account UIDs; the map gives
+// those callers a name (#40). The output must parse as DAOS reads it and be
+// stable, because its hash rolls the client agents.
+func TestAgentCredentials(t *testing.T) {
+	if s, err := AgentCredentials(nil); err != nil || s != "" {
+		t.Fatalf("empty map = %q, %v; want no block", s, err)
+	}
+	m := map[string]MappedUser{
+		"default": {User: "nobody", Group: "nobody"},
+		"1001":    {User: "alice", Group: "hpc", Groups: []string{"proj-a", "proj b"}},
+	}
+	s, err := AgentCredentials(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if again, _ := AgentCredentials(m); again != s {
+			t.Fatalf("output not stable:\n%s\nvs\n%s", s, again)
+		}
+	}
+	var a struct {
+		Name       string `json:"name"`
+		Credential struct {
+			Map map[string]struct {
+				User   string   `json:"user"`
+				Group  string   `json:"group"`
+				Groups []string `json:"groups"`
+			} `json:"client_user_map"`
+		} `json:"credential_config"`
+	}
+	if err := yaml.Unmarshal([]byte(Agent("s", []string{"10.0.0.1"}, 10001, false, nil)+s), &a); err != nil {
+		t.Fatalf("%v\n%s", err, s)
+	}
+	if a.Name != "s" {
+		t.Errorf("base fields lost: %+v", a)
+	}
+	if u := a.Credential.Map["1001"]; u.User != "alice" || u.Group != "hpc" || strings.Join(u.Groups, ",") != "proj-a,proj b" {
+		t.Errorf("1001 = %+v", u)
+	}
+	if u := a.Credential.Map["default"]; u.User != "nobody" || u.Group != "nobody" || u.Groups != nil {
+		t.Errorf("default = %+v", u)
+	}
+	for _, bad := range []map[string]MappedUser{
+		{"alice": {User: "a", Group: "g"}},
+		{"-1": {User: "a", Group: "g"}},
+		{"4294967296": {User: "a", Group: "g"}},
+		{"4294967295": {User: "a", Group: "g"}}, // the agent's own key for "default"
+		{"1000": {User: "a"}},
+	} {
+		if _, err := AgentCredentials(bad); err == nil {
+			t.Errorf("%v: want error", bad)
+		}
+	}
+}

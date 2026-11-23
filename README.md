@@ -386,6 +386,32 @@ target is back and rebuild has finished. Watch for the `ContainerUnclean` and
 > `status` field that Helm will not add to an existing install, because Helm
 > never upgrades `crds/`. Apply the CRDs first (see [Upgrade](#upgrade)).
 
+### Pods that run as an account UID and open DAOS directly
+
+File ownership on a CSI volume is numeric: dfuse `--multi-user` keeps the UID and GID of
+each entry, so pods sharing a volume across nodes need the same numeric IDs per user, and
+neither the driver nor the operator needs LDAP.
+
+Opening a pool is different. `daos_agent` builds the caller's credential from the name
+its own `/etc/passwd` gives the caller's UID, and the agent containers do not know the
+cluster's accounts. dfuse behind the CSI driver is not affected (it connects as root), but
+a pod running as an account UID that talks to DAOS itself — the interception libraries,
+a libdfs application, the `daos` CLI — gets no credential. `spec.client.clientUserMap`
+gives those UIDs names (`credential_config.client_user_map` in `daos_agent.yml`):
+
+```yaml
+spec:
+  client:
+    clientUserMap:
+      default: {user: nobody, group: nobody}               # any UID not listed
+      "1001": {user: alice, group: hpc, groups: [proj-a]}  # only for per-user ACLs
+```
+
+The names must match the principals in the pool and container ACLs; one `default` entry
+is enough when ACLs are not per user. UIDs the agent can resolve itself never use the map.
+The client agent DaemonSet rolls on a change; CSI node plugin pods read the new map only
+when they are recreated.
+
 ## Requirements
 
 - Kubernetes 1.29+ (native sidecars)

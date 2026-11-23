@@ -184,4 +184,100 @@ spec:
 	Expect(result("il-unpinned")).To(Equal("skipped/agent-placement"), "the agent has a nodeSelector the pod does not carry")
 	Expect(ilField("il-unpinned", ".spec.initContainers")).To(BeEmpty())
 	Expect(ilField("il-unpinned", ".spec.volumes")).NotTo(ContainSubstring("hostPath"))
+
+	accountUIDCase(pod, pinned)
+}
+
+// Part of case 15 (operator #40). A pod running as an account UID cannot take
+// dfuse's pool handle (dfuse answers that ioctl only for its own UID), so
+// libioil connects to the pool itself, and the agent has to build the
+// credential from a UID its container does not know. Without
+// spec.client.clientUserMap that fails and libioil quietly leaves the file on
+// dfuse; with a map whose names the ACLs grant, the reads are intercepted; a
+// map to a name the ACLs do not grant falls back again.
+func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placement, script string) string, pinned string) {
+	read := "set -e; id; ls -ln /data/uid; cat /data/uid/blob > /dev/null; echo IL-DONE"
+	asUser := func(name string) string {
+		return strings.Replace(pod(name, "ioil", ilClientImage, true, pinned, read),
+			"  restartPolicy: Never\n", "  restartPolicy: Never\n  securityContext: {runAsUser: 1001, runAsGroup: 1001}\n", 1)
+	}
+	// setMap replaces the whole map: a merge patch keeps keys it does not name,
+	// so each key the previous call set and this one does not is sent as null.
+	// It returns once every node agent runs a config that has exactly these keys.
+	var prev []string
+	setMap := func(m map[string]any) {
+		cm := map[string]any{}
+		for _, k := range prev {
+			cm[k] = nil
+		}
+		prev = nil
+		for k, v := range m {
+			cm[k] = v
+			prev = append(prev, k)
+		}
+		var val any = cm
+		if len(m) == 0 {
+			val = nil
+		}
+		patch, _ := json.Marshal(map[string]any{"spec": map[string]any{"client": map[string]any{"clientUserMap": val}}})
+		kubectl("patch", "daossystem", sysName, "--type", "merge", "-p", string(patch))
+		want := func(cfg string) bool {
+			if len(m) == 0 {
+				return !strings.Contains(cfg, "client_user_map")
+			}
+			for _, k := range []string{"default", "1001"} {
+				_, set := m[k]
+				if strings.Contains(cfg, fmt.Sprintf("    %q:\n", k)) != set {
+					return false
+				}
+			}
+			return true
+		}
+		// the config the DaemonSet's pod template mounts (a hash-named version), not the shared one
+		Eventually(func() bool {
+			name, _ := kubectlE("get", "daemonset", sysName+"-agent", "-o", `jsonpath={.spec.template.spec.volumes[?(@.name=="agentcfg")].configMap.name}`)
+			cfg, _ := kubectlE("get", "configmap", strings.TrimSpace(name), "-o", `jsonpath={.data.daos_agent\.yml}`)
+			return want(cfg)
+		}).WithTimeout(3*time.Minute).Should(BeTrue(), "agent config for %v", m)
+		// and every pod of that template is up
+		Eventually(func() bool {
+			st, _ := kubectlE("get", "daemonset", sysName+"-agent", "-o",
+				`jsonpath={.metadata.generation} {.status.observedGeneration} {.status.desiredNumberScheduled} {.status.updatedNumberScheduled} {.status.numberAvailable}`)
+			f := strings.Fields(st)
+			return len(f) == 5 && f[0] == f[1] && f[2] == f[3] && f[3] == f[4] && f[2] != "0"
+		}).WithTimeout(5*time.Minute).Should(BeTrue(), "agent rollout")
+		Eventually(func() string { return condStatus("ClientAgent") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
+	}
+	DeferCleanup(func() { setMap(nil) })
+	runPod := func(name string) string {
+		applyIn(ilNS, asUser(name))
+		Eventually(func() string { return ilField(name, ".status.phase") }).WithTimeout(10*time.Minute).
+			Should(BeElementOf("Succeeded", "Failed"), "pod %s", name)
+		logs, _ := runE("kubectl", "-n", ilNS, "logs", name, "-c", "app")
+		Expect(ilField(name, ".status.phase")).To(Equal("Succeeded"), "pod %s must read through dfuse at least:\n%s", name, tail(logs, 20))
+		Expect(logs).To(ContainSubstring("uid=1001"), "pod %s", name)
+		Expect(logs).To(ContainSubstring("IL-DONE"), "pod %s", name)
+		Expect(ilField(name, `.metadata.annotations.daos\.gluesys\.com/interception-result`)).To(Equal("injected/libioil"))
+		fmt.Fprintf(GinkgoWriter, "%s:\n%s\n", name, tail(logs, 20))
+		return logs
+	}
+	By("a root pod leaves a file every UID may read")
+	applyIn(ilNS, pod("il-uid-seed", "off", ilClientImage, true, pinned,
+		"set -e; mkdir -p /data/uid; dd if=/dev/zero of=/data/uid/blob bs=1M count=16 status=none; "+
+			"chmod 0755 /data/uid; chmod 0644 /data/uid/blob; ls -ln /data/uid; echo IL-DONE"))
+	Eventually(func() string { return ilField("il-uid-seed", ".status.phase") }).WithTimeout(10 * time.Minute).Should(Equal("Succeeded"))
+
+	By("an account UID without a map: no credential, libioil leaves the reads on dfuse")
+	logs := runPod("il-uid-nomap")
+	Expect(logs).NotTo(ContainSubstring("[libioil] Intercepting read"), "no credential, so no pool handle")
+
+	By("mapping UID 1001 to the pool owner's principals: the reads are intercepted")
+	setMap(map[string]any{"1001": map[string]any{"user": "root", "group": "root"}})
+	logs = runPod("il-uid-map")
+	Expect(logs).To(ContainSubstring("[libioil] Intercepting read"), "a mapped UID connects with the mapped names")
+
+	By("mapping to names the ACLs do not grant: the pool refuses, libioil falls back again")
+	setMap(map[string]any{"default": map[string]any{"user": "nobody", "group": "nobody"}})
+	logs = runPod("il-uid-nobody")
+	Expect(logs).NotTo(ContainSubstring("[libioil] Intercepting read"), "nobody@ is not in the default pool ACL")
 }

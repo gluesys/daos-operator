@@ -312,6 +312,33 @@ type ClientSpec struct {
 	// restriction off, for clients whose interface names differ from the servers'
 	// -- which is why this is a pointer.
 	IncludeFabricIfaces *[]string `json:"includeFabricIfaces,omitempty"`
+	// ClientUserMap becomes credential_config.client_user_map: the user and
+	// group names the agent puts in a client's credential when it cannot
+	// resolve the client's UID itself. The agent turns a caller's UID into a
+	// name (the pool and container ACL principal) with its own /etc/passwd,
+	// and an agent container does not know the cluster's accounts, so a pod
+	// running as an account UID that talks to DAOS directly (interception
+	// libraries, libdfs, the daos CLI) fails to get a credential. dfuse
+	// behind the CSI driver is not affected: it connects as root.
+	// Keys are a decimal UID or "default" (any UID not listed). The names must
+	// match the principals in the pool and container ACLs; one "default"
+	// entry is enough when ACLs are not per user.
+	// The size bound keeps the key rule within the API server's CEL cost budget.
+	// +kubebuilder:validation:MaxProperties=1024
+	// +kubebuilder:validation:XValidation:rule="self.all(k, k == 'default' || k.matches('^[0-9]{1,10}$'))",message="keys must be \"default\" or a decimal UID"
+	ClientUserMap map[string]MappedClientUser `json:"clientUserMap,omitempty"`
+}
+
+// MappedClientUser is the identity one client UID is given in its credential.
+type MappedClientUser struct {
+	// User is the user principal name (user@ in an ACL).
+	// +kubebuilder:validation:MinLength=1
+	User string `json:"user"`
+	// Group is the primary group principal name.
+	// +kubebuilder:validation:MinLength=1
+	Group string `json:"group"`
+	// Groups are extra group principal names.
+	Groups []string `json:"groups,omitempty"`
 }
 
 type DaosSystemSpec struct {

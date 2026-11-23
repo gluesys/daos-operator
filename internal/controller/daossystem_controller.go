@@ -104,6 +104,21 @@ func controlPortOf(sys *daosv1alpha1.DaosSystem) int32 {
 	return defaultControlPort
 }
 
+// withCredentials appends spec.client.clientUserMap to a rendered agent config.
+// Every agent reads this one file (CSI node plugin sidecar, client agent
+// DaemonSet, Job and gateway sidecars), so the map applies to all of them.
+func withCredentials(sys *daosv1alpha1.DaosSystem, agent string) (string, error) {
+	m := make(map[string]render.MappedUser, len(sys.Spec.Client.ClientUserMap))
+	for k, u := range sys.Spec.Client.ClientUserMap {
+		m[k] = render.MappedUser{User: u.User, Group: u.Group, Groups: u.Groups}
+	}
+	cred, err := render.AgentCredentials(m)
+	if err != nil {
+		return "", fmt.Errorf("spec.client.clientUserMap: %w", err)
+	}
+	return agent + cred, nil
+}
+
 // clientIfaces is what the agent may hand a client as its fabric interface.
 // Unset means the interfaces the engines use: on a Kubernetes node the agent's
 // own scan also finds the CNI interfaces, and a client given one of those
@@ -380,8 +395,12 @@ func (r *DaosSystemReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	}
 
 	// 6. agent + control configs
+	agentYML, err := withCredentials(sys, render.Agent(systemName(sys), msAddrs, controlPortOf(sys), sys.Spec.AllowInsecure, clientIfaces(sys)))
+	if err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-agent", "", map[string]string{
-		"daos_agent.yml": render.Agent(systemName(sys), msAddrs, controlPortOf(sys), sys.Spec.AllowInsecure, clientIfaces(sys))}); err != nil {
+		"daos_agent.yml": agentYML}); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.upsertConfigMap(ctx, sys, ns, sys.Name+"-control", "", map[string]string{

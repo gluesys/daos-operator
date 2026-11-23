@@ -1658,6 +1658,50 @@ var _ = Describe("DaosSystem Controller", func() {
 		Expect(moved.Data["daos_agent.yml"]).To(ContainSubstring(fmt.Sprintf("cache_expiration: %d\n", render.ExternalAgentCacheMinutes)))
 	})
 
+	It("gives every agent the client user map, for account UIDs the agent cannot resolve (#40)", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"system query -v": {Done: true, Output: dmgMembers}}}
+		sys := getSys()
+		sys.Spec.ClientAgent = daosv1alpha1.ClientAgentSpec{Enabled: true}
+		sys.Spec.Client.ClientUserMap = map[string]daosv1alpha1.MappedClientUser{
+			"default": {User: "nobody", Group: "nobody"},
+			"1001":    {User: "alice", Group: "hpc", Groups: []string{"proj-a"}},
+		}
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+
+		cm := &corev1.ConfigMap{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).To(ContainSubstring("credential_config:\n  client_user_map:\n" +
+			"    \"1001\":\n      user: \"alice\"\n      group: \"hpc\"\n      groups:\n        - \"proj-a\"\n" +
+			"    \"default\":\n      user: \"nobody\"\n      group: \"nobody\"\n"))
+		// the node agents get it too, as a new config version
+		ds := &appsv1.DaemonSet{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		withMap := agentConfigOf(ctx, ds)
+		Expect(withMap.Data).To(Equal(cm.Data))
+
+		By("dropping the map removes the block and rolls the node agents again")
+		sys = getSys()
+		sys.Spec.Client.ClientUserMap = nil
+		Expect(k8sClient.Update(ctx, sys)).To(Succeed())
+		reconcileWith(f)
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, cm)).To(Succeed())
+		Expect(cm.Data["daos_agent.yml"]).NotTo(ContainSubstring("credential_config"))
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Namespace: "daos-test", Name: "t1-agent"}, ds)).To(Succeed())
+		Expect(agentConfigOf(ctx, ds).Name).NotTo(Equal(withMap.Name))
+	})
+
+	It("refuses a client user map key that is neither a UID nor default (#40)", func() {
+		sys := getSys()
+		sys.Spec.Client.ClientUserMap = map[string]daosv1alpha1.MappedClientUser{"alice": {User: "alice", Group: "hpc"}}
+		err := k8sClient.Update(ctx, sys)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("decimal UID"))
+		sys = getSys()
+		sys.Spec.Client.ClientUserMap = map[string]daosv1alpha1.MappedClientUser{"1001": {User: "alice"}}
+		Expect(k8sClient.Update(ctx, sys)).NotTo(Succeed(), "group is required")
+	})
+
 	It("renders a test-bed engine without SPDK and on the configured control port (#23)", func() {
 		sys := getSys()
 		sys.Spec.ControlPort = 10101
