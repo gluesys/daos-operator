@@ -233,6 +233,24 @@ func gatewayCommand(svc *daosv1alpha1.S3Service, pool *daosv1alpha1.DaosPool, sy
 	return []string{"bash", "-c", b.String()}
 }
 
+// gatewayStrategy replaces gateway pods one at a time, old pod first. The pods
+// use the host network, so each one holds the S3 port on its node and a node
+// runs at most one. The default rolling update (maxSurge 25% rounded up,
+// maxUnavailable 25% rounded down) starts the new pod before stopping the old
+// one; when every eligible node already runs a gateway, as with one replica on
+// one node, the new pod never schedules and the old one is never stopped, so an
+// image or flag change hangs forever. Stopping first leaves each node's port
+// free for its replacement, the way a DaemonSet updates.
+func gatewayStrategy() appsv1.DeploymentStrategy {
+	return appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxSurge:       ptr.To(intstr.FromInt32(0)),
+			MaxUnavailable: ptr.To(intstr.FromInt32(1)),
+		},
+	}
+}
+
 func (r *S3ServiceReconciler) applyDeployment(ctx context.Context, svc *daosv1alpha1.S3Service,
 	pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem) (*appsv1.Deployment, error) {
 
@@ -240,6 +258,7 @@ func (r *S3ServiceReconciler) applyDeployment(ctx context.Context, svc *daosv1al
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, dep, func() error {
 		dep.Labels = s3Labels(svc, sys)
 		dep.Spec.Replicas = ptr.To(svc.Spec.Replicas)
+		dep.Spec.Strategy = gatewayStrategy()
 		dep.Spec.Selector = &metav1.LabelSelector{MatchLabels: selectorLabels(svc)}
 		dep.Spec.Template.ObjectMeta.Labels = s3Labels(svc, sys)
 		p := &dep.Spec.Template.Spec
