@@ -118,6 +118,24 @@ csi:
   nodeSelector: {}        # nodes that may mount DAOS PVs (default: all)
   tolerations:
     - operator: Exists
+  # dfuse --multi-user on the node plugin: each pod's own uid/gid on the files it creates, and
+  # access for pods that do not run as root. Needed for StorageClass rootUID/rootGID (a volume
+  # root owned by an account UID) and by any pod that runs as an account UID.
+  multiUser: false
+  # extra dfuse flags for every volume on the node plugin (daos-csi --dfuse-args), e.g. [--disable-caching]
+  dfuseArgs: []
+  # node plugin DaemonSet update strategy. OnDelete lets the operator of the cluster choose when
+  # each node's plugin restarts: a restart cuts the DAOS volumes of the pods running on that node
+  # (their mounts do not come back until the pods are recreated), so drain those pods, then delete
+  # the plugin pod. The default restarts one node at a time as soon as the DaemonSet changes.
+  # With type: OnDelete, rollingUpdate is ignored.
+  nodeUpdateStrategy:
+    type: RollingUpdate
+    rollingUpdate: {maxUnavailable: 1}
+  # where the controller (provisioner) Deployment may run; empty = anywhere
+  controllerNodeSelector: {}
+  controllerTolerations: []
+  controllerAffinity: {}
   controllerResources:
     requests: {cpu: 10m, memory: 32Mi}
     limits: {memory: 128Mi}
@@ -151,6 +169,9 @@ csi:
   #    parameters: {pool: kv, oclass: RP_2GX, dirOclass: RP_2G1, chunkSize: "4194304", csum: crc32}
   #    # spaceLimit: "false" stops daos-csi from capping each container at its PVC size
   #    # (spec.spaceLimit; enforced by the extended edition of DAOS only)
+  #    # rootUID/rootGID (numeric) and rootMode (octal) set the owner of each new volume's root;
+  #    # they need multiUser. rootOwnerFromPVC: "true" lets the PVC annotations
+  #    # csi.daos.gluesys.com/root-uid, root-gid and root-mode override them (daos-csi !7 or later).
 
 # Interception library injection (doc/plans/2026-11-19-client-interception.md). A mutating
 # webhook preloads libioil or libpil4dfs into pods that mount a csi DAOS volume and ask for it

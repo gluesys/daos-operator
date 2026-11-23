@@ -18,6 +18,8 @@ import yaml
 
 CHART = Path(__file__).resolve().parent.parent / "charts" / "daos-operator"
 PASSTHROUGH = {("system", "spec"): "DaosSystem spec, passed through as-is and validated by the CRD"}
+# Paths whose value may take more than the one type the default has.
+INT_OR_PERCENT = {("csi", "nodeUpdateStrategy", "rollingUpdate", "maxUnavailable")}
 KEY = re.compile(r"^(\s*)([A-Za-z0-9_.-]+):(.*)$")
 
 
@@ -49,6 +51,8 @@ def comments(lines):
 def schema_for(value, path, desc):
     if path in PASSTHROUGH:
         node = {"type": "object", "description": PASSTHROUGH[path]}
+    elif path in INT_OR_PERCENT:  # an IntOrString in the Kubernetes API: 1 or "10%"
+        node = {"type": ["integer", "string"], "pattern": "^[0-9]+%$"}
     elif isinstance(value, dict):
         node = {"type": "object", "additionalProperties": True}
         if value:
