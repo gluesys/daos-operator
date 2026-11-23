@@ -76,6 +76,12 @@ check_strategy '{"rollingUpdate": {"maxUnavailable": 1}, "type": "RollingUpdate"
 check_strategy '{"rollingUpdate": {"maxUnavailable": "10%"}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy.type=RollingUpdate --set-string 'csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=10%'
 check_strategy '{"rollingUpdate": {"maxSurge": 1, "maxUnavailable": 0}, "type": "RollingUpdate"}' --set csi.nodeUpdateStrategy.type=RollingUpdate --set csi.nodeUpdateStrategy.rollingUpdate.maxSurge=1 --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=0
 check_strategy '{"type": "OnDelete"}' --set csi.nodeUpdateStrategy.rollingUpdate.maxUnavailable=2
+if helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set csi.nodeUpdateStrategy.type=Ondelete 2>&1 |
+        grep -q 'csi.nodeUpdateStrategy.type must be RollingUpdate or OnDelete'; then
+    echo "ok    csi updateStrategy type Ondelete refused"
+else
+    echo "FAIL  csi updateStrategy type Ondelete was not refused"; fail=1
+fi
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
 # as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
 if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
