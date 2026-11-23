@@ -128,7 +128,7 @@ spec:
 kind: Pod
 metadata:
   name: %s
-  annotations: {daos.gluesys.com/interception: %s, daos.gluesys.com/interception-report: "true"}
+  annotations: {daos.gluesys.com/interception: %q, daos.gluesys.com/interception-report: "true"}
 spec:
   restartPolicy: Never
   hostNetwork: %t
