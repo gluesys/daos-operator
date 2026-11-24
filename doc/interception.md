@@ -153,20 +153,27 @@ A·D 까지 고친 묶음(0005·0006)에서는 기본 모드도 rc 0·차이 0 �
   클러스터 계정은 거기 없어 credential 을 만들지 못하고, 조용히 dfuse 로 읽고 씁니다(동작은 정상, 인터셉션만 없음).
 - `pil4dfs`, `pil4dfs-compat`: 이런 파드에서는 스스로 접속하지 않고 늘 dfuse 로 갑니다. 매핑과 무관합니다.
 
-`spec.client.clientUserMap` 으로 이런 UID 에 이름을 주면 `ioil` 이 접속합니다. 이름은 풀·컨테이너 ACL 이 허용하는 주체여야
-합니다. operator 가 만든 풀은 `root@` 소유라 `root` 가 이미 접근 권한이 있는 이름입니다(dfuse 와 같은 권한). 다른 이름을
-쓰려면 그 이름의 ACL 항목을 먼저 넣어야 하고(`daos pool update-acl`, `daos cont update-acl`), 없으면 접속이 거부돼 다시
+`spec.client.clientUserMap` 으로 이런 UID 에 이름을 주면 `ioil` 이 접속합니다. 풀·컨테이너 ACL 은 그 이름으로 판단하므로,
+승인한 UID 마다 전용 최소 권한 주체로 매핑하고 그 주체에 필요한 권한만 줍니다. ACL 항목이 없으면 접속이 거부돼 다시
 dfuse 로 갑니다.
 
 ```yaml
 spec:
   client:
     clientUserMap:
-      default: {user: root, group: root}                     # 목록에 없는 모든 UID
-      "1001": {user: alice, group: hpc, groups: [proj-a]}    # 사용자별 ACL: alice@·hpc@ ACL 항목도 넣을 것
+      "1001": {user: alice, group: hpc, groups: [proj-a]}
 ```
 
-레인 실측(Tier 1 케이스 15, dfuse `--multi-user`): UID 1001 `ioil` 파드가 매핑 없이는 dfuse 로 읽고, `1001`→`root`
-매핑이면 인터셉션되며(129 읽기), `default`→`nobody` 면 ACL 거부로 다시 dfuse 로 갑니다. agent 가 스스로 풀 수 있는
+```sh
+daos pool update-acl <pool> -e A::alice@:r
+daos cont update-acl <pool> <cont> -e A::alice@:rw
+```
+
+`root` 로 매핑하거나 `default` 에 권한 있는 이름을 넣지 마십시오. operator 가 만든 풀은 `root@` 소유라, 그런 매핑은
+해당 UID 모두에게 풀 전체의 소유자 권한을 줘 계정별 ACL 을 무력화합니다. `default` 는 비워 두거나(목록에 없는 UID 는
+dfuse 로, 파일 권한은 그대로 적용) 어떤 ACL 도 허용하지 않는 주체로 둡니다.
+
+레인 실측(Tier 1 케이스 15, dfuse `--multi-user`): UID 1001 `ioil` 파드가 매핑 없이는 dfuse 로 읽고, `1001`→ACL 이 허용하는
+주체(그 시험 풀에서는 `root`) 매핑이면 인터셉션되며(129 읽기), `default`→`nobody` 면 ACL 거부로 다시 dfuse 로 갑니다. agent 가 스스로 풀 수 있는
 UID(root 등)에는 쓰이지 않습니다. 바꾸면 client agent DaemonSet 은 새 설정으로 다시 뜨지만, CSI 노드 플러그인 사이드카
 agent 는 파드를 다시 만들어야 새 값을 읽습니다.
