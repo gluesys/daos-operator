@@ -136,6 +136,34 @@ var _ = Describe("S3Service Controller", func() {
 		Expect(get().Status.Endpoint).To(Equal("http://gw.default.svc:7070"))
 	})
 
+	It("replaces host-network gateway pods old pod first so a rollout cannot wait on its own port", func() {
+		reconcileS3()
+		dep := &appsv1.Deployment{}
+		Expect(k8sClient.Get(ctx, nn, dep)).To(Succeed())
+		Expect(dep.Spec.Template.Spec.HostNetwork).To(BeTrue())
+		want := func(d *appsv1.Deployment) {
+			GinkgoHelper()
+			Expect(d.Spec.Strategy.Type).To(Equal(appsv1.RollingUpdateDeploymentStrategyType))
+			Expect(d.Spec.Strategy.RollingUpdate).NotTo(BeNil())
+			Expect(d.Spec.Strategy.RollingUpdate.MaxSurge.IntValue()).To(Equal(0),
+				"a surge pod needs a second free S3 port on a node that already runs a gateway")
+			Expect(d.Spec.Strategy.RollingUpdate.MaxUnavailable.IntValue()).To(Equal(1))
+		}
+		want(dep)
+
+		// someone switched it to Recreate by hand; the next reconcile, here
+		// triggered by an image change, puts the gateway strategy back
+		dep.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		Expect(k8sClient.Update(ctx, dep)).To(Succeed())
+		s3 := get()
+		s3.Spec.Image = "versitygw-daos:2"
+		Expect(k8sClient.Update(ctx, s3)).To(Succeed())
+		reconcileS3()
+		Expect(k8sClient.Get(ctx, nn, dep)).To(Succeed())
+		Expect(dep.Spec.Template.Spec.Containers[0].Image).To(Equal("versitygw-daos:2"))
+		want(dep)
+	})
+
 	It("refuses several replicas that would each keep their own user list", func() {
 		s3 := get()
 		s3.Spec.Replicas = 3
