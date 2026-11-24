@@ -75,8 +75,9 @@ branches yet. The API is `v1alpha1`.
 | Version | Supported |
 |---|---|
 | `main` | yes |
-| latest `v0.1.x` (chart `0.2.x`) | yes |
-| `v0.1.0-rc.*` | no -- upgrade to `v0.1.0` |
+| latest `v0.2.x` (chart `0.3.x`) | yes |
+| `v0.1.x` (chart `0.2.x`) | best effort -- upgrade to `v0.2.0` |
+| `v0.1.0-rc.*` | no |
 | anything else | no |
 
 ## Hardening notes for deployers

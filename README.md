@@ -8,7 +8,7 @@ system, its pools and containers; a CSI driver mounts a container as a
 `ReadWriteMany` volume; an S3 gateway serves a pool over S3; and a reference
 vLLM + LMCache workload uses a DAOS container as its KV cache.
 
-> **First release.** Version 0.1.0 is validated on our own hardware, not yet in
+> **Version 0.2.0** is validated on our own hardware, not yet in
 > production, and the API is `v1alpha1`: fields may still change between minor
 > releases. See [what was measured](#what-has-been-measured).
 
@@ -16,7 +16,7 @@ vLLM + LMCache workload uses a DAOS container as its KV cache.
 
 ```bash
 helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
-  --version 0.2.1 --namespace daos-system --create-namespace
+  --version 0.3.0 --namespace daos-system --create-namespace
 ```
 
 Images are public at `ghcr.io/gluesys/daos-{operator,csi,server,agent,admin,client}`.
@@ -95,7 +95,7 @@ operator, bring the operator back alone and then delete it:
 
 ```bash
 helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator \
-  --version 0.2.1 -n daos-system --set system.create=false
+  --version 0.3.0 -n daos-system --set system.create=false
 kubectl delete daossystem <name> --wait
 helm uninstall daos-operator -n daos-system
 ```
