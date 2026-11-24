@@ -320,9 +320,11 @@ type ClientSpec struct {
 	// running as an account UID that talks to DAOS directly (interception
 	// libraries, libdfs, the daos CLI) fails to get a credential. dfuse
 	// behind the CSI driver is not affected: it connects as root.
-	// Keys are a decimal UID or "default" (any UID not listed). The names must
-	// match the principals in the pool and container ACLs; one "default"
-	// entry is enough when ACLs are not per user.
+	// Keys are a decimal UID or "default" (any UID not listed). The ACLs judge
+	// the client by these names, so map each approved UID to a least-privilege
+	// principal the pool and container ACLs grant. Never map to an owner such
+	// as root (pools the operator creates are owned by root@): every matching
+	// UID would get owner access.
 	// The size bound keeps the key rule within the API server's CEL cost budget.
 	// +kubebuilder:validation:MaxProperties=1024
 	// +kubebuilder:validation:XValidation:rule="self.all(k, k == 'default' || k.matches('^[0-9]{1,10}$'))",message="keys must be \"default\" or a decimal UID"

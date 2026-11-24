@@ -394,23 +394,42 @@ neither the driver nor the operator needs LDAP.
 
 Opening a pool is different. `daos_agent` builds the caller's credential from the name
 its own `/etc/passwd` gives the caller's UID, and the agent containers do not know the
-cluster's accounts. dfuse behind the CSI driver is not affected (it connects as root), but
-a pod running as an account UID that talks to DAOS itself — the interception libraries,
-a libdfs application, the `daos` CLI — gets no credential. `spec.client.clientUserMap`
-gives those UIDs names (`credential_config.client_user_map` in `daos_agent.yml`):
+cluster's accounts. dfuse behind the CSI driver is not affected (it connects as root). A pod
+running as an account UID that talks to DAOS itself gets no credential:
+
+- `ioil`: such a pod may not take dfuse's pool handle (dfuse hands it only to its own UID),
+  so libioil connects itself; without a credential it quietly leaves the I/O on dfuse.
+- `pil4dfs`, `pil4dfs-compat`: they never connect themselves from such a pod and always
+  stay on dfuse, with or without a map.
+- a libdfs application or the `daos` CLI: the connect fails.
+
+`spec.client.clientUserMap` gives those UIDs names (`credential_config.client_user_map` in
+`daos_agent.yml`). The pool and container ACLs then judge the pod by that name, so map each
+approved UID to its own least-privilege principal and grant that principal only what it
+needs; with no ACL entry the connect is refused and the pod falls back to dfuse.
 
 ```yaml
 spec:
   client:
     clientUserMap:
-      default: {user: nobody, group: nobody}               # any UID not listed
-      "1001": {user: alice, group: hpc, groups: [proj-a]}  # only for per-user ACLs
+      "1001": {user: alice, group: hpc, groups: [proj-a]}
 ```
 
-The names must match the principals in the pool and container ACLs; one `default` entry
-is enough when ACLs are not per user. UIDs the agent can resolve itself never use the map.
-The client agent DaemonSet rolls on a change; CSI node plugin pods read the new map only
-when they are recreated.
+```sh
+daos pool update-acl <pool> -e A::alice@:r
+daos cont update-acl <pool> <cont> -e A::alice@:rw
+```
+
+Do not map UIDs to `root`, and do not put a privileged name under `default`: a pool the
+operator creates is owned by `root@`, so such a mapping gives every matching UID owner access
+to all of its data and bypasses per-account ACLs. Leave `default` unset (unlisted UIDs stay
+on dfuse, where file permissions still apply) or point it at a principal no ACL grants.
+
+Measured on the CI lane (Tier 1 case 15, dfuse `--multi-user`): a UID-1001 `ioil` pod reads
+through dfuse without a map, is intercepted with `1001` mapped to a principal the ACL grants
+(`root` on that throwaway test pool), and falls back again with `default` mapped to `nobody`,
+which no ACL grants. UIDs the agent can resolve itself never use the map. The client agent DaemonSet rolls on a change; CSI node plugin pods read the new map
+only when they are recreated.
 
 ## Requirements
 

@@ -128,7 +128,7 @@ spec:
 kind: Pod
 metadata:
   name: %s
-  annotations: {daos.gluesys.com/interception: %s, daos.gluesys.com/interception-report: "true"}
+  annotations: {daos.gluesys.com/interception: %q, daos.gluesys.com/interception-report: "true"}
 spec:
   restartPolicy: Never
   hostNetwork: %t
@@ -266,6 +266,25 @@ func accountUIDCase(pod func(name, mode, image string, hostNetwork bool, placeme
 		"set -e; mkdir -p /data/uid; dd if=/dev/zero of=/data/uid/blob bs=1M count=16 status=none; "+
 			"chmod 0755 /data/uid; chmod 0644 /data/uid/blob; ls -ln /data/uid; echo IL-DONE"))
 	Eventually(func() string { return ilField("il-uid-seed", ".status.phase") }).WithTimeout(10 * time.Minute).Should(Equal("Succeeded"))
+
+	By("a volume from a StorageClass with rootUID/rootGID/rootMode belongs to that account (csi!7)")
+	applyIn(ilNS, `apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: {name: il-owned}
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: daos-e2e-owner
+  resources: {requests: {storage: 1Gi}}`)
+	owned := strings.Replace(asUser("il-uid-owned"), "claimName: il-data", "claimName: il-owned", 1)
+	owned = strings.Replace(owned, read, "set -e; id; stat -c 'root %u:%g %a' /data; echo ok > /data/mine; stat -c 'file %u:%g' /data/mine; echo IL-DONE", 1)
+	owned = strings.Replace(owned, `interception: "ioil"`, `interception: "off"`, 1)
+	applyIn(ilNS, owned)
+	Eventually(func() string { return ilField("il-uid-owned", ".status.phase") }).WithTimeout(15 * time.Minute).
+		Should(BeElementOf("Succeeded", "Failed"))
+	ownedLogs, _ := runE("kubectl", "-n", ilNS, "logs", "il-uid-owned", "-c", "app")
+	fmt.Fprintf(GinkgoWriter, "il-uid-owned:\n%s\n", ownedLogs)
+	Expect(ownedLogs).To(ContainSubstring("root 1001:1001 2770"), "the driver set the root owner and mode, setgid kept after chown")
+	Expect(ownedLogs).To(ContainSubstring("file 1001:1001"), "UID 1001 writes its own volume")
 
 	By("an account UID without a map: no credential, libioil leaves the reads on dfuse")
 	logs := runPod("il-uid-nomap")
