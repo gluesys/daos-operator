@@ -655,10 +655,16 @@ func containerCreateHint(c *daosv1alpha1.DaosContainer, pool *daosv1alpha1.DaosP
 	if ranks == 0 {
 		return ""
 	}
-	for _, oc := range []struct{ field, class string }{{"fileOclass", c.Spec.FileOclass}, {"dirOclass", c.Spec.DirOclass}} {
+	// A container daos-csi made from a PVC is set by its StorageClass, whose
+	// parameters are named oclass/dirOclass/rdFac, not the spec fields: name those.
+	prefix, file, dir, rf := "spec.", "fileOclass", "dirOclass", "redundancyFactor 0"
+	if c.Labels["app.kubernetes.io/managed-by"] == "daos-csi" {
+		prefix, file, dir, rf = "StorageClass parameter ", "oclass", "dirOclass", `rdFac "0"`
+	}
+	for _, oc := range []struct{ field, class string }{{file, c.Spec.FileOclass}, {dir, c.Spec.DirOclass}} {
 		if need := oclassDomains(oc.class); need > ranks {
-			return fmt.Sprintf("; spec.%s %s needs %d fault domains and pool %s spans %d rank(s): "+
-				"on a one-rank pool use fileOclass SX, dirOclass S1 and redundancyFactor 0", oc.field, oc.class, need, poolLabel(pool), ranks)
+			return fmt.Sprintf("; %s%s %s needs %d fault domains and pool %s spans %d rank(s): "+
+				"on a one-rank pool use %s SX, %s S1 and %s", prefix, oc.field, oc.class, need, poolLabel(pool), ranks, file, dir, rf)
 		}
 	}
 	return ""
