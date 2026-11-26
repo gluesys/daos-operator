@@ -29,6 +29,7 @@ csi:
   multiUser: true              # dfuse --multi-user (account-UID pods, rootUID)
   dfuseArgs: [--disable-caching, --eq-count=2]
   mountMode: pod
+  image: {tag: mount-pod}         # a daos-csi with --mount-mode (the appVersion default has none)
   mountPod: {priorityClassName: system-node-critical}
   nodeUpdateStrategy: {type: OnDelete}
   controllerNodeSelector: {daos.gluesys.com/role: storage}

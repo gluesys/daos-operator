@@ -271,7 +271,7 @@
         },
         "mountMode": {
           "type": "string",
-          "description": "Where dfuse runs (daos-csi ADR-csi-002). process: inside the node plugin. A plugin restart or upgrade cuts the DAOS volumes of the pods running on that node until those pods are recreated. pod:     one mount pod (daos-mnt-*) per volume and node in the release namespace. A plugin restart or upgrade leaves running pods and their open files alone. Needs the node agent: system.spec.clientAgent enabled on every node the plugin runs on (csi.nodeSelector). Replacing the mount pods themselves (a new client image) still means draining the node. Switching between the two cuts the volumes on each node once: drain first."
+          "description": "Where dfuse runs (daos-csi ADR-csi-002). process: inside the node plugin. A plugin restart or upgrade cuts the DAOS volumes of the pods running on that node until those pods are recreated. pod:     one mount pod (daos-mnt-*) per volume and node in the release namespace. A plugin restart or upgrade leaves running pods and their open files alone. Needs the node agent: system.spec.clientAgent enabled on every node the plugin runs on (csi.nodeSelector). Replacing the mount pods themselves (a new client image) still means draining the node. Switching between the two cuts the volumes on each node once: drain first. pod also needs a daos-csi image with --mount-mode (daos-csi !10 or later): until the appVersion default has it, set csi.image.tag; the chart refuses pod mode otherwise."
         },
         "mountPod": {
           "type": "object",
@@ -283,7 +283,7 @@
             },
             "agentSocketHostPath": {
               "type": "string",
-              "description": "node agent socket dir; defaults to spec.clientAgent's for csi.system (/var/run/daos-operator/agent/<system>)"
+              "description": "node agent socket dir. Default: system.spec.clientAgent.hostSocketDir when csi.system is this release's system, else /var/run/daos-operator/agent/<csi.system> (another DaosSystem with a custom hostSocketDir: set it here)"
             },
             "memory": {
               "type": "string",

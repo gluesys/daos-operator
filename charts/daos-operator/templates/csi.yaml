@@ -13,7 +13,18 @@
 {{- if and (eq $mm "pod") .Values.system.create (eq $sys .Values.system.name) (not ((.Values.system.spec.clientAgent | default dict).enabled)) }}
 {{- fail "csi.mountMode pod runs dfuse in mount pods that use the node agent: enable system.spec.clientAgent (with a nodeSelector covering csi.nodeSelector)" }}
 {{- end }}
-{{- $agentDir := $mp.agentSocketHostPath | default ((.Values.system.spec.clientAgent | default dict).hostSocketDir) | default (printf "/var/run/daos-operator/agent/%s" $sys) }}
+{{- /* the socket dir of the DaosSystem this CSI serves: this release's own system's
+     clientAgent.hostSocketDir only when csi.system is that system; another system's default
+     otherwise (its custom dir goes into mountPod.agentSocketHostPath) */}}
+{{- $agentDir := printf "/var/run/daos-operator/agent/%s" $sys }}
+{{- if and .Values.system.create (eq $sys .Values.system.name) }}
+{{- $agentDir = (.Values.system.spec.clientAgent | default dict).hostSocketDir | default $agentDir }}
+{{- end }}
+{{- $agentDir = $mp.agentSocketHostPath | default $agentDir }}
+{{- /* daos-csi learned --mount-mode after v0.2.0: the appVersion default image would not start */}}
+{{- if and (eq $mm "pod") (not .Values.csi.image.tag) (semverCompare "<0.3.0-0" (trimPrefix "v" .Chart.AppVersion)) }}
+{{- fail (printf "csi.mountMode pod needs a daos-csi image with --mount-mode (daos-csi !10 or later); the default for appVersion %s does not have it: set csi.image.tag" .Chart.AppVersion) }}
+{{- end }}
 {{- $img := printf "%s:%s" .Values.csi.image.repository (include "daos-operator.tag" (list .Values.csi.image.tag .Chart.AppVersion "csi.image.tag")) }}
 # exastor/daos-csi (deploy/ mirrored as templates). One CSI deployment per DaosSystem:
 # the node DaemonSet's daos_agent sidecar reads <system>-agent, so csi.system must
