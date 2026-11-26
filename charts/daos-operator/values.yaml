@@ -64,10 +64,10 @@ system:
     version: "2.8.0"
     namespace: daos-system
     images:
-      server: ghcr.io/gluesys/daos-server:2.8.0-20260922
-      agent: ghcr.io/gluesys/daos-agent:2.8.0-20260914
-      admin: ghcr.io/gluesys/daos-admin:2.8.0-20260914
-      client: ghcr.io/gluesys/daos-client:2.8.0-20260914
+      server: ghcr.io/gluesys/daos-server:2.8.0-20261124-g47deeeda
+      agent: ghcr.io/gluesys/daos-agent:2.8.0-20261124-g47deeeda
+      admin: ghcr.io/gluesys/daos-admin:2.8.0-20261124-g47deeeda
+      client: ghcr.io/gluesys/daos-client:2.8.0-20261124-g47deeeda
     placement: dedicated
     # Storage nodes (Jobs only, for an external system). Unset means
     # {daos.gluesys.com/role: storage}; a selector you set replaces that default instead of
