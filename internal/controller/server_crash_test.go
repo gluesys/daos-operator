@@ -162,6 +162,12 @@ func TestContainerCreateHint(t *testing.T) {
 	if h := containerCreateHint(c, pool, inval); h != "" {
 		t.Errorf("SX/S1 fit one rank: %q", h)
 	}
+	c.Spec.FileOclass, c.Spec.DirOclass = "RP_2GX", "RP_2G1"
+	c.Labels = map[string]string{"app.kubernetes.io/managed-by": "daos-csi"}
+	if h := containerCreateHint(c, pool, inval); !strings.Contains(h, "StorageClass parameter oclass RP_2GX needs 2") ||
+		!strings.Contains(h, "use oclass SX, dirOclass S1 and rdFac \"0\"") || strings.Contains(h, "fileOclass") {
+		t.Errorf("CSI-made container should name StorageClass parameters: %q", h)
+	}
 	if oclassDomains("ec_2p1g1") != 3 || oclassDomains("RP_3GX") != 3 || oclassDomains("S1") != 0 {
 		t.Error("oclassDomains")
 	}
