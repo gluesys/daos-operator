@@ -177,27 +177,58 @@ spec: {poolRef: e2es3, image: %q, replicas: 1, port: 7070, region: kr-1, service
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		svc := jsonpath("s3service", "e2es3", ".status.endpoint")
 		Expect(svc).NotTo(BeEmpty())
-		By("put / list / get through " + svc)
 		aws := envOr("E2E_AWSCLI_IMAGE", "docker.io/amazon/aws-cli:2.17.0")
-		script := `set -e; export AWS_ACCESS_KEY_ID=e2eaccess AWS_SECRET_ACCESS_KEY=e2esecret0123456789 AWS_DEFAULT_REGION=kr-1
+		s3RoundTrip := func(pod, region string) {
+			By("put / list / get through " + svc + " in " + region)
+			script := `set -e; export AWS_ACCESS_KEY_ID=e2eaccess AWS_SECRET_ACCESS_KEY=e2esecret0123456789 AWS_DEFAULT_REGION=` + region + `
 ep=http://e2es3.` + ns + `.svc:7070; s3="aws --endpoint-url $ep s3"
 head -c 8388608 /dev/urandom > /tmp/obj; sha=$(sha256sum /tmp/obj | cut -d' ' -f1)
 $s3 mb s3://e2e; $s3 cp /tmp/obj s3://e2e/obj; $s3 ls s3://e2e | grep -q obj && echo LISTED
 $s3 cp s3://e2e/obj /tmp/back; [ "$(sha256sum /tmp/back | cut -d' ' -f1)" = "$sha" ] && echo S3_OK
 $s3 rm s3://e2e/obj; $s3 rb s3://e2e`
-		apply(fmt.Sprintf(`apiVersion: v1
+			apply(fmt.Sprintf(`apiVersion: v1
 kind: Pod
-metadata: {name: e2e-s3client}
+metadata: {name: %s}
 spec:
   restartPolicy: Never
-  containers: [{name: c, image: %s, command: [sh, -c, %q]}]`, aws, script))
-		Eventually(func() string { return jsonpath("pod", "e2e-s3client", ".status.phase") }).WithTimeout(5 * time.Minute).
-			Should(BeElementOf("Succeeded", "Failed"))
-		logs := kubectl("logs", "e2e-s3client")
-		Expect(logs).To(ContainSubstring("LISTED"), logs)
-		Expect(logs).To(ContainSubstring("S3_OK"), logs)
+  containers: [{name: c, image: %s, command: [sh, -c, %q]}]`, pod, aws, script))
+			Eventually(func() string { return jsonpath("pod", pod, ".status.phase") }).WithTimeout(5 * time.Minute).
+				Should(BeElementOf("Succeeded", "Failed"))
+			logs := kubectl("logs", pod)
+			Expect(logs).To(ContainSubstring("LISTED"), logs)
+			Expect(logs).To(ContainSubstring("S3_OK"), logs)
+			kubectl("delete", "pod", pod, "--wait=false")
+		}
+		s3RoundTrip("e2e-s3client", "kr-1")
 
-		kubectl("delete", "pod", "e2e-s3client", "--wait=false")
+		// The gateway uses the host network, so a node runs one gateway pod at most. With the
+		// Deployment default (start the new pod, then stop the old one) a spec change on a gateway
+		// pinned to its node never finished: the new pod stayed Pending on the old one's port
+		// (cxl2, 2026-11-23, fixed in !127). Pin the gateway to the node it runs on and change a
+		// flag in the same edit; the rollout must finish and the new flag must serve.
+		By("changing the region of a gateway pinned to its node")
+		sel := "app.kubernetes.io/instance=e2es3"
+		node := kubectl("get", "pod", "-l", sel, "-o", "jsonpath={.items[0].spec.nodeName}")
+		Expect(node).NotTo(BeEmpty())
+		kubectl("patch", "s3service", "e2es3", "--type=merge", "-p",
+			fmt.Sprintf(`{"spec":{"region":"us-east-1","nodeSelector":{"kubernetes.io/hostname":%q}}}`, node))
+		Eventually(func() string { return jsonpath("deploy", "e2es3", ".spec.template.spec.containers[0]") }).
+			WithTimeout(time.Minute).Should(ContainSubstring("us-east-1"))
+		start := time.Now()
+		if out, err := kubectlE("rollout", "status", "deploy/e2es3", "--timeout=3m"); err != nil {
+			pods, _ := kubectlE("get", "pod", "-l", sel, "-o", "wide")
+			events, _ := kubectlE("get", "events", "--field-selector", "involvedObject.kind=Pod", "--sort-by=.lastTimestamp")
+			Fail(fmt.Sprintf("gateway rollout did not finish (host port deadlock?)\n%s\n%s\n%s", out, pods, tail(events, 20)))
+		}
+		recordDuration("s3-gateway-rollout", time.Since(start))
+		Eventually(func() string {
+			out, _ := kubectlE("get", "pod", "-l", sel, "-o", "jsonpath={.items[*].spec.nodeName}")
+			return strings.TrimSpace(out)
+		}).WithTimeout(2*time.Minute).Should(Equal(node), "exactly one gateway pod, on the pinned node")
+		Eventually(func() string { return jsonpath("s3service", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
+			WithTimeout(2 * time.Minute).Should(Equal("True"))
+		s3RoundTrip("e2e-s3client2", "us-east-1")
+
 		kubectl("delete", "s3service", "e2es3", "--wait=true", "--timeout=3m")
 		kubectl("annotate", "daospool", "e2es3", "daos.gluesys.com/destroy-approved=true", "--overwrite")
 		kubectl("delete", "daospool", "e2es3", "--wait=false")
