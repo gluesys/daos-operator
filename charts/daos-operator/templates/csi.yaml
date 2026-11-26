@@ -5,6 +5,15 @@
 {{- if and .Values.system.create (eq $sys .Values.system.name) (ne (.Values.system.spec.namespace | default "daos-system") $ns) }}
 {{- fail (printf "csi: the CSI node plugin reads ConfigMap %s-agent from the release namespace %q, but the operator writes it into system.spec.namespace %q. Install the release into %q (helm -n %s), or set system.spec.namespace to %q." $sys $ns (.Values.system.spec.namespace | default "daos-system") (.Values.system.spec.namespace | default "daos-system") (.Values.system.spec.namespace | default "daos-system") $ns) }}
 {{- end }}
+{{- $mm := .Values.csi.mountMode | default "process" }}
+{{- if not (has $mm (list "process" "pod")) }}
+{{- fail (printf "csi.mountMode must be process or pod, not %q" $mm) }}
+{{- end }}
+{{- $mp := .Values.csi.mountPod | default dict }}
+{{- if and (eq $mm "pod") .Values.system.create (eq $sys .Values.system.name) (not ((.Values.system.spec.clientAgent | default dict).enabled)) }}
+{{- fail "csi.mountMode pod runs dfuse in mount pods that use the node agent: enable system.spec.clientAgent (with a nodeSelector covering csi.nodeSelector)" }}
+{{- end }}
+{{- $agentDir := $mp.agentSocketHostPath | default ((.Values.system.spec.clientAgent | default dict).hostSocketDir) | default (printf "/var/run/daos-operator/agent/%s" $sys) }}
 {{- $img := printf "%s:%s" .Values.csi.image.repository (include "daos-operator.tag" (list .Values.csi.image.tag .Chart.AppVersion "csi.image.tag")) }}
 # exastor/daos-csi (deploy/ mirrored as templates). One CSI deployment per DaosSystem:
 # the node DaemonSet's daos_agent sidecar reads <system>-agent, so csi.system must
@@ -112,6 +121,28 @@ metadata:
 roleRef: {apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: daos-csi-node}
 subjects:
   - {kind: ServiceAccount, name: daos-csi-node, namespace: {{ $ns }}}
+{{- if eq $mm "pod" }}
+---
+# mount pods (ADR-csi-002): the node plugin creates and deletes them in its own namespace only
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: daos-csi-node-mount
+  namespace: {{ $ns }}
+rules:
+  - apiGroups: [""]
+    resources: [pods]
+    verbs: [get, list, watch, create, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: daos-csi-node-mount
+  namespace: {{ $ns }}
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: daos-csi-node-mount}
+subjects:
+  - {kind: ServiceAccount, name: daos-csi-node, namespace: {{ $ns }}}
+{{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -257,6 +288,8 @@ spec:
       {{- end }}
       tolerations:
         {{- toYaml .Values.csi.tolerations | nindent 8 }}
+      {{- if eq $mm "process" }}
+      # dfuse runs in this pod and asks this agent; in pod mode the mount pods use the node agent
       initContainers:
         - name: agent
           image: {{ .Values.csi.agentImage | default .Values.system.spec.images.agent }}
@@ -270,6 +303,7 @@ spec:
             {{- if .Values.csi.tls }}
             - {name: certs-agent, mountPath: /etc/daos/certs, readOnly: true}
             {{- end }}
+      {{- end }}
       containers:
         - name: registrar
           image: {{ .Values.csi.sidecars.registrar }}
@@ -283,15 +317,23 @@ spec:
           args: ["--mode=node", "--endpoint=unix:///csi/csi.sock", "--node-id=$(NODE_ID)", "--staging-dir=/var/lib/daos-csi", "--kubelet-dir={{ .Values.csi.kubeletDir }}", "--driver-name={{ .Values.csi.driverName }}", "--v=2"
             {{- $dfuse := .Values.csi.dfuseArgs | default list }}
             {{- if .Values.csi.multiUser }}{{ $dfuse = prepend $dfuse "--multi-user" | uniq }}{{ end }}
-            {{- with $dfuse }}, {{ printf "--dfuse-args=%s" (join "," .) | quote }}{{ end }}]
+            {{- with $dfuse }}, {{ printf "--dfuse-args=%s" (join "," .) | quote }}{{ end }}
+            {{- if eq $mm "pod" }}, "--mount-mode=pod", "--mount-namespace={{ $ns }}", {{ printf "--mount-image=%s" ($mp.image | default .Values.system.spec.images.client) | quote }}, {{ printf "--mount-agent-dir=%s" $agentDir | quote }}, {{ printf "--mount-priority-class=%s" ($mp.priorityClassName | default "system-node-critical") | quote }}
+            {{- with $mp.memory }}, {{ printf "--mount-memory=%s" . | quote }}{{ end }}
+            {{- with .Values.imagePullSecrets }}{{ $names := list }}{{ range . }}{{ $names = append $names (.name | default .) }}{{ end }}, {{ printf "--mount-pull-secrets=%s" (join "," $names) | quote }}{{ end }}
+            {{- end }}]
           env:
             - name: NODE_ID
               valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            {{- if eq $mm "process" }}
             - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
+            {{- end }}
           securityContext: {privileged: true}
           volumeMounts:
             - {name: socket, mountPath: /csi}
+            {{- if eq $mm "process" }}
             - {name: agentsock, mountPath: /var/run/daos_agent}
+            {{- end }}
             - {name: kubelet, mountPath: {{ .Values.csi.kubeletDir }}, mountPropagation: Bidirectional}
             - {name: staging, mountPath: /var/lib/daos-csi, mountPropagation: Bidirectional}
             - {name: dev, mountPath: /dev}

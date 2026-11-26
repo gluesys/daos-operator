@@ -124,10 +124,29 @@ csi:
   multiUser: false
   # extra dfuse flags for every volume on the node plugin (daos-csi --dfuse-args), e.g. [--disable-caching]
   dfuseArgs: []
+  # Where dfuse runs (daos-csi ADR-csi-002).
+  #   process: inside the node plugin. A plugin restart or upgrade cuts the DAOS volumes of the
+  #            pods running on that node until those pods are recreated.
+  #   pod:     one mount pod (daos-mnt-*) per volume and node in the release namespace. A plugin
+  #            restart or upgrade leaves running pods and their open files alone. Needs the node
+  #            agent: system.spec.clientAgent enabled on every node the plugin runs on
+  #            (csi.nodeSelector). Replacing the mount pods themselves (a new client image)
+  #            still means draining the node.
+  # Switching between the two cuts the volumes on each node once: drain first.
+  mountMode: process
+  mountPod:
+    image: ""                 # defaults to system.spec.images.client
+    # node agent socket dir; defaults to spec.clientAgent's for csi.system
+    # (/var/run/daos-operator/agent/<system>)
+    agentSocketHostPath: ""
+    # memory request = limit; empty = 256Mi plus 40Mi for each --eq-count above 1 in dfuseArgs
+    memory: ""
+    priorityClassName: system-node-critical
   # node plugin DaemonSet update strategy. OnDelete lets the operator of the cluster choose when
-  # each node's plugin restarts: a restart cuts the DAOS volumes of the pods running on that node
-  # (their mounts do not come back until the pods are recreated), so drain those pods, then delete
-  # the plugin pod. The default restarts one node at a time as soon as the DaemonSet changes.
+  # each node's plugin restarts: with mountMode process a restart cuts the DAOS volumes of the
+  # pods running on that node (their mounts do not come back until the pods are recreated), so
+  # drain those pods, then delete the plugin pod. With mountMode pod a restart does not touch the
+  # mounts. The default restarts one node at a time as soon as the DaemonSet changes.
   # With type: OnDelete, rollingUpdate is ignored.
   nodeUpdateStrategy:
     type: RollingUpdate

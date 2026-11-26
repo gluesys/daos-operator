@@ -85,6 +85,31 @@ for bad in Ondelete '""'; do
         echo "FAIL  csi updateStrategy type $bad was not refused"; fail=1
     fi
 done
+# csi.mountMode (daos-csi ADR-csi-002): pod passes the mount pod flags and a namespaced Role and
+# drops the node plugin's agent sidecar; process (the default) renders none of that; pod without
+# the node agent, and a mode that is neither, are refused with their own message.
+if grep -q 'mountMode' "$chart/templates/csi.yaml"; then
+    mp=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-mountpod-values.yaml" 2>&1 | python3 -c 'import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+ds = [d for d in docs if d["kind"] == "DaemonSet" and d["metadata"]["name"] == "daos-csi-node"][0]["spec"]["template"]["spec"]
+args = " ".join([c for c in ds["containers"] if c["name"] == "daos-csi"][0]["args"])
+role = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "daos-csi-node-mount"]
+ok = ("--mount-mode=pod" in args and "--mount-agent-dir=/var/run/daos-operator/agent/daos" in args
+      and "--mount-namespace=daos-system" in args and "--mount-image=" in args and not ds.get("initContainers")
+      and role and set(role[0]["rules"][0]["verbs"]) >= {"create", "delete", "get", "list"})
+print("ok" if ok else "bad: " + args)' 2>&1)
+    if [ "$mp" = ok ]; then echo "ok    csi mountMode pod renders mount pod flags and Role"; else echo "FAIL  csi mountMode pod: $mp"; fail=1; fi
+    if helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" 2>&1 | grep -q -e '--mount-mode' -e 'daos-csi-node-mount'; then
+        echo "FAIL  csi mountMode process (default) renders mount pod settings"; fail=1
+    else
+        echo "ok    csi mountMode process renders no mount pod settings"
+    fi
+    for case in "csi.mountMode=pod --set system.spec.clientAgent.enabled=false|enable system.spec.clientAgent" "csi.mountMode=Pod|must be process or pod"; do
+        set_="${case%%|*}"; want="${case#*|}"
+        refusal=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set $set_ 2>&1 || true)
+        if grep -q "$want" <<<"$refusal"; then echo "ok    csi $set_ refused"; else echo "FAIL  csi $set_ was not refused"; fail=1; fi
+    done
+fi
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
 # as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
 if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
