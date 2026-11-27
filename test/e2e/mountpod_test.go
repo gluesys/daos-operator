@@ -69,8 +69,8 @@ func mountPodCase() {
 	run("helm", "upgrade", release, filepath.Join(repoRoot, "charts", "daos-operator"), "-n", ns, "--reuse-values",
 		"--set", "csi.mountMode=pod", "--set-json", "system.spec.clientAgent="+string(agent))
 	Eventually(func() string { return condStatus("ClientAgent") }).WithTimeout(5 * time.Minute).Should(Equal("True"))
-	ds := kubectl("get", "daemonset", "-l", mpPluginSel, "-o", "jsonpath={.items[0].metadata.name}")
-	Expect(ds).NotTo(BeEmpty(), "no CSI node plugin DaemonSet")
+	// the chart's fixed name; the DaemonSet's own labels differ from its pods' (mpPluginSel)
+	const ds = "daos-csi-node"
 	kubectl("rollout", "status", "daemonset/"+ds, "--timeout=5m")
 	Expect(jsonpath("daemonset", ds, ".spec.template.spec.containers[*].args")).To(ContainSubstring("--mount-mode=pod"))
 
