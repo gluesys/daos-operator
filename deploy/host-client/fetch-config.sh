@@ -11,7 +11,8 @@
 # Run it where kubectl reaches the cluster, then copy the output directory to
 # /etc/daos on each node (certs/ keeps mode 0700, the key 0400, owner daos_agent).
 #
-# The output directory is replaced as a whole and only by a complete set: everything
+# The output directory must be the script's own (it refuses one that holds other files).
+# It is replaced as a whole and only by a complete set: everything
 # is fetched into a private directory next to it first. A run that fails, while
 # fetching or while putting the new set in place, leaves the previous output as it
 # was, so a config never ends up next to the certificates of another fetch.
@@ -22,6 +23,19 @@ out=${3:-./daos-client-$sys}
 kubectl=${KUBECTL:-kubectl}
 
 out=${out%/}
+# The output directory is this script's own: it is replaced as a whole, so anything else kept
+# in it would be gone after a successful run. Refuse before touching anything.
+if [ -e "$out" ]; then
+    [ -d "$out" ] || { echo "$out exists and is not a directory" >&2; exit 1; }
+    extra=$(cd "$out" && find . -mindepth 1 ! -path ./daos_agent.yml ! -path ./certs \
+        ! -path ./certs/daosCA.crt ! -path ./certs/agent.crt ! -path ./certs/agent.key | head -5)
+    if [ -n "$extra" ]; then
+        echo "$out holds files this script did not write:" >&2
+        echo "$extra" | sed 's/^/  /' >&2
+        echo "It replaces its output directory as a whole. Give it a directory of its own." >&2
+        exit 1
+    fi
+fi
 mkdir -p "$(dirname "$out")"
 umask 077
 stage=$(mktemp -d "$out.fetch.XXXXXX")

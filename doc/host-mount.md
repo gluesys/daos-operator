@@ -151,8 +151,9 @@ are node addresses and work from outside the cluster as they are.
 The unit follows the rules of section 2: stale mount detached first, dfuse restarted
 after 2 seconds, nothing restarted because the mount is slow. It has no start limit:
 while the servers, the agent or the container are away it keeps trying every 2 seconds
-and mounts by itself once they are back. `fetch-config.sh` replaces its output
-directory as a whole, and only with a complete set.
+and mounts by itself once they are back. `fetch-config.sh` wants an output directory
+of its own: it replaces the directory as a whole, only with a complete set, and refuses
+one that holds other files.
 
 ## 6. Measured
 

@@ -322,6 +322,18 @@ STUB
         echo "FAIL  fetch-config twice:"; cat "$t/1.log" "$t/2.log" | sed 's/^/    /' | head -8; fail=1
     fi
     before=$(sum)
+    # a file of someone else's in the output directory would be deleted by a successful run:
+    # refused before anything changes
+    mkdir "$t/out/dfuse"; echo "POOL=bai" > "$t/out/dfuse/vfroot.conf"
+    if GEN=9 fc > "$t/9.log" 2>&1; then
+        echo "FAIL  fetch-config: ran over a directory holding other files"; fail=1
+    elif [ "$(cat "$t/out/dfuse/vfroot.conf")" = "POOL=bai" ] && [ "$(sum)" = "$before" ] \
+          && grep -q 'dfuse/vfroot.conf' "$t/9.log" && [ -z "$(ls -d "$t"/out.* 2>/dev/null)" ]; then
+        echo "ok    fetch-config refuses an output directory holding other files, and changes nothing"
+    else
+        echo "FAIL  fetch-config: other files in the output directory"; sed 's/^/    /' "$t/9.log" | head -5; fail=1
+    fi
+    rm -rf "$t/out/dfuse"
     for failon in agent.crt agent.key; do
         if GEN=3 FAIL_ON=$failon fc > "$t/3.log" 2>&1; then
             echo "FAIL  fetch-config: exit 0 although the Secret read of $failon failed"; fail=1
