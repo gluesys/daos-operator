@@ -85,6 +85,44 @@ for bad in Ondelete '""'; do
         echo "FAIL  csi updateStrategy type $bad was not refused"; fail=1
     fi
 done
+# csi.mountMode (daos-csi ADR-csi-002): pod passes the mount pod flags and a namespaced Role and
+# drops the node plugin's agent sidecar; process (the default) renders none of that; pod without
+# the node agent, and a mode that is neither, are refused with their own message.
+if grep -q 'mountMode' "$chart/templates/csi.yaml"; then
+    mp=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-mountpod-values.yaml" 2>&1 | python3 -c 'import sys, yaml
+docs = [d for d in yaml.safe_load_all(sys.stdin) if d]
+ds = [d for d in docs if d["kind"] == "DaemonSet" and d["metadata"]["name"] == "daos-csi-node"][0]["spec"]["template"]["spec"]
+args = " ".join([c for c in ds["containers"] if c["name"] == "daos-csi"][0]["args"])
+role = [d for d in docs if d["kind"] == "Role" and d["metadata"]["name"] == "daos-csi-node-mount"]
+ok = ("--mount-mode=pod" in args and "--mount-agent-dir=/var/run/daos-operator/agent/daos" in args
+      and "--mount-namespace=daos-system" in args and "--mount-image=" in args and not ds.get("initContainers")
+      and role and set(role[0]["rules"][0]["verbs"]) >= {"create", "delete", "get", "list"}
+      and [c for c in ds["containers"] if c["name"] == "daos-csi"][0]["image"].endswith(":mount-pod"))
+print("ok" if ok else "bad: " + args)' 2>&1)
+    if [ "$mp" = ok ]; then echo "ok    csi mountMode pod renders mount pod flags and Role"; else echo "FAIL  csi mountMode pod: $mp"; fail=1; fi
+    if helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" 2>&1 | grep -q -e '--mount-mode' -e 'daos-csi-node-mount'; then
+        echo "FAIL  csi mountMode process (default) renders mount pod settings"; fail=1
+    else
+        echo "ok    csi mountMode process renders no mount pod settings"
+    fi
+    # the mount pods' agent socket is that of csi.system: this release's clientAgent.hostSocketDir
+    # only for its own system; another system's default path, unless mountPod.agentSocketHostPath
+    agentdir() { helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-mountpod-values.yaml" \
+        --set system.spec.clientAgent.hostSocketDir=/run/daos-local "$@" --show-only templates/csi.yaml 2>&1 |
+        grep -o -e '--mount-agent-dir=[^"]*' | head -1; }
+    for case in "|--mount-agent-dir=/run/daos-local" \
+                "--set csi.system=other|--mount-agent-dir=/var/run/daos-operator/agent/other" \
+                "--set csi.system=other --set csi.mountPod.agentSocketHostPath=/run/other|--mount-agent-dir=/run/other"; do
+        args="${case%%|*}"; want="${case#*|}"; got=$(agentdir $args)
+        if [ "$got" = "$want" ]; then echo "ok    csi mount agent dir ${args:-own system}"; else echo "FAIL  csi mount agent dir ${args:-own system}: $got, want $want"; fail=1; fi
+    done
+    for case in "csi.mountMode=pod --set system.spec.clientAgent.enabled=false --set csi.image.tag=x|enable system.spec.clientAgent" "csi.mountMode=Pod|must be process or pod" \
+                "csi.mountMode=pod --set system.spec.clientAgent.enabled=true|needs a daos-csi image with --mount-mode"; do
+        set_="${case%%|*}"; want="${case#*|}"
+        refusal=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set $set_ 2>&1 || true)
+        if grep -q "$want" <<<"$refusal"; then echo "ok    csi $set_ refused"; else echo "FAIL  csi $set_ was not refused"; fail=1; fi
+    done
+fi
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
 # as "%!s(float64=...)" (daos-operator MR !8, 2026-10-03). Only once the chart has the guard.
 if grep -q 'daos-operator.tag' "$chart/templates/_helpers.tpl"; then
