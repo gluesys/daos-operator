@@ -245,6 +245,34 @@ pools: []
 #      reclaimPolicy: Delete
 #      parameters: {oclass: RP_2GX, dirOclass: RP_2G1}   # "pool" is always this entry
 
+# dfuse mounts on the nodes themselves (doc/host-mount.md): one DaemonSet per entry mounts one
+# POSIX container at hostPath on every selected node. For software that takes a host directory
+# rather than a PVC: Backend.AI (the vfolder mount on the storage-proxy and agent nodes), Slurm,
+# plain Docker. Pods should keep using the CSI driver. Each node needs the node agent
+# (system.spec.clientAgent), and the container must exist before the mount comes up (a
+# DaosContainer, or `daos cont create`); until then the pod waits, not ready.
+# The DaemonSets default to updateStrategy OnDelete: restarting dfuse replaces the mount, and
+# whatever bound the old one keeps a dead mount (ENOTCONN) until it is restarted itself. Change a
+# value, then drain a node's consumers and delete its pod.
+hostMounts: []
+#  - name: vfroot               # DaemonSet <release>-hostmount-<name>
+#    pool: bai                  # pool label or UUID
+#    container: vfroot          # container label or UUID
+#    hostPath: /vfroot/daos     # mount point on the node; needs a parent directory below /
+#    systemName: ""             # DAOS system name; default system.spec.systemName when system.create
+#    multiUser: true            # dfuse --multi-user: other UIDs may use the mount and own what they
+#                               # create. false: only root sees the mount
+#    dfuseArgs: []              # extra dfuse flags, e.g. [--thread-count=16, --eq-count=4]
+#    image: ""                  # defaults to system.spec.images.client
+#    agentSocketHostPath: ""    # node agent socket dir; default as for vllm.services[] below
+#    nodeSelector: {}           # nodes that get the mount (default: all)
+#    tolerations: []
+#    updateStrategy: {type: OnDelete}   # or RollingUpdate with maxUnavailable; maxSurge must stay 0
+#    priorityClassName: system-node-critical
+#    resources:                 # no memory limit by default: an OOM kill cuts every consumer
+#      requests: {cpu: 100m, memory: 256Mi}
+#    extraEnv: []
+
 # vLLM serving with LMCache writing its KV cache to a DAOS container.
 # This is a reference workload for PoCs, demos and tests -- not part of the storage
 # layer and not a way to run inference in production. It is here so a GPU cluster

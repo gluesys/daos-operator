@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Gluesys Co., Ltd.
+#
+# dfuse mount of one DAOS POSIX container on a node that is not in the Kubernetes
+# cluster (doc/host-mount.md, "Nodes outside Kubernetes"). The instance name picks
+# /etc/daos/dfuse/<instance>.conf:
+#
+#   POOL=bai                    pool label or UUID
+#   CONTAINER=vfroot            container label or UUID
+#   MOUNTPOINT=/vfroot/daos
+#   DFUSE_ARGS=--multi-user     optional; add --sys-name=<name> when it is not daos_server
+#
+#   systemctl enable --now daos-dfuse@vfroot
+#
+# Same rules as the chart's hostMounts: a stale mount is detached before mounting,
+# dfuse is started again 2 s after it exits, for as long as it takes, and nothing here
+# restarts it because the mount is slow -- during a server outage dfuse has to stay up
+# for its users to continue.
+[Unit]
+Description=DAOS dfuse mount (%i)
+Documentation=https://github.com/gluesys/daos-operator/blob/main/doc/host-mount.md
+Wants=network-online.target daos_agent.service
+After=network-online.target daos_agent.service
+# no start limit: while the servers, the agent or the container are away dfuse fails to start
+# over and over, and a unit that hit a limit would stay down after they are back
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/daos/dfuse/%i.conf
+# a dfuse that was killed leaves a dead mount (ENOTCONN) that must go before the next one
+ExecStartPre=/bin/sh -c 'n=0; while findmnt -rn -t fuse.daos -o TARGET | grep -qxF "$MOUNTPOINT"; do umount -l "$MOUNTPOINT" || exit 1; n=$((n+1)); [ $n -lt 16 ] || exit 1; done; mkdir -p "$MOUNTPOINT"'
+ExecStart=/usr/bin/dfuse --foreground --pool=${POOL} --container=${CONTAINER} $DFUSE_ARGS ${MOUNTPOINT}
+ExecStopPost=/bin/sh -c 'while findmnt -rn -t fuse.daos -o TARGET | grep -qxF "$MOUNTPOINT"; do umount -l "$MOUNTPOINT" || exit 0; done'
+Restart=always
+RestartSec=2
+# only dfuse: processes that use the mount do not belong to this unit
+KillMode=process
+TimeoutStopSec=60
+LimitMEMLOCK=infinity
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
