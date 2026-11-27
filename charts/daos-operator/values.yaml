@@ -406,7 +406,7 @@ s3:
   #    # tolerations: []
   #    # resources: {}
   #    # extraEnv: []
-  #    # versitygw 1.11 images (vgwe55bb1c7 and later) refuse SSE-C over plain HTTP. Without
+  #    # versitygw 1.11 images (vgw377a97ab and later) refuse SSE-C over plain HTTP. Without
   #    # tlsSecretName, allow it explicitly if clients use SSE-C (the key then crosses the wire
   #    # in clear text, so prefer tlsSecretName):
   #    # extraEnv:
