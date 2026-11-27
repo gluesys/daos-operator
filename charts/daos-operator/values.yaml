@@ -250,7 +250,7 @@ pools: []
 # rather than a PVC: Backend.AI (the vfolder mount on the storage-proxy and agent nodes), Slurm,
 # plain Docker. Pods should keep using the CSI driver. Each node needs the node agent
 # (system.spec.clientAgent), and the container must exist before the mount comes up (a
-# DaosContainer, or `daos cont create`); until then the pod restarts and stays not ready.
+# DaosContainer, or `daos cont create`); until then the pod waits, not ready.
 # The DaemonSets default to updateStrategy OnDelete: restarting dfuse replaces the mount, and
 # whatever bound the old one keeps a dead mount (ENOTCONN) until it is restarted itself. Change a
 # value, then drain a node's consumers and delete its pod.
