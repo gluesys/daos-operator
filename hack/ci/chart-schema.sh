@@ -331,5 +331,30 @@ STUB
             echo "FAIL  fetch-config: previous set changed after a failed read of $failon"; ls -la "$t" "$t/out" | sed 's/^/    /' | head -12; fail=1
         fi
     done
+    # everything fetched, but the new set cannot be put in place: the previous one must come back.
+    # mv stub: fails when it is asked to move a directory whose name matches $MV_FAIL
+    mkdir -p "$t/bin"; realmv=$(command -v mv)
+    printf '%s\n' '#!/bin/sh' \
+        'for pat in $MV_FAIL; do case "$1" in *"$pat"*) echo "mv: stub failure on $1" >&2; exit 1;; esac; done' \
+        "exec $realmv \"\$@\"" > "$t/bin/mv"
+    chmod +x "$t/bin/mv"
+    if GEN=4 MV_FAIL=".fetch." PATH="$t/bin:$PATH" fc > "$t/4.log" 2>&1; then
+        echo "FAIL  fetch-config: exit 0 although the new set could not be put in place"; fail=1
+    elif [ "$(sum)" = "$before" ] && [ -z "$(ls -d "$t"/out.* 2>/dev/null)" ] && grep -q 'previous output is back in place' "$t/4.log"; then
+        echo "ok    fetch-config: a failed publish puts the previous set back"
+    else
+        echo "FAIL  fetch-config: previous set lost after a failed publish"; sed 's/^/    /' "$t/4.log" | head -5; ls -la "$t" | sed 's/^/    /' | head -8; fail=1
+    fi
+    # and when even that fails, the previous set is kept where it is and the path is printed
+    if GEN=5 MV_FAIL=".fetch. /prev" PATH="$t/bin:$PATH" fc > "$t/5.log" 2>&1; then
+        echo "FAIL  fetch-config: exit 0 although nothing could be moved"; fail=1
+    else
+        kept=$(sed -n 's/.*it is in \(.*\)$/\1/p' "$t/5.log")
+        if [ -n "$kept" ] && [ "$(cd "$kept" && cat daos_agent.yml certs/daosCA.crt certs/agent.crt certs/agent.key | cksum)" = "$before" ]; then
+            echo "ok    fetch-config: when the previous set cannot go back it is kept and its path printed"
+        else
+            echo "FAIL  fetch-config: previous set not kept after a failed restore"; sed 's/^/    /' "$t/5.log" | head -5; fail=1
+        fi
+    fi
 fi
 exit $fail

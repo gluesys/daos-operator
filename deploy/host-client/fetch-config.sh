@@ -12,9 +12,9 @@
 # /etc/daos on each node (certs/ keeps mode 0700, the key 0400, owner daos_agent).
 #
 # The output directory is replaced as a whole and only by a complete set: everything
-# is fetched into a private directory next to it first. A run that fails half way
-# leaves the previous output as it was, so a config never ends up next to the
-# certificates of another fetch.
+# is fetched into a private directory next to it first. A run that fails, while
+# fetching or while putting the new set in place, leaves the previous output as it
+# was, so a config never ends up next to the certificates of another fetch.
 set -euo pipefail
 sys=${1:?usage: fetch-config.sh <DaosSystem name> [namespace] [output dir]}
 ns=${2:-daos-system}
@@ -25,8 +25,7 @@ out=${out%/}
 mkdir -p "$(dirname "$out")"
 umask 077
 stage=$(mktemp -d "$out.fetch.XXXXXX")
-old=
-trap 'rm -rf "$stage" ${old:+"$old"}' EXIT
+trap 'rm -rf "$stage"' EXIT
 
 $kubectl -n "$ns" get configmap "$sys-agent" -o 'jsonpath={.data.daos_agent\.yml}' > "$stage/daos_agent.yml"
 [ -s "$stage/daos_agent.yml" ] || { echo "ConfigMap $ns/$sys-agent has no daos_agent.yml" >&2; exit 1; }
@@ -43,12 +42,25 @@ if grep -q 'allow_insecure: false' "$stage/daos_agent.yml"; then
 fi
 chmod 0644 "$stage/daos_agent.yml"; chmod 0755 "$stage"
 
-# publish: the complete set takes the place of the old one
+# publish: the complete set takes the place of the old one. The old one is kept aside until
+# the new one is in place, and goes back if that fails.
+old=
 if [ -e "$out" ]; then
     old=$(mktemp -d "$out.old.XXXXXX")
-    mv "$out" "$old/"
+    mv "$out" "$old/prev"
 fi
-mv "$stage" "$out"
+if ! mv "$stage" "$out"; then
+    if [ -z "$old" ]; then
+        echo "could not write $out" >&2
+    elif mv "$old/prev" "$out"; then
+        rmdir "$old"
+        echo "could not replace $out: the previous output is back in place" >&2
+    else
+        echo "could not replace $out, and could not put the previous output back: it is in $old/prev" >&2
+    fi
+    exit 1
+fi
+[ -z "$old" ] || rm -rf "$old"
 
 echo "wrote $out/daos_agent.yml"
 if [ $tls = yes ]; then
