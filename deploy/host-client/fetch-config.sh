@@ -27,8 +27,10 @@ out=${out%/}
 # in it would be gone after a successful run. Refuse before touching anything.
 if [ -e "$out" ]; then
     [ -d "$out" ] || { echo "$out exists and is not a directory" >&2; exit 1; }
-    extra=$(cd "$out" && find . -mindepth 1 ! -path ./daos_agent.yml ! -path ./certs \
-        ! -path ./certs/daosCA.crt ! -path ./certs/agent.crt ! -path ./certs/agent.key | head -5)
+    # by name and by kind: a regular file called certs, or a link, is not ours either
+    extra=$(cd "$out" && find . -mindepth 1 ! \( -path ./daos_agent.yml -type f \) ! \( -path ./certs -type d \) \
+        ! \( -path ./certs/daosCA.crt -type f \) ! \( -path ./certs/agent.crt -type f \) \
+        ! \( -path ./certs/agent.key -type f \) | head -5)
     if [ -n "$extra" ]; then
         echo "$out holds files this script did not write:" >&2
         echo "$extra" | sed 's/^/  /' >&2

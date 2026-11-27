@@ -334,6 +334,15 @@ STUB
         echo "FAIL  fetch-config: other files in the output directory"; sed 's/^/    /' "$t/9.log" | head -5; fail=1
     fi
     rm -rf "$t/out/dfuse"
+    # the same for an entry with one of our names but of another kind
+    mkdir "$t/odd"; echo "name: x" > "$t/odd/daos_agent.yml"; echo keep > "$t/odd/certs"
+    if KUBECTL="$t/kubectl" GEN=9 "$repo/deploy/host-client/fetch-config.sh" daos daos-system "$t/odd" > "$t/10.log" 2>&1; then
+        echo "FAIL  fetch-config: ran over a directory where certs is a file"; fail=1
+    elif [ "$(cat "$t/odd/certs")" = keep ] && [ "$(cat "$t/odd/daos_agent.yml")" = "name: x" ] && grep -q '\./certs' "$t/10.log"; then
+        echo "ok    fetch-config refuses an entry with one of its names but of another kind"
+    else
+        echo "FAIL  fetch-config: certs as a file"; sed 's/^/    /' "$t/10.log" | head -5; fail=1
+    fi
     for failon in agent.crt agent.key; do
         if GEN=3 FAIL_ON=$failon fc > "$t/3.log" 2>&1; then
             echo "FAIL  fetch-config: exit 0 although the Secret read of $failon failed"; fail=1
