@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -20,7 +21,40 @@ import (
 const (
 	mpPluginSel = "app.kubernetes.io/name=daos-csi,app.kubernetes.io/component=node"
 	mpMountSel  = "csi.daos.gluesys.com/mount-pod=true"
+	// The writer ticks every 0.2 s. A node plugin restart takes several seconds, so a mount that
+	// depended on the plugin would stall the writes for longer than this.
+	mpMaxWriteGap = 3 * time.Second
 )
+
+var okLineRe = regexp.MustCompile(`(?m)^(\S+) OK (\d+)$`)
+
+// maxWriteGap reads `kubectl logs --timestamps` of the writer and returns the longest time
+// between consecutive OK lines whose numbers are within [from, to], and the last OK number.
+func maxWriteGap(logs string, from, to int) (time.Duration, int) {
+	var gap time.Duration
+	var prev time.Time
+	last := 0
+	for _, m := range okLineRe.FindAllStringSubmatch(logs, -1) {
+		at, err := time.Parse(time.RFC3339Nano, m[1])
+		if err != nil {
+			continue
+		}
+		n, _ := strconv.Atoi(m[2])
+		last = n
+		if n < from || n > to {
+			prev = time.Time{}
+			if n < from {
+				prev = at
+			}
+			continue
+		}
+		if !prev.IsZero() && at.Sub(prev) > gap {
+			gap = at.Sub(prev)
+		}
+		prev = at
+	}
+	return gap, last
+}
 
 // mountPodCase is Tier 1 case 16 (daos-csi ADR-csi-002): with csi.mountMode pod, dfuse runs in a
 // mount pod per volume, so a node plugin restart must not touch a volume a pod is writing to.
@@ -101,9 +135,13 @@ exec 3>&-; sha256sum /data/long.dat; echo STOPPED`))
 		"-o", "jsonpath={.items[0].metadata.ownerReferences[0].kind}/{.items[0].metadata.ownerReferences[0].name}")).
 		To(Equal("Node/"+node), "the mount pod belongs to its node (drain evicts it, node removal collects it)")
 
-	okRe := regexp.MustCompile(`(?m)^OK (\d+)$`)
-	oks := func() int { return len(okRe.FindAllString(kubectl("logs", "e2e-mp-writer"), -1)) }
-	Eventually(oks).WithTimeout(time.Minute).Should(BeNumerically(">", 20))
+	// the last OK the writer logged; the gaps between OKs come from kubelet's log timestamps
+	// (one clock, the node's)
+	lastOK := func() int {
+		_, last := maxWriteGap(kubectl("logs", "--timestamps", "e2e-mp-writer"), 0, 1<<30)
+		return last
+	}
+	Eventually(lastOK).WithTimeout(time.Minute).Should(BeNumerically(">", 20))
 
 	pluginReady := func() string {
 		return kubectl("get", "pod", "-l", mpPluginSel, "--field-selector", "spec.nodeName="+node,
@@ -118,14 +156,19 @@ exec 3>&-; sha256sum /data/long.dat; echo STOPPED`))
 	for _, how := range []string{"delete", "rollout restart"} {
 		By("restarting the node plugin under the writer: " + how)
 		old := strings.Fields(pluginReady())[0]
-		n := oks()
+		from := lastOK()
 		if how == "delete" {
 			kubectl("delete", "pod", old, "--wait=true", "--timeout=3m")
 		} else {
 			kubectl("rollout", "restart", "daemonset/"+ds)
 		}
 		Eventually(restarted(old)).WithTimeout(5*time.Minute).Should(BeTrue(), "node plugin on %s did not come back", node)
-		Eventually(oks).WithTimeout(time.Minute).Should(BeNumerically(">", n+20), "the writer stalled after the plugin restart")
+		to := lastOK() + 20
+		Eventually(lastOK).WithTimeout(time.Minute).Should(BeNumerically(">=", to), "the writer stalled after the plugin restart")
+		// Not only "it went on afterwards": a pause while the plugin was away would pass that.
+		gap, _ := maxWriteGap(kubectl("logs", "--timestamps", "e2e-mp-writer"), from, to)
+		Expect(gap).To(BeNumerically("<", mpMaxWriteGap), "the writes paused %s while the plugin restarted (%s)", gap, how)
+		AddReportEntry("longest write gap across a plugin "+how, gap.String())
 		Expect(mountPod()).To(Equal(before), "the mount pod must outlive the plugin (same UID, no restart)")
 		Expect(kubectl("logs", "e2e-mp-writer")).NotTo(ContainSubstring("ERR"))
 	}
