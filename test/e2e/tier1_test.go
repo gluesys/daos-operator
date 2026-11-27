@@ -168,7 +168,7 @@ spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		// DAOS 2.8 engine in vos_fetch_begin. The plain 2.8.0-20260923 image reproduced that crash here
 		// twice (2026-10-03) and must not be used; -fix28 and every build of the fork's
 		// feature/daos-backend since have the workaround, and this case catches a regression of it.
-		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261127-vgw377a97ab")
+		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261127-vgwe55bb1c7")
 		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
 kind: S3Service
 metadata: {name: e2es3}
