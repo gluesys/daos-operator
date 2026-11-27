@@ -25,3 +25,7 @@ spec:
     # Without a claim the S3 users and keys live in an emptyDir and are lost
     # when the pod restarts; the objects in DAOS are not affected.
     claimName: s3-iam
+  # No tlsSecretName, so the gateway serves plain HTTP, where versitygw 1.11 refuses SSE-C
+  # (customer-supplied keys) unless this is set. With tlsSecretName, drop it.
+  extraEnv:
+    - {name: VGW_DISABLE_SSE_C_TLS_ENFORCEMENT, value: "true"}

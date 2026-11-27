@@ -30,3 +30,6 @@ s3:
       region: kr-1
       serviceType: ClusterIP
       rootCredentialsSecret: s3root
+      # HTTP gateway: versitygw 1.11 refuses SSE-C over plain HTTP unless this is set
+      extraEnv:
+        - {name: VGW_DISABLE_SSE_C_TLS_ENFORCEMENT, value: "true"}
