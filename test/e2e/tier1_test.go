@@ -168,7 +168,7 @@ spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		// DAOS 2.8 engine in vos_fetch_begin. The plain 2.8.0-20260923 image reproduced that crash here
 		// twice (2026-10-03) and must not be used; -fix28 and every build of the fork's
 		// feature/daos-backend since have the workaround, and this case catches a regression of it.
-		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261127-vgw594c3dee")
+		image := envOr("E2E_S3_IMAGE", "registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261127-vgw377a97ab")
 		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
 kind: S3Service
 metadata: {name: e2es3}
@@ -185,7 +185,11 @@ ep=http://e2es3.` + ns + `.svc:7070; s3="aws --endpoint-url $ep s3"
 head -c 8388608 /dev/urandom > /tmp/obj; sha=$(sha256sum /tmp/obj | cut -d' ' -f1)
 $s3 mb s3://e2e; $s3 cp /tmp/obj s3://e2e/obj; $s3 ls s3://e2e | grep -q obj && echo LISTED
 $s3 cp s3://e2e/obj /tmp/back; [ "$(sha256sum /tmp/back | cut -d' ' -f1)" = "$sha" ] && echo S3_OK
-$s3 rm s3://e2e/obj; $s3 rb s3://e2e`
+head -c 32 /dev/urandom > /tmp/key; ssec="--sse-c AES256 --sse-c-key fileb:///tmp/key"
+$s3 cp /tmp/obj s3://e2e/enc $ssec; $s3 cp s3://e2e/enc /tmp/back2 $ssec
+[ "$(sha256sum /tmp/back2 | cut -d' ' -f1)" = "$sha" ] && echo SSEC_OK
+if $s3 cp s3://e2e/enc /tmp/nokey 2>/dev/null; then echo SSEC_NOKEY_READ; fi
+$s3 rm s3://e2e/enc; $s3 rm s3://e2e/obj; $s3 rb s3://e2e`
 			apply(fmt.Sprintf(`apiVersion: v1
 kind: Pod
 metadata: {name: %s}
@@ -197,6 +201,10 @@ spec:
 			logs := kubectl("logs", pod)
 			Expect(logs).To(ContainSubstring("LISTED"), logs)
 			Expect(logs).To(ContainSubstring("S3_OK"), logs)
+			// SSE-C over the plain-HTTP endpoint (versitygw 1.11 refuses it unless the operator
+			// lifts the TLS enforcement); the 8 MiB copy is a multipart upload in the CLI.
+			Expect(logs).To(ContainSubstring("SSEC_OK"), logs)
+			Expect(logs).NotTo(ContainSubstring("SSEC_NOKEY_READ"), logs)
 			kubectl("delete", "pod", pod, "--wait=false")
 		}
 		s3RoundTrip("e2e-s3client", "kr-1")
