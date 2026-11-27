@@ -172,7 +172,8 @@ spec: {systemRef: daos, size: ` + poolSize() + `, redundancyFactor: 0}`)
 		apply(fmt.Sprintf(`apiVersion: daos.gluesys.com/v1alpha1
 kind: S3Service
 metadata: {name: e2es3}
-spec: {poolRef: e2es3, image: %q, replicas: 1, port: 7070, region: kr-1, serviceType: ClusterIP, rootCredentialsSecret: e2e-s3root}`, image))
+spec: {poolRef: e2es3, image: %q, replicas: 1, port: 7070, region: kr-1, serviceType: ClusterIP, rootCredentialsSecret: e2e-s3root,
+  extraEnv: [{name: VGW_DISABLE_SSE_C_TLS_ENFORCEMENT, value: "true"}]}`, image))
 		Eventually(func() string { return jsonpath("s3service", "e2es3", `.status.conditions[?(@.type=="Ready")].status`) }).
 			WithTimeout(5 * time.Minute).Should(Equal("True"))
 		svc := jsonpath("s3service", "e2es3", ".status.endpoint")
@@ -201,8 +202,9 @@ spec:
 			logs := kubectl("logs", pod)
 			Expect(logs).To(ContainSubstring("LISTED"), logs)
 			Expect(logs).To(ContainSubstring("S3_OK"), logs)
-			// SSE-C over the plain-HTTP endpoint (versitygw 1.11 refuses it unless the operator
-			// lifts the TLS enforcement); the 8 MiB copy is a multipart upload in the CLI.
+			// SSE-C over the plain-HTTP endpoint: versitygw 1.11 refuses it unless the CR sets
+			// VGW_DISABLE_SSE_C_TLS_ENFORCEMENT in extraEnv (the operator never injects it, so an
+			// operator upgrade does not roll existing gateways). The 8 MiB copy is a multipart upload.
 			Expect(logs).To(ContainSubstring("SSEC_OK"), logs)
 			Expect(logs).NotTo(ContainSubstring("SSEC_NOKEY_READ"), logs)
 			kubectl("delete", "pod", pod, "--wait=false")

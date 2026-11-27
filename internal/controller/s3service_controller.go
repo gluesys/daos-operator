@@ -51,13 +51,10 @@ type S3ServiceReconciler struct {
 }
 
 const (
-	s3Container = "versitygw"
-	s3IAMDir    = "/var/lib/versitygw/iam"
-	s3TLSDir    = "/etc/versitygw/tls"
-
-	// sseCOverHTTPEnv is versitygw's env form of --disable-sse-c-tls-enforcement.
-	sseCOverHTTPEnv = "VGW_DISABLE_SSE_C_TLS_ENFORCEMENT"
-	s3RequeueWait   = 30 * time.Second
+	s3Container   = "versitygw"
+	s3IAMDir      = "/var/lib/versitygw/iam"
+	s3TLSDir      = "/etc/versitygw/tls"
+	s3RequeueWait = 30 * time.Second
 )
 
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=s3services,verbs=get;list;watch;create;update;patch;delete
@@ -304,14 +301,6 @@ func s3Env(svc *daosv1alpha1.S3Service) []corev1.EnvVar {
 			LocalObjectReference: corev1.LocalObjectReference{Name: sec}, Key: "accessKey"}}},
 		{Name: "ROOT_SECRET_ACCESS_KEY", ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: sec}, Key: "secretKey"}}},
-	}
-	if svc.Spec.TLSSecretName == "" {
-		// versitygw 1.11 refuses SSE-C (customer keys) over plain HTTP. A gateway without
-		// spec.tlsSecretName serves HTTP only, so SSE-C would always fail with 400; keep the
-		// behaviour of the earlier images. An env var rather than the
-		// --disable-sse-c-tls-enforcement flag: images before 1.11 ignore an unknown env var but
-		// fail to start on an unknown flag. spec.extraEnv comes later and can set it to false.
-		env = append(env, corev1.EnvVar{Name: sseCOverHTTPEnv, Value: "true"})
 	}
 	return append(env, svc.Spec.ExtraEnv...)
 }
