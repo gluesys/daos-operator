@@ -45,7 +45,7 @@ csi:
   enabled: true
   image:
     repository: registry.gitlab.gluesys.com/exastor/daos-csi/daos-csi
-    tag: 0327b22f  # main with the volume root owner (csi!7)
+    tag: 39d18a96  # main with mount pods (csi!10, clean stop csi!13), for case 16; volume root owner (csi!7)
   # dfuse --multi-user: account-UID pods may use the mount (FUSE allow_other) and the root
   # owner can be set; case 15 runs pods as UID 1001, as KISTI's 6th supercomputer does
   multiUser: true
