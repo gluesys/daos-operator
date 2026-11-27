@@ -41,7 +41,7 @@ Every selected node gets the same container at the same path.
 | `image` | `system.spec.images.client` | needs `dfuse`, `daos`, `findmnt`, `umount` |
 | `agentSocketHostPath` | the node agent of `system.name` | set it for another DaosSystem or an agent you run yourself |
 | `nodeSelector`, `tolerations` | all nodes, none | where the mount exists |
-| `updateStrategy` | `{type: OnDelete}` | see section 3 |
+| `updateStrategy` | `{type: OnDelete}` | see section 3. `RollingUpdate` takes `maxUnavailable` only: a surge pod would detach the mount the old pod still serves |
 | `resources` | requests 100m / 256Mi, no limit | a memory limit that kills dfuse cuts every user of the mount |
 
 The pod is privileged and on the host network. Privileged is what lets the mount
@@ -149,7 +149,10 @@ With servers on the host network (`placement: dedicated`) the access points in t
 are node addresses and work from outside the cluster as they are.
 
 The unit follows the rules of section 2: stale mount detached first, dfuse restarted
-after 2 seconds, nothing restarted because the mount is slow.
+after 2 seconds, nothing restarted because the mount is slow. It has no start limit:
+while the servers, the agent or the container are away it keeps trying every 2 seconds
+and mounts by itself once they are back. `fetch-config.sh` replaces its output
+directory as a whole, and only with a complete set.
 
 ## 6. Measured
 
@@ -188,7 +191,9 @@ Other checks in the same run:
 - Section 5: `fetch-config.sh` wrote the operator's `daos_agent.yml`; a `daos_agent`
   started on the host with that file served `daos container create` and a
   `daos-dfuse@` unit. The unit mounted in 1.2 s, came back 3.1 s after `kill -9` of its
-  dfuse, and left no mount behind on stop. The system allowed insecure transport, so the
+  dfuse, and left no mount behind on stop. With a stub in place of dfuse that exited at
+  once, the unit was at its tenth try after 22 s and mounted by itself, with no manual
+  start, once the stub stopped failing. The system allowed insecure transport, so the
   certificate branch of the script was not run. The node was a worker of the cluster as
   well; a node that is not has not been tried.
 

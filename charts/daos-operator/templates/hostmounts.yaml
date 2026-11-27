@@ -61,6 +61,11 @@ be interrupted during such an outage and each probe would leave a stuck process.
 {{- if hasKey . "multiUser" }}{{ $multiUser = .multiUser }}{{ end }}
 {{- $strategy := .updateStrategy | default (dict "type" "OnDelete") }}
 {{- if not (has $strategy.type (list "OnDelete" "RollingUpdate")) }}{{ fail (printf "hostMounts[%s].updateStrategy.type must be OnDelete or RollingUpdate, not %q" $name $strategy.type) }}{{ end }}
+{{- /* A surge pod starts on a node while the old pod still serves the mount there, and the first
+     thing it does is detach what is mounted at the path: it cannot tell the old pod's live mount
+     from a stale one. The old pod has to go first. */}}
+{{- $surge := ($strategy.rollingUpdate | default dict).maxSurge | default 0 | toString }}
+{{- if and (eq $strategy.type "RollingUpdate") (not (has $surge (list "0" "0%"))) }}{{ fail (printf "hostMounts[%s].updateStrategy.rollingUpdate.maxSurge must be 0, not %s: a surge pod would detach the mount the old pod still serves on that node. Use maxUnavailable" $name $surge) }}{{ end }}
 {{- $target := printf "/host-mnt/%s" (base $path) }}
 {{- $full := printf "%s-hostmount-%s" (include "daos-operator.fullname" $) $name }}
 {{- if gt (len $full) 63 }}{{ fail (printf "hostMounts[%s]: DaemonSet name %q is longer than 63 characters" $name $full) }}{{ end }}

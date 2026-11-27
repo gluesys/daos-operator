@@ -219,6 +219,8 @@ if [ -f "$chart/templates/hostmounts.yaml" ]; then
         "hostMounts[1].name=vfroot|is used twice" \
         "hostMounts[0].pool=a b|is not a DAOS label or UUID" \
         "hostMounts[0].updateStrategy.type=Recreate|must be OnDelete or RollingUpdate" \
+        "hostMounts[0].updateStrategy.type=RollingUpdate,hostMounts[0].updateStrategy.rollingUpdate.maxSurge=1,hostMounts[0].updateStrategy.rollingUpdate.maxUnavailable=0|hostMounts\[vfroot\].*maxSurge must be 0" \
+        "hostMounts[0].updateStrategy.type=RollingUpdate,hostMounts[0].updateStrategy.rollingUpdate.maxSurge=25%|hostMounts\[vfroot\].*maxSurge must be 0" \
         "system.spec.clientAgent.enabled=false|dfuse uses the node agent"; do
         set_="${case%%|*}"; want="${case#*|}"
         if hm --set "$set_" > "$out/hostmounts-bad.txt" 2>&1; then
@@ -292,5 +294,42 @@ open(t + "/launch.sh", "w").write(cmd[2].replace("/run/hostmount-", t + "/run-")
         echo "ok    hostMounts launcher stops when the stale mount cannot be detached"
     fi
     rm -rf "$ad"
+fi
+# deploy/host-client/fetch-config.sh (MR !137 review): the output directory is replaced as a whole
+# and only by a complete set. Twice in a row into the same path must work as an ordinary user
+# (the key of the first run is 0400), and a run whose Secret read fails must leave the previous
+# config, CA, certificate and key exactly as they were.
+if [ -x "$repo/deploy/host-client/fetch-config.sh" ]; then
+    t="$out/fetch-config"; rm -rf "$t"; mkdir -p "$t"
+    cat > "$t/kubectl" <<'STUB'
+#!/bin/sh
+# stub: prints generation $GEN of what is asked for; fails on the key named in $FAIL_ON
+case "$*" in
+  *configmap*) printf 'name: daos\ntransport_config:\n  allow_insecure: false\n# gen %s\n' "$GEN";;
+  *secret*) key=$(echo "$*" | sed 's/.*data \\\{0,1\}"\([^"\\]*\).*/\1/')
+            [ "$key" = "${FAIL_ON:-}" ] && { echo "Error from server" >&2; exit 1; }
+            echo "$key gen $GEN";;
+esac
+STUB
+    chmod +x "$t/kubectl"
+    fc() { KUBECTL="$t/kubectl" "$repo/deploy/host-client/fetch-config.sh" daos daos-system "$t/out"; }
+    sum() { (cd "$t/out" && cat daos_agent.yml certs/daosCA.crt certs/agent.crt certs/agent.key 2>&1 | cksum); }
+    if GEN=1 fc > "$t/1.log" 2>&1 && GEN=2 fc > "$t/2.log" 2>&1 \
+          && [ "$(cat "$t/out/certs/agent.key")" = "agent.key gen 2" ] && grep -q 'gen 2' "$t/out/daos_agent.yml" \
+          && [ "$(stat -c %a "$t/out/certs/agent.key")" = 400 ] && [ "$(stat -c %a "$t/out/certs")" = 700 ]; then
+        echo "ok    fetch-config twice into the same directory: complete second set, key 0400"
+    else
+        echo "FAIL  fetch-config twice:"; cat "$t/1.log" "$t/2.log" | sed 's/^/    /' | head -8; fail=1
+    fi
+    before=$(sum)
+    for failon in agent.crt agent.key; do
+        if GEN=3 FAIL_ON=$failon fc > "$t/3.log" 2>&1; then
+            echo "FAIL  fetch-config: exit 0 although the Secret read of $failon failed"; fail=1
+        elif [ "$(sum)" = "$before" ] && [ -z "$(ls -d "$t"/out.* 2>/dev/null)" ]; then
+            echo "ok    fetch-config: a failed read of $failon leaves the previous set untouched"
+        else
+            echo "FAIL  fetch-config: previous set changed after a failed read of $failon"; ls -la "$t" "$t/out" | sed 's/^/    /' | head -12; fail=1
+        fi
+    done
 fi
 exit $fail

@@ -13,15 +13,17 @@
 #   systemctl enable --now daos-dfuse@vfroot
 #
 # Same rules as the chart's hostMounts: a stale mount is detached before mounting,
-# dfuse is restarted when it exits, and nothing here restarts it because the mount
-# is slow -- during a server outage dfuse has to stay up for its users to continue.
+# dfuse is started again 2 s after it exits, for as long as it takes, and nothing here
+# restarts it because the mount is slow -- during a server outage dfuse has to stay up
+# for its users to continue.
 [Unit]
 Description=DAOS dfuse mount (%i)
 Documentation=https://github.com/gluesys/daos-operator/blob/main/doc/host-mount.md
 Wants=network-online.target daos_agent.service
 After=network-online.target daos_agent.service
-StartLimitIntervalSec=60
-StartLimitBurst=5
+# no start limit: while the servers, the agent or the container are away dfuse fails to start
+# over and over, and a unit that hit a limit would stay down after they are back
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple

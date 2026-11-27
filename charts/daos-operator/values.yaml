@@ -267,7 +267,7 @@ hostMounts: []
 #    agentSocketHostPath: ""    # node agent socket dir; default as for vllm.services[] below
 #    nodeSelector: {}           # nodes that get the mount (default: all)
 #    tolerations: []
-#    updateStrategy: {type: OnDelete}
+#    updateStrategy: {type: OnDelete}   # or RollingUpdate with maxUnavailable; maxSurge must stay 0
 #    priorityClassName: system-node-critical
 #    resources:                 # no memory limit by default: an OOM kill cuts every consumer
 #      requests: {cpu: 100m, memory: 256Mi}
