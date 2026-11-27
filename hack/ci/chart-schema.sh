@@ -207,4 +207,90 @@ STUB
     fi
     pkill -f "s.bind((\"127.0.0.1\", $port))" 2>/dev/null || true
 fi
+# hostMounts: values that would give a mount nobody can use, or two entries fighting over a
+# path, are refused with their own message; and the launch script detaches a stale mount before
+# it mounts, waits for the agent socket, and hands dfuse the chart's flags unchanged.
+if [ -f "$chart/templates/hostmounts.yaml" ]; then
+    hm() { helm template daos-operator "$chart" -n daos-system -f "$chart/ci/hostmounts-values.yaml" "$@"; }
+    for case in \
+        "hostMounts[0].hostPath=/vfroot|sits directly under /" \
+        "hostMounts[0].hostPath=rel/x|must be absolute" \
+        "hostMounts[1].hostPath=/vfroot/daos/sub|overlaps" \
+        "hostMounts[1].name=vfroot|is used twice" \
+        "hostMounts[0].pool=a b|is not a DAOS label or UUID" \
+        "hostMounts[0].updateStrategy.type=Recreate|must be OnDelete or RollingUpdate" \
+        "system.spec.clientAgent.enabled=false|dfuse uses the node agent"; do
+        set_="${case%%|*}"; want="${case#*|}"
+        if hm --set "$set_" > "$out/hostmounts-bad.txt" 2>&1; then
+            echo "FAIL  hostMounts $set_ was accepted"; fail=1
+        elif grep -q "$want" "$out/hostmounts-bad.txt"; then
+            echo "ok    hostMounts $set_ refused"
+        else
+            echo "FAIL  hostMounts $set_ failed for another reason:"; sed 's/^/    /' "$out/hostmounts-bad.txt" | head -5; fail=1
+        fi
+    done
+    # a DaemonSet that rolls by itself cuts every consumer of the mount: the default must stay OnDelete
+    if hm --set system.create=true | python3 -c '
+import sys, yaml
+ds = [d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "DaemonSet" and d["metadata"]["name"].endswith("hostmount-vfroot")]
+c = ds[0]["spec"]["template"]["spec"]["containers"][0]
+assert ds[0]["spec"]["updateStrategy"] == {"type": "OnDelete"}, ds[0]["spec"]["updateStrategy"]
+for probe in ("livenessProbe", "readinessProbe"):  # a stat on the mount hangs uninterruptibly while the servers are away
+    assert "stat " not in " ".join(c[probe]["exec"]["command"]), probe + " must not touch the file system"
+prop = [m for m in c["volumeMounts"] if m["name"] == "parent"][0]
+assert prop["mountPropagation"] == "Bidirectional"'; then
+        echo "ok    hostMounts defaults: OnDelete, probes off the file system, Bidirectional"
+    else
+        echo "FAIL  hostMounts defaults"; fail=1
+    fi
+    t="$out/hostmount-launcher"; rm -rf "$t"; mkdir -p "$t/bin" "$t/mnt"
+    # the socket gets a short path of its own: sun_path holds 107 bytes and $out can be deep
+    ad=$(mktemp -d)
+    hm | python3 -c '
+import sys, yaml
+t = sys.argv[1]
+ds = [d for d in yaml.safe_load_all(sys.stdin) if d and d["kind"] == "DaemonSet" and d["metadata"]["name"].endswith("hostmount-vfroot")]
+cmd = ds[0]["spec"]["template"]["spec"]["containers"][0]["command"]
+open(t + "/launch.sh", "w").write(cmd[2].replace("/run/hostmount-", t + "/run-")); open(t + "/args", "w").write("\n".join(cmd[4:]) + "\n")' "$t"
+    # findmnt: reports the target while $t/stale holds a count above 0; umount lowers it
+    printf '%s\n' '#!/bin/sh' "n=\$(cat $t/stale); [ \"\$n\" -gt 0 ] && echo $t/mnt/daos; exit 0" > "$t/bin/findmnt"
+    printf '%s\n' '#!/bin/sh' "n=\$(cat $t/stale); echo \$((n-1)) > $t/stale; echo \"\$@\" >> $t/umount-called" > "$t/bin/umount"
+    printf '%s\n' '#!/bin/sh' "echo \"\$@\" >> $t/daos-called" > "$t/bin/daos"
+    printf '%s\n' '#!/bin/sh' "[ -S $ad/daos_agent.sock ] || { echo no-socket >> $t/dfuse-called; exit 1; }" \
+        "printf '%s\n' \"\$@\" >> $t/dfuse-called; exec sleep 300" > "$t/bin/dfuse"
+    chmod +x "$t/bin/"*
+    launch() { PATH="$t/bin:$PATH" MOUNT_TARGET="$t/mnt/daos" HOST_PATH=/vfroot/daos POOL=bai CONT=vfroot SYS_NAME=daos_k8s \
+        AGENT_DIR=/x DAOS_AGENT_DRPC_DIR="$ad" timeout 60 bash -c "echo \$\$ > $t/pid; $(cat "$t/launch.sh")" dfuse $(cat "$t/args"); }
+    # 1) two stale mounts, the agent socket shows up late: detach, wait, mount; TERM stops it cleanly
+    echo 2 > "$t/stale"
+    ( sleep 3; python3 -c "import socket,sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])" "$ad/daos_agent.sock" ) &
+    launch > "$t/launch.log" 2>&1 & lp=$!
+    for _ in $(seq 40); do [ -s "$t/dfuse-called" ] && break; sleep 0.5; done
+    kill -TERM "$(cat "$t/pid")"
+    if wait $lp && [ "$(wc -l < "$t/umount-called")" = 2 ] && [ -d "$t/mnt/daos" ] \
+          && grep -qx -- '--sys-name=daos_k8s bai vfroot' <(sed 's/^container query //' "$t/daos-called") \
+          && { echo --foreground; cat "$t/args"; echo "$t/mnt/daos"; } | cmp -s - "$t/dfuse-called" \
+          && ! pgrep -f "^sleep 300$" >/dev/null; then
+        echo "ok    hostMounts launcher: stale mounts detached, waited for the agent, dfuse got the chart's flags, TERM stops it"
+    else
+        echo "FAIL  hostMounts launcher:"; sed 's/^/    /' "$t/launch.log" | head -8; head -8 "$t/dfuse-called" 2>/dev/null; fail=1
+    fi
+    # 2) a dfuse that keeps exiting must fail the pod after five tries, not spin for ever
+    printf '%s\n' '#!/bin/sh' "echo x >> $t/dfuse-tries; exit 1" > "$t/bin/dfuse"; rm -f "$t/dfuse-tries"
+    if launch > "$t/launch3.log" 2>&1; then
+        echo "FAIL  hostMounts launcher: exit 0 although dfuse never stayed up"; fail=1
+    elif [ "$(wc -l < "$t/dfuse-tries")" = 5 ]; then
+        echo "ok    hostMounts launcher gives up after 5 quick dfuse exits"
+    else
+        echo "FAIL  hostMounts launcher: $(wc -l < "$t/dfuse-tries") tries"; sed 's/^/    /' "$t/launch3.log" | tail -5; fail=1
+    fi
+    # 3) a mount that cannot be detached must stop the pod, not mount on top of it
+    printf '%s\n' '#!/bin/sh' 'exit 1' > "$t/bin/umount"; echo 1 > "$t/stale"; rm -f "$t/dfuse-tries"
+    if launch > "$t/launch2.log" 2>&1 || [ -e "$t/dfuse-tries" ]; then
+        echo "FAIL  hostMounts launcher went on over a stale mount"; fail=1
+    else
+        echo "ok    hostMounts launcher stops when the stale mount cannot be detached"
+    fi
+    rm -rf "$ad"
+fi
 exit $fail

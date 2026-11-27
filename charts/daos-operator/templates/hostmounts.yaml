@@ -1,0 +1,221 @@
+{{- /*
+SPDX-License-Identifier: Apache-2.0
+Copyright 2026 Gluesys Co., Ltd.
+
+Host-path dfuse mounts (doc/host-mount.md): one DaemonSet per entry in
+.Values.hostMounts, each running one dfuse that mounts one POSIX container at a
+path on the node itself. For software that takes a host directory instead of a
+PVC -- Backend.AI (vfolder hosts), Slurm, plain Docker.
+
+How the mount reaches the host: the pod mounts the parent of hostPath with
+Bidirectional propagation and dfuse mounts onto the last component, so the
+mount appears in the host mount namespace. That needs privileged, and a parent
+below /, which is why hostPath must have two components or more.
+
+The update strategy defaults to OnDelete on purpose. Restarting dfuse replaces
+the mount, and a process or container that bound the old one keeps a dead
+mount (ENOTCONN) until it is restarted itself: a rolling update would do that
+to every consumer on every node as soon as a value changes.
+
+dfuse is supervised inside the container: the script detaches a stale mount,
+waits for the agent and the container, starts dfuse and starts it again when it
+exits. The liveness probe is for what that loop cannot see -- the mount gone
+from under a running dfuse -- and looks only at the mount table. It must not touch the file
+system: when the servers are unreachable every call into dfuse blocks, and
+killing dfuse then would cut the consumers that would otherwise continue once
+the servers are back. Readiness shows whether the mount answers, from a stamp
+the script keeps: no probe runs stat itself, because a stat on the mount cannot
+be interrupted during such an outage and each probe would leave a stuck process.
+*/}}
+{{- $seenNames := dict }}
+{{- $seenPaths := dict }}
+{{- range .Values.hostMounts }}
+{{- $name := required "hostMounts[].name is required" .name }}
+{{- if hasKey $seenNames $name }}{{ fail (printf "hostMounts: name %q is used twice" $name) }}{{ end }}
+{{- $_ := set $seenNames $name true }}
+{{- $pool := required (printf "hostMounts[%s].pool is required" $name) .pool }}
+{{- $cont := required (printf "hostMounts[%s].container is required" $name) .container }}
+{{- $path := clean (required (printf "hostMounts[%s].hostPath is required" $name) .hostPath) }}
+{{- if not (hasPrefix "/" $path) }}{{ fail (printf "hostMounts[%s].hostPath must be absolute, not %q" $name $path) }}{{ end }}
+{{- $parent := dir $path }}
+{{- if eq $parent "/" }}{{ fail (printf "hostMounts[%s].hostPath %q sits directly under /: the pod would have to mount the node's root to reach it. Use a path with a parent directory, e.g. /mnt/daos/%s" $name $path $name) }}{{ end }}
+{{- range $other, $_ := $seenPaths }}
+{{- if or (eq $other $path) (hasPrefix (printf "%s/" $other) $path) (hasPrefix (printf "%s/" $path) $other) }}{{ fail (printf "hostMounts[%s].hostPath %q overlaps %q of another entry" $name $path $other) }}{{ end }}
+{{- end }}
+{{- $_ := set $seenPaths $path true }}
+{{- range list $pool $cont }}
+{{- if not (regexMatch "^[A-Za-z0-9._:-]+$" .) }}{{ fail (printf "hostMounts[%s]: %q is not a DAOS label or UUID" $name .) }}{{ end }}
+{{- end }}
+{{- $spec := $.Values.system.spec | default dict }}
+{{- $created := eq ($.Values.system.create | toString) "true" }}
+{{- if and $created (not .agentSocketHostPath) (not (($spec.clientAgent | default dict).enabled)) }}
+{{- fail (printf "hostMounts[%s]: dfuse uses the node agent. Enable system.spec.clientAgent with a nodeSelector covering this entry's nodes, or set agentSocketHostPath to the directory of an agent you run yourself" $name) }}
+{{- end }}
+{{- /* same rule as vllm.services[].agentSocketHostPath */}}
+{{- $agentDefault := ternary (($spec.clientAgent | default dict).hostSocketDir | default (printf "/var/run/daos-operator/agent/%s" $.Values.system.name)) "/var/run/daos_agent" $created }}
+{{- $agentDir := .agentSocketHostPath | default $agentDefault }}
+{{- $sysName := .systemName | default (ternary ($spec.systemName | default "") "" $created) }}
+{{- $image := .image | default ($spec.images | default dict).client }}
+{{- if not $image }}{{ fail (printf "hostMounts[%s]: no image. Set image or system.spec.images.client" $name) }}{{ end }}
+{{- $multiUser := true }}
+{{- if hasKey . "multiUser" }}{{ $multiUser = .multiUser }}{{ end }}
+{{- $strategy := .updateStrategy | default (dict "type" "OnDelete") }}
+{{- if not (has $strategy.type (list "OnDelete" "RollingUpdate")) }}{{ fail (printf "hostMounts[%s].updateStrategy.type must be OnDelete or RollingUpdate, not %q" $name $strategy.type) }}{{ end }}
+{{- $target := printf "/host-mnt/%s" (base $path) }}
+{{- $full := printf "%s-hostmount-%s" (include "daos-operator.fullname" $) $name }}
+{{- if gt (len $full) 63 }}{{ fail (printf "hostMounts[%s]: DaemonSet name %q is longer than 63 characters" $name $full) }}{{ end }}
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ $full }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+    {{- include "daos-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: host-mount
+    daos.gluesys.com/host-mount: {{ $name }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: host-mount
+      daos.gluesys.com/host-mount: {{ $name }}
+  updateStrategy:
+    {{- toYaml $strategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "daos-operator.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: host-mount
+        daos.gluesys.com/host-mount: {{ $name }}
+      annotations:
+        daos.gluesys.com/host-path: {{ $path | quote }}
+    spec:
+      # the agent hands dfuse an interface of the host, and the servers must reach
+      # the client at the address it advertises (see vllm.yaml)
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      priorityClassName: {{ .priorityClassName | default "system-node-critical" }}
+      terminationGracePeriodSeconds: 60
+      {{- with .nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dfuse
+          image: {{ $image }}
+          imagePullPolicy: IfNotPresent
+          # Bidirectional propagation and /dev/fuse; with an RDMA provider also the verbs devices
+          securityContext:
+            privileged: true
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -u
+              M="$MOUNT_TARGET"; W=/run/hostmount-waiting; OK=/run/hostmount-ok; pid=; wpid=
+              mounted() { findmnt -rn -t fuse.daos -o TARGET | grep -qxF "$M"; }
+              # A dfuse that was killed leaves its mount behind, and nothing can be mounted
+              # or even stat()ed there until it is detached. Ask the mount table, not the
+              # path: stat on a dead mount fails with ENOTCONN.
+              detach() {
+                local n=0
+                while mounted; do
+                  umount -l "$M" || { echo "cannot detach the stale mount at $HOST_PATH" >&2; exit 1; }
+                  n=$((n+1)); [ $n -lt 16 ] || { echo "$HOST_PATH is still mounted after $n detaches" >&2; exit 1; }
+                done
+                [ $n -eq 0 ] || echo "detached $n stale dfuse mount(s) at $HOST_PATH"
+              }
+              # Waiting is a state, not a failure: the liveness probe passes while $W exists,
+              # so a container that is not created yet does not turn into a restart loop.
+              await() {  # await <what> <command...>
+                local what=$1 i=0; shift
+                : > $W
+                until "$@" >/run/hostmount-await.out 2>&1; do
+                  [ $((i % 30)) -eq 0 ] && echo "waiting for $what: $(tail -1 /run/hostmount-await.out)"
+                  i=$((i+1)); sleep 2 & wait $!
+                done
+              }
+              stop() { [ -n "$wpid" ] && kill "$wpid" 2>/dev/null; [ -n "$pid" ] && kill -TERM "$pid" 2>/dev/null && wait "$pid"; detach; exit 0; }
+              trap stop TERM INT
+              # dfuse is restarted here rather than by the kubelet, whose back-off (10 s, 20 s,
+              # 40 s ...) would be the length of every outage after the first. Five exits within
+              # a minute are not a transient fault: then the pod fails and shows it.
+              fails=0; t0=$SECONDS
+              while :; do
+                detach
+                mkdir -p "$M" || exit 1
+                await "the node agent socket ($AGENT_DIR on the host)" test -S "$DAOS_AGENT_DRPC_DIR/daos_agent.sock"
+                await "container $POOL/$CONT" daos container query ${SYS_NAME:+--sys-name="$SYS_NAME"} "$POOL" "$CONT"
+                echo "mounting $POOL/$CONT at $HOST_PATH"
+                dfuse --foreground "$@" "$M" &
+                pid=$!
+                # The flag goes away with the mount, so a dfuse that never mounts is not "waiting".
+                # After that this one process keeps asking the mount and stamps $OK when it answers;
+                # the readiness probe only reads the stamp. A stat on the mount cannot be interrupted
+                # while the servers are unreachable (it stays in D state until they are back), so a
+                # probe that ran stat itself would leave one stuck process behind every period.
+                ( for _ in $(seq 60); do mounted && break; sleep 1; done; rm -f $W
+                  while :; do stat -f "$M" >/dev/null 2>&1 && date +%s > $OK.tmp && mv $OK.tmp $OK; sleep 5; done ) &
+                wpid=$!
+                wait "$pid"; rc=$?; pid=
+                kill "$wpid" 2>/dev/null; wpid=; rm -f $OK
+                echo "dfuse exited with $rc"
+                [ $((SECONDS - t0)) -lt 60 ] || { fails=0; t0=$SECONDS; }
+                fails=$((fails+1))
+                [ $fails -lt 5 ] || { echo "dfuse exited $fails times within a minute" >&2; detach; exit 1; }
+                sleep 2 & wait $!
+              done
+            - dfuse
+            - --pool={{ $pool }}
+            - --container={{ $cont }}
+            {{- with $sysName }}
+            - --sys-name={{ . }}
+            {{- end }}
+            {{- if $multiUser }}
+            - --multi-user
+            {{- end }}
+            {{- range .dfuseArgs }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - {name: MOUNT_TARGET, value: {{ $target | quote }}}
+            - {name: HOST_PATH, value: {{ $path | quote }}}
+            - {name: POOL, value: {{ $pool | quote }}}
+            - {name: CONT, value: {{ $cont | quote }}}
+            - {name: SYS_NAME, value: {{ $sysName | quote }}}
+            - {name: AGENT_DIR, value: {{ $agentDir | quote }}}
+            - {name: DAOS_AGENT_DRPC_DIR, value: /var/run/daos_agent}
+            {{- with .extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            exec:
+              command: [/bin/sh, -c, 'test -e /run/hostmount-waiting || findmnt -rn -t fuse.daos -o TARGET | grep -qxF "$MOUNT_TARGET"']
+            periodSeconds: 10
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: [/bin/sh, -c, 'findmnt -rn -t fuse.daos -o TARGET | grep -qxF "$MOUNT_TARGET" && [ $(( $(date +%s) - $(cat /run/hostmount-ok) )) -lt 20 ]']
+            periodSeconds: 10
+          resources:
+            {{- toYaml (.resources | default (dict "requests" (dict "cpu" "100m" "memory" "256Mi"))) | nindent 12 }}
+          volumeMounts:
+            - {name: agent-sock, mountPath: /var/run/daos_agent}
+            - {name: dev, mountPath: /dev}
+            - {name: parent, mountPath: /host-mnt, mountPropagation: Bidirectional}
+      volumes:
+        - name: agent-sock
+          hostPath: {path: {{ $agentDir | quote }}, type: DirectoryOrCreate}
+        - name: dev
+          hostPath: {path: /dev, type: Directory}
+        - name: parent
+          hostPath: {path: {{ $parent | quote }}, type: DirectoryOrCreate}
+{{- end }}

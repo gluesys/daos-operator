@@ -64,7 +64,7 @@ depends on whether the scheduler launches Kubernetes pods.
 | Scheduler | How DAOS is attached | Status | Date | Where · evidence |
 |---|---|---|---|---|
 | Kubernetes-native: Kueue, KAI Scheduler (Run:ai), Volcano | jobs are ordinary pods, so the same path as section 2 (GPU node and serving): the per-node agent, CSI PVs, `vllm.services[]` | unverified | — | moon runs Kubeflow with Kueue, and the DAOS KV-cache runs of 2026-11-13 shared that cluster; whether they were admitted through a Kueue queue was not recorded |
-| Backend.AI (Lablup) | its own manager and agents start the containers, and storage-proxy mounts vfolders: daos-operator is not on that path. Needs a storage-proxy DAOS backend | not supported | — | issue #6 |
+| Backend.AI (Lablup) | its own manager and agents start the containers and bind-mount vfolders from a host path (its Kubernetes agent too), so CSI is not on that path. DAOS reaches it as a host-path dfuse mount (`hostMounts[]`, doc/host-mount.md) on the storage-proxy and agent nodes, with the stock `vfs` backend or the `daos` backend plugin on top | unverified | — | issue #6. Run so far (2026-11-27, RTX A6000 node + 4 ranks, DAOS 2.8.0): the storage-proxy 26.9.8 contract tests pass on dfuse, and the `hostMounts[]` mount with its loss and recovery (doc/host-mount.md §6). No Backend.AI manager or agent was run |
 
 ## 5. Notes on the verified rows
 

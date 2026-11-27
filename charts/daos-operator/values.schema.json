@@ -453,6 +453,10 @@
       "type": "array",
       "description": "DaosPools to create, each optionally with the StorageClass that provisions into it. DAOS enforces capacity per pool, not per container: a PVC's requested size is not a limit, and every PVC in a pool shares the pool's size. To give teams or uses their own capacity, give each its own pool and StorageClass here. When a pool passes its spaceWarningPercent the operator sets SpaceLow on the DaosPool and also records a PoolSpaceLow Event on each bound PVC in it, so namespace users see it too. Pools are kept on helm uninstall (resource-policy: keep); destroying one needs the daos.gluesys.com/destroy-approved annotation, as for any DaosPool."
     },
+    "hostMounts": {
+      "type": "array",
+      "description": "dfuse mounts on the nodes themselves (doc/host-mount.md): one DaemonSet per entry mounts one POSIX container at hostPath on every selected node. For software that takes a host directory rather than a PVC: Backend.AI (the vfolder mount on the storage-proxy and agent nodes), Slurm, plain Docker. Pods should keep using the CSI driver. Each node needs the node agent (system.spec.clientAgent), and the container must exist before the mount comes up (a DaosContainer, or `daos cont create`); until then the pod restarts and stays not ready. The DaemonSets default to updateStrategy OnDelete: restarting dfuse replaces the mount, and whatever bound the old one keeps a dead mount (ENOTCONN) until it is restarted itself. Change a value, then drain a node's consumers and delete its pod."
+    },
     "vllm": {
       "type": "object",
       "additionalProperties": true,

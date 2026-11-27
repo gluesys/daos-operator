@@ -111,6 +111,7 @@ See `values.yaml`. The parts most installations touch:
 | `system.spec.msReplicas` | management-service replicas (3 for a redundant MS) |
 | `csi.enabled` | the CSI driver and its StorageClasses |
 | `s3.services[]` | S3 gateways, one per pool |
+| `hostMounts[]` | dfuse mounts at a path on the nodes themselves, for software that takes a host directory instead of a PVC (Backend.AI, Slurm, plain Docker); one DaemonSet per entry, `updateStrategy: OnDelete` by default because restarting dfuse cuts the containers that bound the mount (doc/host-mount.md) |
 | `vllm.services[]` | reference serving workload for PoCs and tests, not production serving (doc/serving-integration.md has the contract for your own stack); `lmcacheMode: mp` for hybrid-attention models; `rdma: true` on an RDMA fabric; `accelerator: nvidia\|rbln\|custom` picks the device resource and KV connector |
 
 Per-node facts that differ between hosts (NIC name, device paths) come from node
