@@ -848,6 +848,177 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, poolNN, &daosv1alpha1.DaosPool{}))).To(BeTrue())
 	})
 
+	// spec.external: a pool someone else manages (FlexA's console on a FlexA DAOS system)
+	makeExternal := func(mut func(*daosv1alpha1.DaosPool)) {
+		p := getPool()
+		p.Spec.External = true
+		p.Spec.RedundancyFactor, p.Spec.Properties, p.Spec.ACL = nil, nil, nil
+		if mut != nil {
+			mut(p)
+		}
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+	}
+	// every dmg pool operation the controller can start, other than query
+	poolOps := []string{"-dmg-create", "-dmg-extend", "-dmg-acl", "-dmg-reintmode", "-dmg-selfheal", "-dmg-destroy"}
+	expectNoPoolOps := func(f *fakeDmg) {
+		for _, op := range poolOps {
+			Expect(f.count(op)).To(BeZero(), "external pool: %s must never run", op)
+		}
+	}
+
+	It("reads an external pool into status and reports, but never corrects, what differs from the spec", func() {
+		makeExternal(func(p *daosv1alpha1.DaosPool) {
+			p.Spec.Size = resource.MustParse("3Ti") // dmgPoolQuery is a few GB
+			p.Spec.Ranks = []int32{0, 1, 2}         // dmgPoolQuery spans 0-1
+		})
+		events := record.NewFakeRecorder(32)
+		// DAOS reports data_sync and self_heal exclude: what FlexA set, left alone
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery + "\n" +
+			`{"response": [{"name": "reintegration", "value": "data_sync"}, {"name": "self_heal", "value": "exclude"}], "error": null, "status": 0}`}}}
+		r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+		for range 4 {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		p := getPool()
+		Expect(p.Finalizers).To(ContainElement(daosv1alpha1.FinalizerPool))
+		Expect(p.Status.UUID).To(Equal("8a9ca36d-495a-4d50-a0d2-f111b80d5d9d"))
+		Expect(p.Status.Label).To(Equal("p1"))
+		Expect(p.Status.FreeBytes).To(Equal(int64(443035176 + 7456817152)))
+		Expect(p.Status.UsedPercent).To(Equal(int32(1)))
+		Expect(p.Status.ReintegrationMode).To(Equal("data_sync"))
+		Expect(p.Status.SelfHeal).To(Equal("exclude"))
+		Expect(p.Status.Operation).To(BeEmpty())
+		c := ready(p.Status.Conditions)
+		Expect(c.Status).To(Equal(metav1.ConditionTrue))
+		Expect(c.Message).To(ContainSubstring("read only"))
+		mm := meta.FindStatusCondition(p.Status.Conditions, daosv1alpha1.ConditionSpecMismatch)
+		Expect(mm).NotTo(BeNil())
+		Expect(mm.Status).To(Equal(metav1.ConditionTrue))
+		Expect(mm.Reason).To(Equal("SizeAndRanksMismatch"))
+		Expect(mm.Message).To(ContainSubstring("does not span ranks 2"))
+		Expect(f.count("-dmg-query")).To(Equal(3))
+		expectNoPoolOps(f)
+		for _, e := range drain(events) {
+			Expect(e).NotTo(Or(ContainSubstring("Drift"), ContainSubstring("PoolExtend"), ContainSubstring("PoolAcl")))
+		}
+	})
+
+	It("queries an external pool by spec.label when its DAOS label is not a Kubernetes name", func() {
+		makeExternal(func(p *daosv1alpha1.DaosPool) { p.Spec.Label = "FlexA_Pool1" })
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(f.last("-dmg-query").Args).To(Equal([]string{"pool", "query", "--show-enabled", "FlexA_Pool1"}))
+		Expect(getPool().Status.Label).To(Equal("FlexA_Pool1"), "daos-csi mounts by status.label and uuid")
+	})
+
+	It("does not create an external pool that is not there, and does not re-create one that vanished", func() {
+		makeExternal(nil)
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, ExitCode: 1, Output: dmgPoolNotFound}}}
+		poolRec(f)
+		res := poolRec(f)
+		c := ready(getPool().Status.Conditions)
+		Expect(c.Status).To(Equal(metav1.ConditionFalse))
+		Expect(c.Reason).To(Equal("ExternalPoolNotFound"))
+		Expect(c.Message).To(ContainSubstring("does not create it"))
+		Expect(res.RequeueAfter).To(Equal(poolRequeueWait), "checked again: it may be created where it is managed")
+		setPoolUUID()
+		poolRec(f)
+		c = ready(getPool().Status.Conditions)
+		Expect(c.Reason).To(Equal("ExternalPoolNotFound"))
+		Expect(c.Message).To(ContainSubstring("no longer exists"))
+		expectNoPoolOps(f)
+	})
+
+	It("releases an external pool on delete and keeps it in DAOS even with destroy-approved", func() {
+		makeExternal(nil)
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		poolRec(f)
+		p := getPool()
+		p.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, p)).To(Succeed())
+		events := record.NewFakeRecorder(8)
+		r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, poolNN, &daosv1alpha1.DaosPool{}))).To(BeTrue(), "the DaosPool goes")
+		expectNoPoolOps(f)
+		Expect(events.Events).To(Receive(ContainSubstring("DestroyRefused")))
+	})
+
+	It("stops following an operation that was in flight when the pool became external", func() {
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		setPoolUUID()
+		p := getPool()
+		p.Status.Operation = opACL
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		makeExternal(nil) // allowed after status.uuid: handing a pool over
+		poolRec(f)
+		Expect(getPool().Status.Operation).To(BeEmpty())
+		expectNoPoolOps(f)
+	})
+
+	It("keeps spec.external consistent: what it forbids, and that it cannot be turned off", func() {
+		p := getPool()
+		p.Spec.External = true // the fixture's acl, properties and rd_fac stay
+		err := k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.external: the operator neither creates nor changes this pool"))
+
+		By("size is optional only for an external pool")
+		bad := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "nosize"}, Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName}}
+		err = k8sClient.Create(ctx, bad)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.size is required unless spec.external is true"))
+		ok := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "nosize"}, Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName, External: true}}
+		Expect(k8sClient.Create(ctx, ok)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, ok)).To(Succeed())
+
+		By("once seen, a managed pool can be handed over (its creation-only fields dropped) but not taken back")
+		setPoolUUID()
+		makeExternal(nil)
+		p = getPool()
+		p.Spec.External = false
+		err = k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.external cannot be turned off"))
+
+		By("the label is fixed once the pool exists")
+		p = getPool()
+		p.Spec.Label = "Other"
+		err = k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.label cannot change"))
+	})
+
+	It("serves containers in an external pool as in any other", func() {
+		makeExternal(nil)
+		setPoolUUID()
+		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},
+			Spec: daosv1alpha1.DaosContainerSpec{PoolRef: poolName, RedundancyFactor: ptr.To(int32(1))}}
+		Expect(k8sClient.Create(ctx, c)).To(Succeed())
+		f := &fakeDmg{script: map[string]*dmg.Result{"-daos-query": {Done: true, ExitCode: 1, Output: daosContNotFound}}}
+		r := &DaosContainerReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true}
+		rec := func() {
+			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: contNN})
+			Expect(err).NotTo(HaveOccurred())
+		}
+		rec() // finalizer
+		rec() // query: not found -> create
+		Expect(f.last("-daos-create")).NotTo(BeNil(), "the operator still creates containers in a pool it does not manage")
+		f.set("-daos-create", &dmg.Result{Done: true, Output: daosContQuery})
+		rec()
+		f.set("-daos-query", &dmg.Result{Done: true, Output: daosContQuery})
+		rec()
+		Expect(k8sClient.Get(ctx, contNN, c)).To(Succeed())
+		Expect(c.Status.Ready).To(BeTrue())
+		Expect(c.Status.PoolUUID).To(Equal("8a9ca36d-495a-4d50-a0d2-f111b80d5d9d"))
+	})
+
 	It("creates a container with the agent sidecar Job and mirrors daos cont query", func() {
 		setPoolUUID()
 		c := &daosv1alpha1.DaosContainer{ObjectMeta: metav1.ObjectMeta{Namespace: "default", Name: "c1"},

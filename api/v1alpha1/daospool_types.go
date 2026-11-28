@@ -28,12 +28,36 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile != 'kvcache' || !has(self.redundancyFactor) || self.redundancyFactor == ((has(self.kvcache) && has(self.kvcache.redundancy) && self.kvcache.redundancy == 'ec') ? 1 : 0)",message="profile kvcache sets rd_fac from kvcache.redundancy (none: 0, ec: 1); leave redundancyFactor unset or make it agree"
 // +kubebuilder:validation:XValidation:rule="!has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] in ['data_sync', 'incremental', 'no_data_sync']",message="properties.reintegration must be data_sync, incremental or no_data_sync"
 // +kubebuilder:validation:XValidation:rule="!has(self.redundancyFactor) || self.redundancyFactor != 0 || !has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] != 'no_data_sync'",message="a pool with redundancyFactor 0 takes reintegration incremental (the default) or data_sync: no_data_sync refuses every write to the pool"
+// +kubebuilder:validation:XValidation:rule="(has(self.external) && self.external) || (has(self.size) && string(self.size) != '0')",message="spec.size is required unless spec.external is true"
+// +kubebuilder:validation:XValidation:rule="!has(self.external) || !self.external || (!has(self.acl) && !has(self.properties) && !has(self.redundancyFactor) && !has(self.memRatioPercent) && !has(self.profile) && !has(self.kvcache))",message="spec.external: the operator neither creates nor changes this pool, so acl, properties, redundancyFactor, memRatioPercent, profile and kvcache do not apply; set them where the pool is managed"
 type DaosPoolSpec struct {
 	// SystemRef names the DaosSystem this pool lives in.
 	SystemRef string `json:"systemRef"`
+	// External marks a pool that is owned and managed outside the operator: by
+	// FlexA's console on a FlexA DAOS system (spec.externalMsReplicas), by
+	// another cluster, or by hand with dmg. The operator only reads it: it
+	// mirrors `dmg pool query` into status (space, state, SpaceLow) and serves
+	// DaosContainers and CSI volumes in it, but never creates, extends, sets a
+	// property or ACL on, or destroys the pool -- not even with
+	// daos.gluesys.com/destroy-approved. A pool that does not exist is reported,
+	// not created. spec.size and spec.ranks, when given, are checked against the
+	// pool and a difference is reported on the SpecMismatch condition, never
+	// corrected. Works on any DaosSystem, operator-run or external. Once the pool
+	// has been seen (status.uuid), external cannot be turned off again.
+	// +optional
+	External bool `json:"external,omitempty"`
+	// Label is the pool's DAOS label when it is not metadata.name, typically for
+	// an external pool whose label is not a valid Kubernetes name (capitals,
+	// underscores). Unset means metadata.name. It cannot change once the pool
+	// exists.
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]{1,127}$`
+	// +optional
+	Label string `json:"label,omitempty"`
 	// Size is the total pool size (dmg pool create --size). Extension is done
-	// by adding ranks, not by editing Size (DAOS 2.8 has no shrink).
-	Size resource.Quantity `json:"size"`
+	// by adding ranks, not by editing Size (DAOS 2.8 has no shrink). Required
+	// unless the pool is external, where it is only compared.
+	// +optional
+	Size resource.Quantity `json:"size,omitempty"`
 	// Ranks restricts the pool to these ranks; empty = all. Appending ranks
 	// triggers `dmg pool extend`.
 	Ranks []int32 `json:"ranks,omitempty"`
@@ -164,9 +188,12 @@ type DaosPoolStatus struct {
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 // +kubebuilder:printcolumn:name="RF",type=integer,JSONPath=`.spec.redundancyFactor`,priority=1
 // +kubebuilder:printcolumn:name="Reintegration",type=string,JSONPath=`.status.reintegrationMode`,priority=1
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || ((has(self.spec.profile) ? self.spec.profile : '') == (has(oldSelf.spec.profile) ? oldSelf.spec.profile : '') && (has(self.spec.kvcache) && has(self.spec.kvcache.redundancy) ? self.spec.kvcache.redundancy : 'none') == (has(oldSelf.spec.kvcache) && has(oldSelf.spec.kvcache.redundancy) ? oldSelf.spec.kvcache.redundancy : 'none'))",message="spec.profile and spec.kvcache.redundancy cannot change once the pool exists; create a new DaosPool"
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.redundancyFactor) == has(oldSelf.spec.redundancyFactor) && (!has(self.spec.redundancyFactor) || self.spec.redundancyFactor == oldSelf.spec.redundancyFactor))",message="spec.redundancyFactor cannot change once the pool exists; create a new DaosPool for a different redundancy"
-// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.properties) && 'reintegration' in self.spec.properties ? self.spec.properties['reintegration'] : '') == (has(oldSelf.spec.properties) && 'reintegration' in oldSelf.spec.properties ? oldSelf.spec.properties['reintegration'] : '')",message="spec.properties.reintegration cannot change once the pool exists"
+// +kubebuilder:printcolumn:name="External",type=boolean,JSONPath=`.spec.external`,priority=1
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external) && self.spec.external) || ((has(self.spec.profile) ? self.spec.profile : '') == (has(oldSelf.spec.profile) ? oldSelf.spec.profile : '') && (has(self.spec.kvcache) && has(self.spec.kvcache.redundancy) ? self.spec.kvcache.redundancy : 'none') == (has(oldSelf.spec.kvcache) && has(oldSelf.spec.kvcache.redundancy) ? oldSelf.spec.kvcache.redundancy : 'none'))",message="spec.profile and spec.kvcache.redundancy cannot change once the pool exists; create a new DaosPool"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external) && self.spec.external) || (has(self.spec.redundancyFactor) == has(oldSelf.spec.redundancyFactor) && (!has(self.spec.redundancyFactor) || self.spec.redundancyFactor == oldSelf.spec.redundancyFactor))",message="spec.redundancyFactor cannot change once the pool exists; create a new DaosPool for a different redundancy"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external) && self.spec.external) || (has(self.spec.properties) && 'reintegration' in self.spec.properties ? self.spec.properties['reintegration'] : '') == (has(oldSelf.spec.properties) && 'reintegration' in oldSelf.spec.properties ? oldSelf.spec.properties['reintegration'] : '')",message="spec.properties.reintegration cannot change once the pool exists"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || !has(oldSelf.spec.external) || !oldSelf.spec.external || (has(self.spec.external) && self.spec.external)",message="spec.external cannot be turned off once the pool has been seen: the operator would start changing a pool someone else manages. Create a new DaosPool for a pool the operator should manage"
+// +kubebuilder:validation:XValidation:rule="!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.label) ? self.spec.label : '') == (has(oldSelf.spec.label) ? oldSelf.spec.label : '')",message="spec.label cannot change once the pool exists"
 
 // DaosPool is a DAOS pool.
 type DaosPool struct {

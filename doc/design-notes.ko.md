@@ -236,6 +236,24 @@ spec:
 `spec.engines` 는 이 모드에서 비워 둔다. Job 은 `nodeSelector` 노드에 hostNetwork 로 뜨므로 **그 노드가 MS 주소와 fabric 에 닿아야 한다**
 (로컬 주소에만 MS 가 열려 있으면 그 호스트에서만 가능).
 
+**풀도 남의 것이면 `DaosPool.spec.external: true` (2026-11-28).** 위 표의 "풀 reconcile" 은 operator 가 풀을 소유한다는 뜻이다.
+같은 이름의 풀이 있으면 넘겨받고, 그 뒤 `reintegration`·`self_heal` 을 spec 값으로 되돌리고(`ReintegrationModeDrift`) ACL 을 쓴다.
+FlexA 처럼 풀을 콘솔에서 관리하는 시스템에 붙으면 관리 주체가 둘이 되어, 콘솔에서 바꾼 설정을 operator 가 되돌린다.
+`spec.external` 은 operator 를 그 풀의 **소비자**로만 둔다.
+
+| 하는 것 | 하지 않는 것 |
+|---|---|
+| `dmg pool query` 로 status(uuid·state·공간·`SpaceLow`·PVC 이벤트), 그 풀의 DaosContainer·CSI | 풀 생성(없으면 `ExternalPoolNotFound`), extend, ACL, 속성 되돌리기, 삭제(`destroy-approved` 가 붙어도 `DestroyRefused` 로 거부하고 DaosPool 만 지운다) |
+| `spec.size`·`spec.ranks` 가 있으면 비교해 `SpecMismatch` 로 보고 | 비교 결과를 고치는 일 |
+
+- `spec.label` 로 DAOS 라벨을 따로 줄 수 있다. K8s 이름 규칙에 맞지 않는 라벨(대문자, `_`)을 위한 것이다. daos-csi 는 `status.label`·uuid 로 마운트하므로 그대로 동작한다.
+- `acl`·`properties`·`redundancyFactor`·`memRatioPercent`·`profile`·`kvcache` 는 거부한다(만들 때만 쓰는 값이거나 operator 가 적용하는 값). `size` 는 선택이다.
+- **operator 가 운영하는 시스템에서도 쓸 수 있게 했다.** 손으로 만든 풀을 참조하거나, operator 가 관리하던 풀을 넘겨주는 경우가 있기 때문이다.
+  넘겨줄 때는 `external: true` 로 바꾸고 위 필드를 지운다(풀이 생긴 뒤에도 이 경우만 허용). 그 순간 진행 중이던 작업은 더 따라가지 않는다(`OperationAbandoned`).
+  반대로 `external` 을 끄는 것은 풀이 생긴 뒤에는 거부한다. 남이 관리하던 풀을 operator 가 조용히 바꾸기 시작하게 되기 때문이다.
+- rank 연산(`rank-op` 어노테이션)은 풀이 아니라 시스템 단위라 이 옵션과 무관하다. 남이 운영하는 시스템에서는 쓰지 않는다.
+- 근거: hub 4f8feaf4 17절(FlexA DAOS 와 operator·daos-csi·provisiond 역할 경계, 11-28 결정).
+
 ## rank 멤버십 조작 (#20)
 rank 를 빼고 넣는 일은 데이터가 어디 있느냐를 바꾸는 결정이라 operator 가 스스로 하지 않는다. 죽은 rank 는 **보고**할 뿐 쫓아내지 않는다.
 
