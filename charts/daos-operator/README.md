@@ -99,6 +99,15 @@ starts when you approve it with `kubectl daos system upgrade <system> [--image I
 draining clients. The approval is consumed whatever happens, including when there
 is nothing to upgrade.
 
+The CSI node plugin's image follows the chart, so a new chart version restarts it.
+With `csi.mountMode: process` (the default) that cuts the DAOS volumes of the pods
+running on each node until those pods are recreated, and the default update strategy
+does it one node at a time as soon as the DaemonSet changes. To choose when, upgrade
+with `--set csi.nodeUpdateStrategy.type=OnDelete`, then on each node drain the pods
+that use DAOS PVCs, delete that node's `daos-csi-node` pod and let the pods come
+back. With `csi.mountMode: pod` a plugin restart leaves running volumes alone;
+switching from `process` to `pod` is itself such a restart, so drain first.
+
 ## Values
 
 See `values.yaml`. The parts most installations touch:
