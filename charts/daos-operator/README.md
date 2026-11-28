@@ -43,7 +43,7 @@ operator drops the annotation after one attempt, whatever the outcome.
 ## Install
 
 ```bash
-helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.3.0 \
+helm install daos-operator oci://ghcr.io/gluesys/charts/daos-operator --version 0.4.0 \
   --namespace daos-system --create-namespace
 ```
 
@@ -60,7 +60,7 @@ MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZahht5lUkAFpk1OvQtGEsU/ebjwr
 ```
 
 ```bash
-cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.3.0
+cosign verify --key cosign.pub ghcr.io/gluesys/charts/daos-operator:0.4.0
 ```
 
 `values.schema.json` types the values the chart ships; Helm rejects a value of the wrong
@@ -98,6 +98,15 @@ Upgrading the release replaces the operator; it does not restart the engines. A 
 starts when you approve it with `kubectl daos system upgrade <system> [--image I] --yes`, after
 draining clients. The approval is consumed whatever happens, including when there
 is nothing to upgrade.
+
+The CSI node plugin's image follows the chart, so a new chart version restarts it.
+With `csi.mountMode: process` (the default) that cuts the DAOS volumes of the pods
+running on each node until those pods are recreated, and the default update strategy
+does it one node at a time as soon as the DaemonSet changes. To choose when, upgrade
+with `--set csi.nodeUpdateStrategy.type=OnDelete`, then on each node drain the pods
+that use DAOS PVCs, delete that node's `daos-csi-node` pod and let the pods come
+back. With `csi.mountMode: pod` a plugin restart leaves running volumes alone;
+switching from `process` to `pod` is itself such a restart, so drain first.
 
 ## Values
 

@@ -133,8 +133,7 @@ csi:
   #            (csi.nodeSelector). Replacing the mount pods themselves (a new client image)
   #            still means draining the node.
   # Switching between the two cuts the volumes on each node once: drain first.
-  # pod also needs a daos-csi image with --mount-mode (daos-csi !10 or later): until the appVersion
-  # default has it, set csi.image.tag; the chart refuses pod mode otherwise.
+  # pod needs a daos-csi image with --mount-mode (v0.3.0 or later, the default from chart 0.4.0).
   mountMode: process
   mountPod:
     image: ""                 # defaults to system.spec.images.client

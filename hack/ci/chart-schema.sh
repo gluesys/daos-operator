@@ -116,11 +116,23 @@ print("ok" if ok else "bad: " + args)' 2>&1)
         args="${case%%|*}"; want="${case#*|}"; got=$(agentdir $args)
         if [ "$got" = "$want" ]; then echo "ok    csi mount agent dir ${args:-own system}"; else echo "FAIL  csi mount agent dir ${args:-own system}: $got, want $want"; fail=1; fi
     done
-    for case in "csi.mountMode=pod --set system.spec.clientAgent.enabled=false --set csi.image.tag=x|enable system.spec.clientAgent" "csi.mountMode=Pod|must be process or pod" \
-                "csi.mountMode=pod --set system.spec.clientAgent.enabled=true|needs a daos-csi image with --mount-mode"; do
+    for case in "csi.mountMode=pod --set system.spec.clientAgent.enabled=false --set csi.image.tag=x|enable system.spec.clientAgent" "csi.mountMode=Pod|must be process or pod"; do
         set_="${case%%|*}"; want="${case#*|}"
         refusal=$(helm template daos-operator "$chart" -n daos-system -f "$chart/ci/csi-values.yaml" --set $set_ 2>&1 || true)
         if grep -q "$want" <<<"$refusal"; then echo "ok    csi $set_ refused"; else echo "FAIL  csi $set_ was not refused"; fail=1; fi
+    done
+    # pod mode with the appVersion default image: refused while that image predates --mount-mode
+    # (daos-csi v0.3.0), rendered from then on
+    old_chart="$out/chart-appversion-v0.2.0"; rm -rf "$old_chart"; cp -r "$chart" "$old_chart"
+    sed -i 's/^appVersion: .*/appVersion: "v0.2.0"/' "$old_chart/Chart.yaml"
+    for c in "$old_chart|refused" "$chart|rendered"; do
+        dir="${c%%|*}"; want="${c#*|}"; app=$(sed -n 's/^appVersion: "*\([^"]*\)"*/\1/p' "$dir/Chart.yaml")
+        res=$(helm template daos-operator "$dir" -n daos-system -f "$chart/ci/csi-values.yaml" \
+            --set csi.mountMode=pod --set system.spec.clientAgent.enabled=true 2>&1) && rc=0 || rc=$?
+        if [ $rc -ne 0 ] && grep -q "needs a daos-csi image with --mount-mode" <<<"$res"; then got=refused
+        elif [ $rc -eq 0 ]; then got=rendered; else got="failed: $(tail -1 <<<"$res")"; fi
+        if [ "$got" = "$want" ]; then echo "ok    csi mountMode pod, default image, appVersion $app $want"
+        else echo "FAIL  csi mountMode pod, default image, appVersion $app: $got, want $want"; fail=1; fi
     done
 fi
 # A tag that YAML/--set reads as a number (all-digit commit hash) must be refused, not rendered
