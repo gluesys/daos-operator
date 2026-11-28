@@ -24,7 +24,7 @@ s3:
   services:
     - name: s3
       poolRef: kv
-      image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261127-vgwe55bb1c7
+      image: registry.gitlab.gluesys.com/exastor/daos-images/versitygw-daos:2.8.0-20261128-vgw30603899
       replicas: 1
       port: 7070
       region: kr-1
