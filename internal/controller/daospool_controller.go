@@ -177,12 +177,10 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	case "query":
 		// spec.label may change until the pool is seen (fixing a typo in an external
 		// pool's label): a query of the old label still running must not be read as
-		// the answer for the new one, so the Job is named after the label it asks for
-		if pool.Spec.Label != "" {
-			h := sha256.Sum256([]byte(pool.Spec.Label))
-			spec.Name = jobName("pool", pool.Name+"/"+hex.EncodeToString(h[:4]), "dmg-query")
-		}
-		spec.Args =[]string{"pool", "query", "--show-enabled", label}
+		// the answer for the new one. The Job keeps its name (a label-derived name
+		// could equal another pool's) and records the label it asks for instead
+		spec.Identity = "label=" + label
+		spec.Args = []string{"pool", "query", "--show-enabled", label}
 		spec.FirstTimeoutSeconds = poolQueryTimeout
 		spec.Fallback = []string{"pool", "query", "-t", "--show-enabled", label}
 		spec.Then = []string{"pool", "get-prop", label, "reintegration,self_heal"}

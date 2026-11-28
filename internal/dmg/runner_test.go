@@ -103,6 +103,64 @@ func TestJobRunnerLifecycle(t *testing.T) {
 	}
 }
 
+// A Job of the right name recorded for another question (a pool query of a label since
+// changed) is dropped unread; the next Run asks the current question.
+func TestJobRunnerDropsAJobAskingAnotherQuestion(t *testing.T) {
+	ctx := context.Background()
+	owner := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "owner", Namespace: "ns", UID: "u1"}}
+	c := fake.NewClientBuilder().WithScheme(scheme.Scheme).WithObjects(owner).Build()
+	r := &JobRunner{Client: c, Scheme: scheme.Scheme}
+	key := types.NamespacedName{Namespace: "ns", Name: "pool-p-dmg-query"}
+	spec := RunSpec{Owner: owner, Namespace: "ns", Name: key.Name, Image: "admin", ControlConfigMap: "sys-control",
+		Args: []string{"pool", "query", "Old"}, Identity: "label=Old"}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	job := &batchv1.Job{}
+	if err := c.Get(ctx, key, job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Annotations[AnnotationIdentity] != "label=Old" {
+		t.Fatalf("identity not recorded: %v", job.Annotations)
+	}
+	job.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := c.Status().Update(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	spec.Args, spec.Identity = []string{"pool", "query", "New"}, "label=New"
+	if res, err := r.Run(ctx, spec); err != nil || res.Done {
+		t.Fatalf("the answer for Old must not be returned for New: %+v %v", res, err)
+	}
+	if err := c.Get(ctx, key, job); !apierrors.IsNotFound(err) {
+		t.Fatalf("the Job for Old must be deleted, got %v", err)
+	}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, key, job); err != nil {
+		t.Fatal(err)
+	}
+	if job.Annotations[AnnotationIdentity] != "label=New" || job.Spec.Template.Spec.Containers[0].Command[len(job.Spec.Template.Spec.Containers[0].Command)-1] != "New" {
+		t.Fatalf("the next Run must ask for New: %v %v", job.Annotations, job.Spec.Template.Spec.Containers[0].Command)
+	}
+
+	// a Job without the annotation (made by an older operator) is still read
+	spec.Name = "pool-q-dmg-query"
+	legacy := job.DeepCopy()
+	legacy.Name, legacy.ResourceVersion, legacy.Annotations = spec.Name, "", nil
+	legacy.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := c.Create(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Status().Update(ctx, legacy); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.Run(ctx, spec); err != nil || !res.Done {
+		t.Fatalf("a Job without an identity is read as before: %+v %v", res, err)
+	}
+}
+
 // A Job cache that still holds the consumed Job (its deletion not seen yet) must not hand
 // the same result out twice.
 func TestJobRunnerDoesNotReturnAConsumedJobTwice(t *testing.T) {

@@ -985,8 +985,22 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		poolRec(f)
 		cur := f.last("-dmg-query")
 		Expect(cur.Args).To(Equal([]string{"pool", "query", "--show-enabled", "FlexA_Pool2"}))
-		Expect(cur.Name).NotTo(Equal(old.Name), "a different Job: the old one's result is never read for FlexA_Pool2")
+		Expect(cur.Name).To(Equal(old.Name), "the Job name stays the pool's own")
+		Expect(old.Identity).To(Equal("label=FlexA_Pool1"))
+		Expect(cur.Identity).To(Equal("label=FlexA_Pool2"), "the runner drops a Job recorded for FlexA_Pool1 unread (dmg TestJobRunnerDropsAJobAskingAnotherQuestion)")
 		Expect(getPool().Status.UUID).To(BeEmpty())
+
+		By("the query Job name never depends on the label, so it cannot equal another pool's")
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
+		r := &DaosPoolReconciler{}
+		labelled := r.opSpec(getPool(), sys, "daos-test", "query")
+		other := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: poolName + "-0a1b2c3d"}, Spec: daosv1alpha1.DaosPoolSpec{SystemRef: sysName}}
+		otherSpec := r.opSpec(other, sys, "daos-test", "query")
+		Expect(labelled.Namespace).To(Equal(otherSpec.Namespace))
+		Expect(labelled.Name).NotTo(Equal(otherSpec.Name))
+		Expect(labelled.Args[len(labelled.Args)-1]).To(Equal("FlexA_Pool2"))
+		Expect(otherSpec.Args[len(otherSpec.Args)-1]).To(Equal(poolName + "-0a1b2c3d"))
 
 		By("the label is also fixed while a dmg pool operation runs")
 		p = getPool()
