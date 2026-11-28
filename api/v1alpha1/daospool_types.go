@@ -28,6 +28,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.profile) || self.profile != 'kvcache' || !has(self.redundancyFactor) || self.redundancyFactor == ((has(self.kvcache) && has(self.kvcache.redundancy) && self.kvcache.redundancy == 'ec') ? 1 : 0)",message="profile kvcache sets rd_fac from kvcache.redundancy (none: 0, ec: 1); leave redundancyFactor unset or make it agree"
 // +kubebuilder:validation:XValidation:rule="!has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] in ['data_sync', 'incremental', 'no_data_sync']",message="properties.reintegration must be data_sync, incremental or no_data_sync"
 // +kubebuilder:validation:XValidation:rule="!has(self.redundancyFactor) || self.redundancyFactor != 0 || !has(self.properties) || !('reintegration' in self.properties) || self.properties['reintegration'] != 'no_data_sync'",message="a pool with redundancyFactor 0 takes reintegration incremental (the default) or data_sync: no_data_sync refuses every write to the pool"
+// +kubebuilder:validation:XValidation:rule="!has(self.label) || (has(self.external) && self.external)",message="spec.label only applies with spec.external: a pool the operator manages is labelled metadata.name, so no two DaosPools can manage (and destroy) the same pool"
 // +kubebuilder:validation:XValidation:rule="(has(self.external) && self.external) || (has(self.size) && string(self.size) != '0')",message="spec.size is required unless spec.external is true"
 // +kubebuilder:validation:XValidation:rule="!has(self.external) || !self.external || (!has(self.acl) && !has(self.properties) && !has(self.redundancyFactor) && !has(self.memRatioPercent) && !has(self.profile) && !has(self.kvcache))",message="spec.external: the operator neither creates nor changes this pool, so acl, properties, redundancyFactor, memRatioPercent, profile and kvcache do not apply; set them where the pool is managed"
 type DaosPoolSpec struct {
@@ -46,10 +47,12 @@ type DaosPoolSpec struct {
 	// has been seen (status.uuid), external cannot be turned off again.
 	// +optional
 	External bool `json:"external,omitempty"`
-	// Label is the pool's DAOS label when it is not metadata.name, typically for
-	// an external pool whose label is not a valid Kubernetes name (capitals,
-	// underscores). Unset means metadata.name. It cannot change once the pool
-	// exists.
+	// Label is the DAOS label of an external pool when it is not metadata.name,
+	// typically one that is not a valid Kubernetes name (capitals, underscores).
+	// Unset means metadata.name. Only with external: a pool the operator manages
+	// is always labelled metadata.name, which is unique (DaosPool is cluster
+	// scoped), so two DaosPools can never both manage, and destroy, one pool.
+	// It cannot change once the pool exists.
 	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9_.:-]{1,127}$`
 	// +optional
 	Label string `json:"label,omitempty"`

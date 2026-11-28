@@ -399,7 +399,7 @@ metadata: {name: shared}
 spec:
   systemRef: daos
   external: true
-  label: Shared_Pool1   # the DAOS label, when it is not a Kubernetes name; default metadata.name
+  label: Shared_Pool1   # the DAOS label, when it is not a Kubernetes name; default metadata.name (external only)
 ```
 
 | The operator still | It never |

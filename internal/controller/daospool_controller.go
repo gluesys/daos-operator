@@ -100,8 +100,11 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 
+// poolLabel is the DAOS label the pool is known by. spec.label counts only for
+// an external pool (the CRD refuses it otherwise): a managed pool is always
+// metadata.name, unique cluster-wide, so a destroy can only reach its own pool.
 func poolLabel(pool *daosv1alpha1.DaosPool) string {
-	if pool.Spec.Label != "" {
+	if pool.Spec.External && pool.Spec.Label != "" {
 		return pool.Spec.Label
 	}
 	return pool.Name

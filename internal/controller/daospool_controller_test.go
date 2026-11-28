@@ -1042,6 +1042,21 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(k8sClient.Create(ctx, ok)).To(Succeed())
 		Expect(k8sClient.Delete(ctx, ok)).To(Succeed())
 
+		By("a managed pool cannot take another pool's label: its destroy could reach that pool")
+		alias := &daosv1alpha1.DaosPool{ObjectMeta: metav1.ObjectMeta{Name: "p2"}, Spec: daosv1alpha1.DaosPoolSpec{
+			SystemRef: sysName, Size: resource.MustParse("10Gi"), Label: poolName}}
+		err = k8sClient.Create(ctx, alias)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("spec.label only applies with spec.external"))
+		By("and were one to get through, every dmg command still names its own pool")
+		alias.Spec.Label = poolName
+		sys := &daosv1alpha1.DaosSystem{}
+		Expect(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, sys)).To(Succeed())
+		for _, op := range []string{"query", opDestroy, opExtend} {
+			s := (&DaosPoolReconciler{}).opSpec(alias, sys, "daos-test", op)
+			Expect(s.Args[len(s.Args)-1]).To(Equal("p2"), op)
+		}
+
 		By("once seen, a managed pool can be handed over (its creation-only fields dropped) but not taken back")
 		setPoolUUID()
 		makeExternal(nil)

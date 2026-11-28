@@ -114,10 +114,12 @@ spec:
                 type: object
               label:
                 description: |-
-                  Label is the pool's DAOS label when it is not metadata.name, typically for
-                  an external pool whose label is not a valid Kubernetes name (capitals,
-                  underscores). Unset means metadata.name. It cannot change once the pool
-                  exists.
+                  Label is the DAOS label of an external pool when it is not metadata.name,
+                  typically one that is not a valid Kubernetes name (capitals, underscores).
+                  Unset means metadata.name. Only with external: a pool the operator manages
+                  is always labelled metadata.name, which is unique (DaosPool is cluster
+                  scoped), so two DaosPools can never both manage, and destroy, one pool.
+                  It cannot change once the pool exists.
                 pattern: ^[A-Za-z0-9_.:-]{1,127}$
                 type: string
               memRatioPercent:
@@ -222,6 +224,10 @@ spec:
               rule: '!has(self.redundancyFactor) || self.redundancyFactor != 0 ||
                 !has(self.properties) || !(''reintegration'' in self.properties) ||
                 self.properties[''reintegration''] != ''no_data_sync'''
+            - message: 'spec.label only applies with spec.external: a pool the operator
+                manages is labelled metadata.name, so no two DaosPools can manage
+                (and destroy) the same pool'
+              rule: '!has(self.label) || (has(self.external) && self.external)'
             - message: spec.size is required unless spec.external is true
               rule: (has(self.external) && self.external) || (has(self.size) && string(self.size)
                 != '0')

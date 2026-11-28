@@ -246,7 +246,7 @@ FlexA 처럼 풀을 콘솔에서 관리하는 시스템에 붙으면 관리 주�
 | `dmg pool query` 로 status(uuid·state·공간·`SpaceLow`·PVC 이벤트), 그 풀의 DaosContainer·CSI | 풀 생성(없으면 `ExternalPoolNotFound`), extend, ACL, 속성 되돌리기, 삭제(`destroy-approved` 가 붙어도 `DestroyRefused` 로 거부하고 DaosPool 만 지운다) |
 | `spec.size`·`spec.ranks` 가 있으면 비교해 `SpecMismatch` 로 보고 | 비교 결과를 고치는 일 |
 
-- `spec.label` 로 DAOS 라벨을 따로 줄 수 있다. K8s 이름 규칙에 맞지 않는 라벨(대문자, `_`)을 위한 것이다. daos-csi 는 `status.label`·uuid 로 마운트하므로 그대로 동작한다.
+- `spec.label` 로 DAOS 라벨을 따로 줄 수 있다. K8s 이름 규칙에 맞지 않는 라벨(대문자, `_`)을 위한 것이다. **external 에서만** 허용한다. 관리형 풀의 라벨은 늘 `metadata.name`(클러스터 스코프라 유일)이라, 두 DaosPool 이 같은 풀을 관리하다 한쪽의 destroy 승인이 다른 쪽 풀을 지우는 일이 없다. daos-csi 는 `status.label`·uuid 로 마운트하므로 그대로 동작한다.
 - `acl`·`properties`·`redundancyFactor`·`memRatioPercent`·`profile`·`kvcache` 는 거부한다(만들 때만 쓰는 값이거나 operator 가 적용하는 값). `size` 는 선택이다.
 - **operator 가 운영하는 시스템에서도 쓸 수 있게 했다.** 손으로 만든 풀을 참조하거나, operator 가 관리하던 풀을 넘겨주는 경우가 있기 때문이다.
   넘겨줄 때는 `external: true` 로 바꾸고 위 필드를 지운다(풀이 생긴 뒤에도 이 경우만 허용). 그 순간 진행 중이던 작업은 더 따라가지 않는다(`OperationAbandoned`).
