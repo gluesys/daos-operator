@@ -408,10 +408,11 @@ spec:
             a new DaosPool for a pool the operator should manage'
           rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || !has(oldSelf.spec.external)
             || !oldSelf.spec.external || (has(self.spec.external) && self.spec.external)'
-        - message: spec.label cannot change once the pool exists
-          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.label)
-            ? self.spec.label : '''') == (has(oldSelf.spec.label) ? oldSelf.spec.label
-            : '''')'
+        - message: spec.label cannot change once the pool exists or while a dmg pool
+            operation runs on it
+          rule: '!has(oldSelf.status) || (!has(oldSelf.status.uuid) && (!has(oldSelf.status.operation)
+            || oldSelf.status.operation == '''')) || (has(self.spec.label) ? self.spec.label
+            : '''') == (has(oldSelf.spec.label) ? oldSelf.spec.label : '''')'
     served: true
     storage: true
     subresources:

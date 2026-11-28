@@ -949,6 +949,56 @@ var _ = Describe("DaosPool / DaosContainer Controllers", func() {
 		Expect(events.Events).To(Receive(ContainSubstring("DestroyRefused")))
 	})
 
+	It("releases an external pool whose DaosSystem was deleted first, without dmg", func() {
+		makeExternal(nil)
+		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
+		poolRec(f)
+		poolRec(f)
+		Expect(getPool().Finalizers).To(ContainElement(daosv1alpha1.FinalizerPool))
+		Expect(k8sClient.Delete(ctx, &daosv1alpha1.DaosSystem{ObjectMeta: metav1.ObjectMeta{Name: sysName}})).To(Succeed())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, types.NamespacedName{Name: sysName}, &daosv1alpha1.DaosSystem{}))).To(BeTrue())
+		p := getPool()
+		p.Annotations = map[string]string{daosv1alpha1.AnnotationDestroyApproved: "true"}
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		Expect(k8sClient.Delete(ctx, p)).To(Succeed())
+		before := len(f.calls)
+		events := record.NewFakeRecorder(8)
+		r := &DaosPoolReconciler{Client: k8sClient, Scheme: k8sClient.Scheme(), Dmg: f, DisableProbeHold: true, Recorder: events}
+		_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: poolNN})
+		Expect(err).NotTo(HaveOccurred())
+		Expect(apierrors.IsNotFound(k8sClient.Get(ctx, poolNN, &daosv1alpha1.DaosPool{}))).To(BeTrue(), "not stuck Terminating on SystemNotFound")
+		Expect(f.calls).To(HaveLen(before), "no dmg Job at all")
+		Expect(events.Events).To(Receive(ContainSubstring("DestroyRefused")))
+	})
+
+	It("does not read a query of the old label as the answer for a new one", func() {
+		makeExternal(func(p *daosv1alpha1.DaosPool) { p.Spec.Label = "FlexA_Pool1" })
+		f := &fakeDmg{script: map[string]*dmg.Result{}} // the query of FlexA_Pool1 is still running
+		poolRec(f)
+		poolRec(f)
+		old := f.last("-dmg-query")
+		Expect(old.Args).To(ContainElement("FlexA_Pool1"))
+
+		p := getPool()
+		p.Spec.Label = "FlexA_Pool2" // a typo fixed before the pool was seen
+		Expect(k8sClient.Update(ctx, p)).To(Succeed())
+		poolRec(f)
+		cur := f.last("-dmg-query")
+		Expect(cur.Args).To(Equal([]string{"pool", "query", "--show-enabled", "FlexA_Pool2"}))
+		Expect(cur.Name).NotTo(Equal(old.Name), "a different Job: the old one's result is never read for FlexA_Pool2")
+		Expect(getPool().Status.UUID).To(BeEmpty())
+
+		By("the label is also fixed while a dmg pool operation runs")
+		p = getPool()
+		p.Status.Operation = opCreate
+		Expect(k8sClient.Status().Update(ctx, p)).To(Succeed())
+		p = getPool()
+		p.Spec.Label = "FlexA_Pool3"
+		err := k8sClient.Update(ctx, p)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("while a dmg pool operation runs"))
+	})
+
 	It("stops following an operation that was in flight when the pool became external", func() {
 		f := &fakeDmg{script: map[string]*dmg.Result{"-dmg-query": {Done: true, Output: dmgPoolQuery}}}
 		poolRec(f)

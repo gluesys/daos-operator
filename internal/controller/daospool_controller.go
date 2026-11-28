@@ -175,7 +175,14 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	base := []string{"dmg", "-o", controlConfigPath, "-j"}
 	switch op {
 	case "query":
-		spec.Args = []string{"pool", "query", "--show-enabled", label}
+		// spec.label may change until the pool is seen (fixing a typo in an external
+		// pool's label): a query of the old label still running must not be read as
+		// the answer for the new one, so the Job is named after the label it asks for
+		if pool.Spec.Label != "" {
+			h := sha256.Sum256([]byte(pool.Spec.Label))
+			spec.Name = jobName("pool", pool.Name+"/"+hex.EncodeToString(h[:4]), "dmg-query")
+		}
+		spec.Args =[]string{"pool", "query", "--show-enabled", label}
 		spec.FirstTimeoutSeconds = poolQueryTimeout
 		spec.Fallback = []string{"pool", "query", "-t", "--show-enabled", label}
 		spec.Then = []string{"pool", "get-prop", label, "reintegration,self_heal"}
@@ -237,6 +244,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	status := *pool.Status.DeepCopy()
 	setC := func(v metav1.ConditionStatus, reason, msg string) {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: v, Reason: reason, Message: msg, ObservedGeneration: pool.Generation})
+	}
+	// deleting an external DaosPool only releases the reference: it needs neither
+	// dmg nor the DaosSystem, which may already be gone
+	if !pool.DeletionTimestamp.IsZero() && pool.Spec.External {
+		return r.finalize(ctx, pool, nil, "", status)
 	}
 	if r.Dmg == nil {
 		setC(metav1.ConditionUnknown, "NoRunner", "operator started without a dmg runner")
