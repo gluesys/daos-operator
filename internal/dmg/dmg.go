@@ -97,8 +97,9 @@ type RunSpec struct {
 	// ShareProcessNamespace lets the agent sidecar validate the client process.
 	ShareProcessNamespace bool
 	// Identity, when set, is recorded on the Job (AnnotationIdentity). A Job of the
-	// same name recorded with another Identity is deleted unread and Run reports
-	// Done=false, so an answer to an earlier form of the question is never returned.
+	// same name recorded with another Identity, or with none, is deleted unread and
+	// Run reports Done=false, so an answer to an earlier form of the question is
+	// never returned. Without Identity a Job is read whatever it records.
 	Identity string
 }
 
@@ -220,10 +221,11 @@ func (j *JobRunner) Run(ctx context.Context, s RunSpec) (*Result, error) {
 	if !job.DeletionTimestamp.IsZero() || j.recentlyConsumed(key, job.UID) {
 		return &Result{}, nil // previous run still being removed
 	}
-	if id, set := job.Annotations[AnnotationIdentity]; set && s.Identity != "" && id != s.Identity {
+	if s.Identity != "" && job.Annotations[AnnotationIdentity] != s.Identity {
 		// a Job of this name asking another question (a pool query of a label since
-		// changed): its answer is not for this caller. Remove it; the next Run starts
-		// the right one
+		// changed), or one that cannot say which (no annotation: made by an older
+		// operator): its answer is not known to be for this caller. Remove it unread;
+		// the next Run starts the right one. Costs one extra query after an upgrade
 		if err := j.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
 			return nil, err
 		}

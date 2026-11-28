@@ -145,19 +145,50 @@ func TestJobRunnerDropsAJobAskingAnotherQuestion(t *testing.T) {
 		t.Fatalf("the next Run must ask for New: %v %v", job.Annotations, job.Spec.Template.Spec.Containers[0].Command)
 	}
 
-	// a Job without the annotation (made by an older operator) is still read
-	spec.Name = "pool-q-dmg-query"
+	// a finished Job without the annotation (made by an older operator, here asking
+	// for Old) cannot say what it asked: dropped unread as well
+	legacyKey := types.NamespacedName{Namespace: "ns", Name: "pool-q-dmg-query"}
 	legacy := job.DeepCopy()
-	legacy.Name, legacy.ResourceVersion, legacy.Annotations = spec.Name, "", nil
-	legacy.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	legacy.Name, legacy.ResourceVersion, legacy.Annotations = legacyKey.Name, "", nil
+	legacy.Spec.Template.Spec.Containers[0].Command = []string{"dmg", "-j", "pool", "query", "Old"}
 	if err := c.Create(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
+	legacy.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
 	if err := c.Status().Update(ctx, legacy); err != nil {
 		t.Fatal(err)
 	}
-	if res, err := r.Run(ctx, spec); err != nil || !res.Done {
-		t.Fatalf("a Job without an identity is read as before: %+v %v", res, err)
+	spec.Name = legacyKey.Name
+	if res, err := r.Run(ctx, spec); err != nil || res.Done {
+		t.Fatalf("a Job without an identity must not answer for New: %+v %v", res, err)
+	}
+	if err := c.Get(ctx, legacyKey, job); !apierrors.IsNotFound(err) {
+		t.Fatalf("the legacy Job must be deleted, got %v", err)
+	}
+	if _, err := r.Run(ctx, spec); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, legacyKey, job); err != nil {
+		t.Fatal(err)
+	}
+	cmd := job.Spec.Template.Spec.Containers[0].Command
+	if job.Annotations[AnnotationIdentity] != "label=New" || cmd[len(cmd)-1] != "New" {
+		t.Fatalf("the next Run must ask for New: %v %v", job.Annotations, cmd)
+	}
+
+	// a caller that sets no Identity reads a Job whatever it records (other Jobs)
+	plainKey := types.NamespacedName{Namespace: "ns", Name: "sys-dmg-query"}
+	plain := job.DeepCopy()
+	plain.Name, plain.ResourceVersion = plainKey.Name, ""
+	if err := c.Create(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	plain.Status.Conditions = []batchv1.JobCondition{{Type: batchv1.JobComplete, Status: corev1.ConditionTrue}}
+	if err := c.Status().Update(ctx, plain); err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.Run(ctx, RunSpec{Owner: owner, Namespace: "ns", Name: plainKey.Name, Args: []string{"system", "query"}}); err != nil || !res.Done {
+		t.Fatalf("without Identity a finished Job is read as before: %+v %v", res, err)
 	}
 }
 
