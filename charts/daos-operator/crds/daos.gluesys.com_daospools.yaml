@@ -46,6 +46,10 @@ spec:
       name: Reintegration
       priority: 1
       type: string
+    - jsonPath: .spec.external
+      name: External
+      priority: 1
+      type: boolean
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -76,6 +80,20 @@ spec:
                 items:
                   type: string
                 type: array
+              external:
+                description: |-
+                  External marks a pool that is owned and managed outside the operator: by
+                  FlexA's console on a FlexA DAOS system (spec.externalMsReplicas), by
+                  another cluster, or by hand with dmg. The operator only reads it: it
+                  mirrors `dmg pool query` into status (space, state, SpaceLow) and serves
+                  DaosContainers and CSI volumes in it, but never creates, extends, sets a
+                  property or ACL on, or destroys the pool -- not even with
+                  daos.gluesys.com/destroy-approved. A pool that does not exist is reported,
+                  not created. spec.size and spec.ranks, when given, are checked against the
+                  pool and a difference is reported on the SpecMismatch condition, never
+                  corrected. Works on any DaosSystem, operator-run or external. Once the pool
+                  has been seen (status.uuid), external cannot be turned off again.
+                type: boolean
               kvcache:
                 description: KVCache tunes profile kvcache.
                 properties:
@@ -94,6 +112,16 @@ spec:
                     - ec
                     type: string
                 type: object
+              label:
+                description: |-
+                  Label is the DAOS label of an external pool when it is not metadata.name,
+                  typically one that is not a valid Kubernetes name (capitals, underscores).
+                  Unset means metadata.name. Only with external: a pool the operator manages
+                  is always labelled metadata.name, which is unique (DaosPool is cluster
+                  scoped), so two DaosPools can never both manage, and destroy, one pool.
+                  It cannot change once the pool exists.
+                pattern: ^[A-Za-z0-9_.:-]{1,127}$
+                type: string
               memRatioPercent:
                 description: |-
                   MemRatioPercent is `dmg pool create --mem-ratio`: how much of the pool's
@@ -157,7 +185,8 @@ spec:
                 - type: string
                 description: |-
                   Size is the total pool size (dmg pool create --size). Extension is done
-                  by adding ranks, not by editing Size (DAOS 2.8 has no shrink).
+                  by adding ranks, not by editing Size (DAOS 2.8 has no shrink). Required
+                  unless the pool is external, where it is only compared.
                 pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                 x-kubernetes-int-or-string: true
               spaceWarningPercent:
@@ -174,7 +203,6 @@ spec:
                 description: SystemRef names the DaosSystem this pool lives in.
                 type: string
             required:
-            - size
             - systemRef
             type: object
             x-kubernetes-validations:
@@ -196,6 +224,19 @@ spec:
               rule: '!has(self.redundancyFactor) || self.redundancyFactor != 0 ||
                 !has(self.properties) || !(''reintegration'' in self.properties) ||
                 self.properties[''reintegration''] != ''no_data_sync'''
+            - message: 'spec.label only applies with spec.external: a pool the operator
+                manages is labelled metadata.name, so no two DaosPools can manage
+                (and destroy) the same pool'
+              rule: '!has(self.label) || (has(self.external) && self.external)'
+            - message: spec.size is required unless spec.external is true
+              rule: (has(self.external) && self.external) || (has(self.size) && string(self.size)
+                != '0')
+            - message: 'spec.external: the operator neither creates nor changes this
+                pool, so acl, properties, redundancyFactor, memRatioPercent, profile
+                and kvcache do not apply; set them where the pool is managed'
+              rule: '!has(self.external) || !self.external || (!has(self.acl) && !has(self.properties)
+                && !has(self.redundancyFactor) && !has(self.memRatioPercent) && !has(self.profile)
+                && !has(self.kvcache))'
           status:
             description: |-
               DaosPoolStatus mirrors `dmg pool query`. Nothing here is a second source of
@@ -350,22 +391,34 @@ spec:
         x-kubernetes-validations:
         - message: spec.profile and spec.kvcache.redundancy cannot change once the
             pool exists; create a new DaosPool
-          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || ((has(self.spec.profile)
-            ? self.spec.profile : '''') == (has(oldSelf.spec.profile) ? oldSelf.spec.profile
-            : '''') && (has(self.spec.kvcache) && has(self.spec.kvcache.redundancy)
-            ? self.spec.kvcache.redundancy : ''none'') == (has(oldSelf.spec.kvcache)
-            && has(oldSelf.spec.kvcache.redundancy) ? oldSelf.spec.kvcache.redundancy
-            : ''none''))'
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external)
+            && self.spec.external) || ((has(self.spec.profile) ? self.spec.profile
+            : '''') == (has(oldSelf.spec.profile) ? oldSelf.spec.profile : '''') &&
+            (has(self.spec.kvcache) && has(self.spec.kvcache.redundancy) ? self.spec.kvcache.redundancy
+            : ''none'') == (has(oldSelf.spec.kvcache) && has(oldSelf.spec.kvcache.redundancy)
+            ? oldSelf.spec.kvcache.redundancy : ''none''))'
         - message: spec.redundancyFactor cannot change once the pool exists; create
             a new DaosPool for a different redundancy
-          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.redundancyFactor)
-            == has(oldSelf.spec.redundancyFactor) && (!has(self.spec.redundancyFactor)
-            || self.spec.redundancyFactor == oldSelf.spec.redundancyFactor))'
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external)
+            && self.spec.external) || (has(self.spec.redundancyFactor) == has(oldSelf.spec.redundancyFactor)
+            && (!has(self.spec.redundancyFactor) || self.spec.redundancyFactor ==
+            oldSelf.spec.redundancyFactor))'
         - message: spec.properties.reintegration cannot change once the pool exists
-          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.properties)
-            && ''reintegration'' in self.spec.properties ? self.spec.properties[''reintegration'']
-            : '''') == (has(oldSelf.spec.properties) && ''reintegration'' in oldSelf.spec.properties
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || (has(self.spec.external)
+            && self.spec.external) || (has(self.spec.properties) && ''reintegration''
+            in self.spec.properties ? self.spec.properties[''reintegration''] : '''')
+            == (has(oldSelf.spec.properties) && ''reintegration'' in oldSelf.spec.properties
             ? oldSelf.spec.properties[''reintegration''] : '''')'
+        - message: 'spec.external cannot be turned off once the pool has been seen:
+            the operator would start changing a pool someone else manages. Create
+            a new DaosPool for a pool the operator should manage'
+          rule: '!has(oldSelf.status) || !has(oldSelf.status.uuid) || !has(oldSelf.spec.external)
+            || !oldSelf.spec.external || (has(self.spec.external) && self.spec.external)'
+        - message: spec.label cannot change once the pool exists or while a dmg pool
+            operation runs on it
+          rule: '!has(oldSelf.status) || (!has(oldSelf.status.uuid) && (!has(oldSelf.status.operation)
+            || oldSelf.status.operation == '''')) || (has(self.spec.label) ? self.spec.label
+            : '''') == (has(oldSelf.spec.label) ? oldSelf.spec.label : '''')'
     served: true
     storage: true
     subresources:

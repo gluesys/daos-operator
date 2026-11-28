@@ -373,7 +373,7 @@ for these pools: it rejects every write.
 `spec.properties.reintegration` cannot be edited (create a new DaosPool
 instead), and the operator keeps the pool on that mode: if it is changed in
 DAOS (`dmg pool set-prop`), the operator sets it back and emits
-`ReintegrationModeDrift`. A redundant pool without the property is left on
+`ReintegrationModeDrift` (not for a [`spec.external`](#a-pool-someone-else-manages) pool). A redundant pool without the property is left on
 whatever DAOS has. `kubectl get daospool -o wide` shows the mode DAOS reports.
 
 After the rank is back, the containers stop with `Ready=False` and reason
@@ -394,6 +394,39 @@ target is back and rebuild has finished. Watch for the `ContainerUnclean` and
 > is now off unless the pool carries the annotation above. It also relies on a
 > `status` field that Helm will not add to an existing install, because Helm
 > never upgrades `crds/`. Apply the CRDs first (see [Upgrade](#upgrade)).
+
+### A pool someone else manages
+
+`spec.external: true` makes a DaosPool a read-only view of a pool that is
+managed elsewhere: by the storage appliance's own console on a DAOS system the
+DaosSystem attaches to with `spec.externalMsReplicas`, or by hand with `dmg`.
+
+```yaml
+apiVersion: daos.gluesys.com/v1alpha1
+kind: DaosPool
+metadata: {name: shared}
+spec:
+  systemRef: daos
+  external: true
+  label: Shared_Pool1   # the DAOS label, when it is not a Kubernetes name; default metadata.name (external only)
+```
+
+| The operator still | It never |
+|---|---|
+| mirrors `dmg pool query` into status: uuid, state, space, `SpaceLow` and the PVC events | creates the pool (`ExternalPoolNotFound` until it exists) |
+| creates, queries and destroys (with approval) `DaosContainer`s in it, and serves CSI volumes from them | extends it, writes its ACL or sets a property back (`reintegration`, `self_heal`) |
+| compares `spec.size` and `spec.ranks`, when given, and reports a difference on `SpecMismatch` | destroys it: deleting the DaosPool releases it, and `destroy-approved` is refused with `DestroyRefused` |
+
+`acl`, `properties`, `redundancyFactor`, `memRatioPercent`, `profile` and
+`kvcache` are refused on an external pool, and `size` is optional. A pool the
+operator manages can be handed over by setting `external: true` and dropping those
+fields; once the pool has been seen, `external` cannot be turned off again (create
+a new DaosPool for a pool the operator should manage). It works on any
+DaosSystem, operator-run or external.
+
+Rank operations (`daos.gluesys.com/rank-op`) act on the whole DAOS system, not on
+a pool, and stay with whoever runs the engines: do not use them on a system that is
+managed elsewhere.
 
 ### Pods that run as an account UID and open DAOS directly
 

@@ -100,7 +100,15 @@ const (
 // +kubebuilder:rbac:groups=daos.gluesys.com,resources=daospools/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=persistentvolumes,verbs=get;list;watch
 
-func poolLabel(pool *daosv1alpha1.DaosPool) string { return pool.Name }
+// poolLabel is the DAOS label the pool is known by. spec.label counts only for
+// an external pool (the CRD refuses it otherwise): a managed pool is always
+// metadata.name, unique cluster-wide, so a destroy can only reach its own pool.
+func poolLabel(pool *daosv1alpha1.DaosPool) string {
+	if pool.Spec.External && pool.Spec.Label != "" {
+		return pool.Spec.Label
+	}
+	return pool.Name
+}
 
 func poolKey(pool *daosv1alpha1.DaosPool) string { return "pool/" + pool.Name }
 
@@ -170,6 +178,11 @@ func (r *DaosPoolReconciler) opSpec(pool *daosv1alpha1.DaosPool, sys *daosv1alph
 	base := []string{"dmg", "-o", controlConfigPath, "-j"}
 	switch op {
 	case "query":
+		// spec.label may change until the pool is seen (fixing a typo in an external
+		// pool's label): a query of the old label still running must not be read as
+		// the answer for the new one. The Job keeps its name (a label-derived name
+		// could equal another pool's) and records the label it asks for instead
+		spec.Identity = "label=" + label
 		spec.Args = []string{"pool", "query", "--show-enabled", label}
 		spec.FirstTimeoutSeconds = poolQueryTimeout
 		spec.Fallback = []string{"pool", "query", "-t", "--show-enabled", label}
@@ -233,6 +246,11 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	setC := func(v metav1.ConditionStatus, reason, msg string) {
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionReady, Status: v, Reason: reason, Message: msg, ObservedGeneration: pool.Generation})
 	}
+	// deleting an external DaosPool only releases the reference: it needs neither
+	// dmg nor the DaosSystem, which may already be gone
+	if !pool.DeletionTimestamp.IsZero() && pool.Spec.External {
+		return r.finalize(ctx, pool, nil, "", status)
+	}
 	if r.Dmg == nil {
 		setC(metav1.ConditionUnknown, "NoRunner", "operator started without a dmg runner")
 		return r.updateStatus(ctx, pool, status, 0)
@@ -260,7 +278,14 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 
 	setDegraded(pool, sys, &status)
 
-	// an operation in flight: poll only that Job
+	// an operation in flight: poll only that Job. Not for an external pool: one
+	// started before spec.external was set is no longer followed (polling a Job
+	// that is gone would start it again).
+	if status.Operation != "" && pool.Spec.External {
+		r.event(pool, corev1.EventTypeWarning, "OperationAbandoned", "dmg pool "+opCommand(status.Operation)+
+			" was in flight when spec.external was set; the operator no longer follows it")
+		status.Operation = ""
+	}
 	if status.Operation != "" {
 		return r.pollOp(ctx, pool, sys, ns, status)
 	}
@@ -298,6 +323,16 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if env.Error != nil {
 		switch dmg.Classify(*env.Error) {
 		case dmg.ErrNotFound:
+			if pool.Spec.External {
+				msg := fmt.Sprintf("pool %s does not exist in DAOS system %s; spec.external: the operator does not create it. "+
+					"Create it where it is managed (FlexA console, dmg pool create), or fix spec.label", poolLabel(pool), sys.Name)
+				if status.UUID != "" {
+					msg = fmt.Sprintf("pool %s (uuid %s) no longer exists in DAOS system %s; spec.external: the operator does not "+
+						"re-create it", poolLabel(pool), status.UUID, sys.Name)
+				}
+				setC(metav1.ConditionFalse, "ExternalPoolNotFound", msg)
+				return r.updateStatus(ctx, pool, status, poolRequeueWait)
+			}
 			if status.UUID != "" {
 				// never silently re-create: an existing pool that disappeared is data loss
 				setC(metav1.ConditionFalse, "PoolMissing", fmt.Sprintf("pool %s (uuid %s) no longer exists in DAOS; delete and re-create the DaosPool to make a new, empty pool", poolLabel(pool), status.UUID))
@@ -356,11 +391,25 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			"being destroyed, or the pool predates this spec. Destroy it and let the operator create it, or set "+
 			"spec.size to what is there", status.Label, humanBytes(status.TotalBytes), humanBytes(want))
 	}
+	// an external pool is only compared: ranks the spec lists that the pool does not span
+	// are reported, not extended to
+	ranksMismatch := ""
+	if pool.Spec.External && len(pool.Spec.Ranks) > 0 && len(status.EnabledRanks) > 0 {
+		if miss := missingRanks(pool.Spec.Ranks, status.EnabledRanks); len(miss) > 0 {
+			ranksMismatch = fmt.Sprintf("pool %q does not span ranks %s that spec.ranks lists; spec.external: the operator does not "+
+				"extend it. Extend it where it is managed, or fix spec.ranks", status.Label, ranksCSV(miss))
+		}
+	}
 	setMismatch := func() {
 		st, reason := metav1.ConditionFalse, "Matches"
 		msg := "pool size is within what spec.size asks for"
-		if sizeMismatch != "" {
+		switch {
+		case sizeMismatch != "" && ranksMismatch != "":
+			st, reason, msg = metav1.ConditionTrue, "SizeAndRanksMismatch", sizeMismatch+"; "+ranksMismatch
+		case sizeMismatch != "":
 			st, reason, msg = metav1.ConditionTrue, "SizeMismatch", sizeMismatch
+		case ranksMismatch != "":
+			st, reason, msg = metav1.ConditionTrue, "RanksMismatch", ranksMismatch
 		}
 		meta.SetStatusCondition(&status.Conditions, metav1.Condition{Type: daosv1alpha1.ConditionSpecMismatch,
 			Status: st, Reason: reason, Message: msg, ObservedGeneration: pool.Generation})
@@ -377,6 +426,21 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 			setC(metav1.ConditionTrue, "ReadyHealthOnly", msg)
 		} else {
 			setC(metav1.ConditionFalse, "State"+info.State, msg)
+		}
+		return r.updateStatus(ctx, pool, status, poolRequeueIdle)
+	}
+
+	if pool.Spec.External {
+		// read only: no extend, ACL, property or any other dmg pool operation
+		if info.State == "Ready" {
+			msg := fmt.Sprintf("state %s, rebuild %s, %d ranks; external pool, read only", info.State, info.Rebuild.State, len(status.EnabledRanks))
+			if sizeMismatch != "" || ranksMismatch != "" {
+				msg += "; spec does not match this pool (see the SpecMismatch condition)"
+			}
+			setC(metav1.ConditionTrue, "Ready", msg)
+		} else {
+			setC(metav1.ConditionFalse, "State"+info.State, fmt.Sprintf("dmg reports state %s (rebuild %s, %d disabled targets); external pool, read only",
+				info.State, info.Rebuild.State, info.DisabledTargets))
 		}
 		return r.updateStatus(ctx, pool, status, poolRequeueIdle)
 	}
@@ -412,7 +476,7 @@ func (r *DaosPoolReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if info.State == "Ready" {
 		msg := fmt.Sprintf("state %s, rebuild %s, %d ranks", info.State, info.Rebuild.State, len(status.EnabledRanks))
 		if sizeMismatch != "" {
-			msg += "; spec.size does not match this pool (see the SpecMismatch condition)"
+			msg += "; spec does not match this pool (see the SpecMismatch condition)"
 		}
 		setC(metav1.ConditionTrue, "Ready", msg)
 	} else {
@@ -724,6 +788,9 @@ func parseResult(res *dmg.Result) (*dmg.Envelope, error) {
 
 // startOp records the operation and creates its Job.
 func (r *DaosPoolReconciler) startOp(ctx context.Context, pool *daosv1alpha1.DaosPool, sys *daosv1alpha1.DaosSystem, ns string, status daosv1alpha1.DaosPoolStatus, op string) (ctrl.Result, error) {
+	if pool.Spec.External { // every caller checks this first; the last line of defence
+		return ctrl.Result{}, fmt.Errorf("refused dmg pool %s on external pool %s", opCommand(op), poolLabel(pool))
+	}
 	if _, err := r.Dmg.Run(ctx, r.opSpec(pool, sys, ns, op)); err != nil {
 		return ctrl.Result{}, fmt.Errorf("start %s: %w", op, err)
 	}
@@ -797,6 +864,17 @@ func (r *DaosPoolReconciler) finalize(ctx context.Context, pool *daosv1alpha1.Da
 		return ctrl.Result{}, nil
 	}
 	approved := pool.Annotations[daosv1alpha1.AnnotationDestroyApproved] == "true"
+	if pool.Spec.External {
+		// the DAOS pool belongs to whoever manages it: only the DaosPool goes
+		if approved {
+			r.event(pool, corev1.EventTypeWarning, "DestroyRefused", fmt.Sprintf("DaosPool is spec.external: the operator never destroys the DAOS pool, "+
+				"%s=true is ignored. Pool %s (uuid %s) is kept; destroy it where it is managed", daosv1alpha1.AnnotationDestroyApproved, poolLabel(pool), status.UUID))
+		} else {
+			r.event(pool, corev1.EventTypeNormal, "PoolReleased", fmt.Sprintf("DaosPool deleted; external pool %s (uuid %s) is kept", poolLabel(pool), status.UUID))
+		}
+		controllerutil.RemoveFinalizer(pool, daosv1alpha1.FinalizerPool)
+		return ctrl.Result{}, r.Update(ctx, pool)
+	}
 	if !approved || status.UUID == "" {
 		if status.UUID != "" {
 			r.event(pool, corev1.EventTypeWarning, "PoolOrphaned", fmt.Sprintf("DaosPool deleted without %s=true: DAOS pool %s (uuid %s) is kept; remove it by hand with `dmg pool destroy %s` if that is intended",

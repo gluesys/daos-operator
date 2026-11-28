@@ -96,7 +96,15 @@ type RunSpec struct {
 	Privileged bool
 	// ShareProcessNamespace lets the agent sidecar validate the client process.
 	ShareProcessNamespace bool
+	// Identity, when set, is recorded on the Job (AnnotationIdentity). A Job of the
+	// same name recorded with another Identity, or with none, is deleted unread and
+	// Run reports Done=false, so an answer to an earlier form of the question is
+	// never returned. Without Identity a Job is read whatever it records.
+	Identity string
 }
+
+// AnnotationIdentity records RunSpec.Identity on the Job.
+const AnnotationIdentity = "daos.gluesys.com/dmg-identity"
 
 // Result is what came back. Done=false means the Job is still running (or was
 // just created); poll again.
@@ -213,6 +221,16 @@ func (j *JobRunner) Run(ctx context.Context, s RunSpec) (*Result, error) {
 	if !job.DeletionTimestamp.IsZero() || j.recentlyConsumed(key, job.UID) {
 		return &Result{}, nil // previous run still being removed
 	}
+	if s.Identity != "" && job.Annotations[AnnotationIdentity] != s.Identity {
+		// a Job of this name asking another question (a pool query of a label since
+		// changed), or one that cannot say which (no annotation: made by an older
+		// operator): its answer is not known to be for this caller. Remove it unread;
+		// the next Run starts the right one. Costs one extra query after an upgrade
+		if err := j.Client.Delete(ctx, job, client.PropagationPolicy(metav1.DeletePropagationBackground)); err != nil && !apierrors.IsNotFound(err) {
+			return nil, err
+		}
+		return &Result{}, nil
+	}
 	finished, failure := jobFinished(job)
 	if !finished {
 		return &Result{}, nil
@@ -325,6 +343,9 @@ func (j *JobRunner) create(ctx context.Context, s RunSpec) error {
 		shareNS = ptr.To(true)
 	}
 	job := &batchv1.Job{ObjectMeta: metav1.ObjectMeta{Namespace: s.Namespace, Name: s.Name, Labels: labels}}
+	if s.Identity != "" {
+		job.Annotations = map[string]string{AnnotationIdentity: s.Identity}
+	}
 	job.Spec = batchv1.JobSpec{
 		BackoffLimit:            ptr.To(int32(0)),
 		ActiveDeadlineSeconds:   ptr.To(deadline),
